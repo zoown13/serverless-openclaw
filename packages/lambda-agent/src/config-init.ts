@@ -7,6 +7,7 @@ interface InitConfigOptions {
   anthropicApiKey?: string;
   provider?: AiProvider;
   awsRegion?: string;
+  model?: string;
 }
 
 /**
@@ -30,9 +31,22 @@ export async function initConfig(
   // - models.bedrockDiscovery: always disabled — model selection is explicit via resolveBedrockModel()
   const configPath = path.join(configDir, "openclaw.json");
   const isBedrock = options?.provider === "bedrock";
+  const primaryModel =
+    options?.provider && options?.model
+      ? `${options.provider === "bedrock" ? "amazon-bedrock" : "anthropic"}/${options.model}`
+      : undefined;
   const config = {
     gateway: { mode: "local" },
     models: { bedrockDiscovery: { enabled: false } },
+    agents: primaryModel
+      ? {
+        defaults: {
+          model: {
+            primary: primaryModel,
+          },
+        },
+      }
+      : undefined,
   };
   fs.writeFileSync(configPath, JSON.stringify(config), "utf-8");
 

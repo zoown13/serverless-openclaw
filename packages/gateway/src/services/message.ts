@@ -12,7 +12,6 @@ import type {
   PendingMessageItem,
   TaskStateItem,
 } from "@serverless-openclaw/shared";
-import type { LambdaAgentResponse } from "@serverless-openclaw/shared";
 import type { StartTaskParams } from "./container.js";
 import type { InvokeLambdaAgentParams } from "./lambda-agent.js";
 import { classifyRoute, stripRouteHint } from "./route-classifier.js";
@@ -58,6 +57,7 @@ export interface RouteDeps {
   message: string;
   channel: "web" | "telegram";
   connectionId: string;
+  telegramChatId?: string;
   callbackUrl: string;
   bridgeAuthToken: string;
   fetchFn: FetchFn;
@@ -69,14 +69,20 @@ export interface RouteDeps {
   startTaskParams: StartTaskParams;
   /** Lambda agent runtime support (Phase 2) */
   agentRuntime?: "lambda" | "fargate" | "both";
-  invokeLambdaAgent?: (params: InvokeLambdaAgentParams) => Promise<LambdaAgentResponse>;
+  invokeLambdaAgent?: (params: InvokeLambdaAgentParams) => Promise<{ accepted: true }>;
   lambdaAgentFunctionArn?: string;
   sessionId?: string;
-  /** Called with agent payloads after a successful lambda invocation — caller is responsible for delivery */
-  onLambdaResponse?: (payloads: LambdaAgentResponse["payloads"]) => Promise<void>;
 }
 
 export type RouteResult = "sent" | "queued" | "started" | "lambda";
+
+function assertLambdaInvokeAccepted(result: unknown): void {
+  if (typeof result !== "object" || result === null) return;
+  const record = result as { success?: boolean; error?: string };
+  if (record.success === false) {
+    throw new Error(record.error ?? "Lambda agent invocation failed");
+  }
+}
 
 async function routeFargate(deps: RouteDeps, taskState: TaskStateItem | null): Promise<RouteResult> {
   if (taskState?.status === "Running" && taskState.publicIp) {
@@ -162,20 +168,17 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
     deps.invokeLambdaAgent &&
     deps.lambdaAgentFunctionArn
   ) {
-    const response = await deps.invokeLambdaAgent({
+    const invokeResult = await deps.invokeLambdaAgent({
       functionArn: deps.lambdaAgentFunctionArn,
       userId: deps.userId,
       sessionId: deps.sessionId ?? `session-${deps.userId}`,
       message: deps.message,
       channel: deps.channel,
       connectionId: deps.connectionId,
+      telegramChatId: deps.telegramChatId,
+      callbackUrl: deps.callbackUrl,
     });
-    if (!response.success) {
-      throw new Error(response.error ?? "Lambda agent failed");
-    }
-    if (deps.onLambdaResponse) {
-      await deps.onLambdaResponse(response.payloads);
-    }
+    assertLambdaInvokeAccepted(invokeResult);
     return "lambda";
   }
 
@@ -200,23 +203,24 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
     }
 
     // decision === "lambda": try Lambda, fall back to Fargate on failure
-    const response = await deps.invokeLambdaAgent({
-      functionArn: deps.lambdaAgentFunctionArn,
-      userId: deps.userId,
-      sessionId: deps.sessionId ?? `session-${deps.userId}`,
-      message: deps.message,
-      channel: deps.channel,
-      connectionId: deps.connectionId,
-    });
-    if (response.success) {
-      if (deps.onLambdaResponse) {
-        await deps.onLambdaResponse(response.payloads);
-      }
+    try {
+      const invokeResult = await deps.invokeLambdaAgent({
+        functionArn: deps.lambdaAgentFunctionArn,
+        userId: deps.userId,
+        sessionId: deps.sessionId ?? `session-${deps.userId}`,
+        message: deps.message,
+        channel: deps.channel,
+        connectionId: deps.connectionId,
+        telegramChatId: deps.telegramChatId,
+        callbackUrl: deps.callbackUrl,
+      });
+      assertLambdaInvokeAccepted(invokeResult);
       return "lambda";
+    } catch {
+      // Lambda failed — fall back to Fargate
+      console.warn("Lambda agent invoke failed, falling back to Fargate");
+      return routeFargate(deps, taskState);
     }
-    // Lambda failed — fall back to Fargate
-    console.warn("Lambda agent failed, falling back to Fargate:", response.error);
-    return routeFargate(deps, taskState);
   }
 
   // Fargate path (default)

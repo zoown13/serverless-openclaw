@@ -31,7 +31,9 @@ interface RunAgentParams {
   provider?: string;
   api?: string;
   disableTools?: boolean;
+  disableMessageTool?: boolean;
   channel: "web" | "telegram";
+  extraSystemPrompt?: string;
   onPartialReply?: (delta: string) => void;
 }
 
@@ -58,6 +60,11 @@ interface AgentResult {
  */
 export async function runAgent(params: RunAgentParams): Promise<AgentResult> {
   const runEmbeddedPiAgent = await loadRunEmbeddedPiAgent();
+  const channel = params.channel === "telegram" ? "web" : params.channel;
+  const requestedModel = params.model ?? "claude-sonnet-4-20250514";
+  const model = params.provider && requestedModel.startsWith(`${params.provider}/`)
+    ? requestedModel.slice(params.provider.length + 1)
+    : requestedModel;
 
   const callParams: Record<string, unknown> = {
     sessionId: params.sessionId,
@@ -65,9 +72,11 @@ export async function runAgent(params: RunAgentParams): Promise<AgentResult> {
     workspaceDir: params.workspaceDir,
     prompt: params.message,
     provider: params.provider ?? "anthropic",
-    model: params.model ?? "claude-sonnet-4-20250514",
+    model,
     disableTools: params.disableTools ?? false,
-    messageChannel: params.channel === "telegram" ? "telegram" : "webchat",
+    disableMessageTool: params.disableMessageTool ?? false,
+    messageChannel: "webchat",
+    channel,
     senderIsOwner: true,
     timeoutMs: 10 * 60 * 1000, // 10 minutes
     runId: `lambda-${params.sessionId}-${Date.now()}`,
@@ -78,6 +87,9 @@ export async function runAgent(params: RunAgentParams): Promise<AgentResult> {
 
   if (params.api) {
     callParams.api = params.api;
+  }
+  if (params.extraSystemPrompt) {
+    callParams.extraSystemPrompt = params.extraSystemPrompt;
   }
 
   const result = await runEmbeddedPiAgent(callParams);

@@ -27,6 +27,7 @@ interface RunAgentParams {
   sessionFile: string;
   workspaceDir: string;
   message: string;
+  config?: Record<string, unknown>;
   model?: string;
   provider?: string;
   api?: string;
@@ -85,6 +86,9 @@ export async function runAgent(params: RunAgentParams): Promise<AgentResult> {
       : undefined,
   };
 
+  if (params.config) {
+    callParams.config = params.config;
+  }
   if (params.api) {
     callParams.api = params.api;
   }

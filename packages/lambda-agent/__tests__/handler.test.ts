@@ -6,6 +6,30 @@ const { mockInitConfig, mockDownload, mockUpload, mockResolveSecrets, mockRunAge
   mockInitConfig: vi.fn().mockResolvedValue({
     configDir: "/tmp/.openclaw",
     sessionsDir: "/tmp/.openclaw/agents/default/sessions",
+    config: { gateway: { mode: "local" } },
+    runtimeConfig: {
+      provider: "anthropic",
+      openclawProvider: "anthropic",
+      openclawApi: "anthropic",
+      openclawAuth: "api-key",
+      defaultModel: "claude-sonnet-4-20250514",
+      capability: "tool-enabled",
+      sessionNamespace: "anthropic-tools",
+      readiness: {
+        chatReady: true,
+        toolRuntimeReady: true,
+        gmailReady: true,
+      },
+      secretContract: {
+        requiresAnthropicApiKey: true,
+        supportsOpenclawAuthProfiles: true,
+        supportsOpenclawOauth: true,
+        supportsGoogleOauthClient: true,
+      },
+    },
+    gmailReady: true,
+    toolRuntimeReady: true,
+    sessionNamespace: "anthropic-tools",
   }),
   mockDownload: vi.fn().mockResolvedValue("/tmp/.openclaw/agents/default/sessions/test.jsonl"),
   mockUpload: vi.fn().mockResolvedValue(undefined),
@@ -46,6 +70,9 @@ vi.mock("../src/session-lock.js", () => ({
 
 describe("handler", () => {
   let originalBucket: string | undefined;
+  let originalProvider: string | undefined;
+  let originalAnthropicPath: string | undefined;
+  let originalTelegramTokenPath: string | undefined;
 
   beforeEach(() => {
     vi.resetModules();
@@ -59,7 +86,13 @@ describe("handler", () => {
 
     // Set required env var
     originalBucket = process.env.SESSION_BUCKET;
+    originalProvider = process.env.AI_PROVIDER;
+    originalAnthropicPath = process.env.SSM_ANTHROPIC_API_KEY;
+    originalTelegramTokenPath = process.env.SSM_TELEGRAM_BOT_TOKEN;
     process.env.SESSION_BUCKET = "test-session-bucket";
+    process.env.AI_PROVIDER = "anthropic";
+    delete process.env.SSM_ANTHROPIC_API_KEY;
+    delete process.env.SSM_TELEGRAM_BOT_TOKEN;
 
     mockRunAgent.mockResolvedValue({
       payloads: [{ text: "Hello from agent!" }],
@@ -72,6 +105,24 @@ describe("handler", () => {
       process.env.SESSION_BUCKET = originalBucket;
     } else {
       delete process.env.SESSION_BUCKET;
+    }
+
+    if (originalProvider !== undefined) {
+      process.env.AI_PROVIDER = originalProvider;
+    } else {
+      delete process.env.AI_PROVIDER;
+    }
+
+    if (originalAnthropicPath !== undefined) {
+      process.env.SSM_ANTHROPIC_API_KEY = originalAnthropicPath;
+    } else {
+      delete process.env.SSM_ANTHROPIC_API_KEY;
+    }
+
+    if (originalTelegramTokenPath !== undefined) {
+      process.env.SSM_TELEGRAM_BOT_TOKEN = originalTelegramTokenPath;
+    } else {
+      delete process.env.SSM_TELEGRAM_BOT_TOKEN;
     }
   });
 
@@ -86,6 +137,8 @@ describe("handler", () => {
       sessionId: "session-456",
       message: "Hello",
       channel: "web",
+      connectionId: "conn-123",
+      callbackUrl: "https://cb.example.com",
       ...overrides,
     };
   }
@@ -113,6 +166,9 @@ describe("handler", () => {
     expect(mockInitConfig).toHaveBeenCalledWith(
       expect.objectContaining({
         anthropicApiKey: "test-api-key",
+        runtimeConfig: expect.objectContaining({
+          provider: "anthropic",
+        }),
       }),
     );
   });
@@ -121,7 +177,7 @@ describe("handler", () => {
     const handler = await loadHandler();
     await handler(createEvent());
 
-    expect(mockDownload).toHaveBeenCalledWith("user-123", "session-456");
+    expect(mockDownload).toHaveBeenCalledWith("user-123", "anthropic-tools:web:session-456");
   });
 
   it("should call agent runner with correct params", async () => {
@@ -130,7 +186,7 @@ describe("handler", () => {
 
     expect(mockRunAgent).toHaveBeenCalledWith(
       expect.objectContaining({
-        sessionId: "session-456",
+        sessionId: "anthropic-tools:web:session-456",
         message: "What is 2+2?",
         channel: "web",
       }),
@@ -141,7 +197,7 @@ describe("handler", () => {
     const handler = await loadHandler();
     await handler(createEvent());
 
-    expect(mockUpload).toHaveBeenCalledWith("user-123", "session-456");
+    expect(mockUpload).toHaveBeenCalledWith("user-123", "anthropic-tools:web:session-456");
   });
 
   it("should return agent response", async () => {
@@ -160,7 +216,7 @@ describe("handler", () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toBe("Agent failed");
-    expect(mockUpload).toHaveBeenCalledWith("user-123", "session-456");
+    expect(mockUpload).toHaveBeenCalledWith("user-123", "anthropic-tools:web:session-456");
   });
 
   it("should pass model override when provided", async () => {
@@ -183,5 +239,93 @@ describe("handler", () => {
         disableTools: true,
       }),
     );
+  });
+
+  it("should not request anthropic secret when AI_PROVIDER is bedrock", async () => {
+    process.env.AI_PROVIDER = "bedrock";
+    mockResolveSecrets.mockResolvedValueOnce(new Map());
+    mockInitConfig.mockResolvedValueOnce({
+      configDir: "/tmp/.openclaw",
+      sessionsDir: "/tmp/.openclaw/agents/default/sessions",
+      config: { gateway: { mode: "local" } },
+      runtimeConfig: {
+        provider: "bedrock",
+        openclawProvider: "amazon-bedrock",
+        openclawApi: "bedrock-converse-stream",
+        openclawAuth: "aws-sdk",
+        defaultModel: "apac.anthropic.claude-sonnet-4-20250514-v1:0",
+        capability: "chat-only",
+        sessionNamespace: "bedrock-chat",
+        readiness: {
+          chatReady: true,
+          toolRuntimeReady: false,
+          gmailReady: false,
+        },
+        secretContract: {
+          requiresAnthropicApiKey: false,
+          supportsOpenclawAuthProfiles: true,
+          supportsOpenclawOauth: true,
+          supportsGoogleOauthClient: true,
+        },
+      },
+      gmailReady: false,
+      toolRuntimeReady: false,
+      sessionNamespace: "bedrock-chat",
+    });
+
+    const handler = await loadHandler();
+    await handler(createEvent());
+
+    expect(mockResolveSecrets).not.toHaveBeenCalled();
+  });
+
+  it("should return a clear message for Gmail requests when runtime is chat-only", async () => {
+    process.env.AI_PROVIDER = "bedrock";
+    mockInitConfig.mockResolvedValueOnce({
+      configDir: "/tmp/.openclaw",
+      sessionsDir: "/tmp/.openclaw/agents/default/sessions",
+      config: { gateway: { mode: "local" } },
+      runtimeConfig: {
+        provider: "bedrock",
+        openclawProvider: "amazon-bedrock",
+        openclawApi: "bedrock-converse-stream",
+        openclawAuth: "aws-sdk",
+        defaultModel: "apac.anthropic.claude-sonnet-4-20250514-v1:0",
+        capability: "chat-only",
+        sessionNamespace: "bedrock-chat",
+        readiness: {
+          chatReady: true,
+          toolRuntimeReady: false,
+          gmailReady: false,
+        },
+        secretContract: {
+          requiresAnthropicApiKey: false,
+          supportsOpenclawAuthProfiles: true,
+          supportsOpenclawOauth: true,
+          supportsGoogleOauthClient: true,
+        },
+      },
+      gmailReady: false,
+      toolRuntimeReady: false,
+      sessionNamespace: "bedrock-chat",
+    });
+
+    const handler = await loadHandler();
+    const result = await handler(createEvent({ message: "Please check my Gmail inbox" }));
+
+    expect(result.success).toBe(true);
+    expect(result.payloads?.[0]?.text).toContain("Gmail is not connected");
+    expect(mockRunAgent).not.toHaveBeenCalled();
+    expect(mockDownload).not.toHaveBeenCalled();
+  });
+
+  it("should fail fast when web delivery metadata is incomplete", async () => {
+    const handler = await loadHandler();
+    const result = await handler(
+      createEvent({ callbackUrl: "https://cb", connectionId: undefined }),
+    ) as LambdaAgentResponse;
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("Web delivery requires both connectionId and callbackUrl");
   });
 });

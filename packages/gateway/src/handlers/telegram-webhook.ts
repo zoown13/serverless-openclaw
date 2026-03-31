@@ -155,6 +155,7 @@ export async function handler(event: {
     message: text,
     channel: "telegram",
     connectionId,
+    telegramChatId: String(chatId),
     callbackUrl: process.env.WEBSOCKET_CALLBACK_URL ?? "",
     bridgeAuthToken: secrets.get(process.env.SSM_BRIDGE_AUTH_TOKEN!) ?? "",
     fetchFn: fetch as never,
@@ -174,13 +175,6 @@ export async function handler(event: {
     agentRuntime,
     invokeLambdaAgent,
     lambdaAgentFunctionArn: process.env.LAMBDA_AGENT_FUNCTION_ARN ?? "",
-    onLambdaResponse: async (payloads) => {
-      for (const payload of payloads ?? []) {
-        if (payload.text && botToken) {
-          await sendTelegramMessage(fetch as never, botToken, connectionId, payload.text);
-        }
-      }
-    },
   });
 
   console.log("[telegram] message routed successfully", { userId });

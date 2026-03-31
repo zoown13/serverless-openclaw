@@ -50,6 +50,13 @@ export class LambdaAgentStack extends cdk.Stack {
       environment: {
         HOME: "/tmp",
         SSM_ANTHROPIC_API_KEY: SSM_SECRETS.ANTHROPIC_API_KEY,
+        SSM_TELEGRAM_BOT_TOKEN: SSM_SECRETS.TELEGRAM_BOT_TOKEN,
+        SSM_OPENCLAW_AUTH_PROFILES_JSON:
+          "/serverless-openclaw/secrets/openclaw-auth-profiles-json",
+        SSM_OPENCLAW_OAUTH_JSON:
+          "/serverless-openclaw/secrets/openclaw-oauth-json",
+        SSM_GOOGLE_OAUTH_CLIENT_JSON:
+          "/serverless-openclaw/secrets/google-oauth-client-json",
         SESSION_BUCKET: props.dataBucket.bucketName,
         AI_PROVIDER: props.aiProvider ?? "anthropic",
         ...(props.aiModel ? { AI_MODEL: props.aiModel } : {}),
@@ -96,6 +103,16 @@ export class LambdaAgentStack extends cdk.Stack {
           "bedrock:ListFoundationModels",
         ],
         resources: ["*"],
+      }),
+    );
+
+    // IAM — WebSocket push (async invocation: agent pushes responses directly)
+    this.agentFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["execute-api:ManageConnections"],
+        resources: [
+          `arn:aws:execute-api:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:*/*`,
+        ],
       }),
     );
 

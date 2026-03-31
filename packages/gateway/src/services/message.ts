@@ -84,6 +84,23 @@ function assertLambdaInvokeAccepted(result: unknown): void {
   }
 }
 
+function hasValue(value?: string): boolean {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function validateLambdaDeliveryTarget(deps: RouteDeps): void {
+  if (deps.channel === "web") {
+    if (!hasValue(deps.connectionId) || !hasValue(deps.callbackUrl)) {
+      throw new Error("Web Lambda delivery requires both connectionId and callbackUrl");
+    }
+    return;
+  }
+
+  if (!hasValue(deps.telegramChatId) && !hasValue(deps.connectionId)) {
+    throw new Error("Telegram Lambda delivery requires telegramChatId or connectionId");
+  }
+}
+
 async function routeFargate(deps: RouteDeps, taskState: TaskStateItem | null): Promise<RouteResult> {
   if (taskState?.status === "Running" && taskState.publicIp) {
     try {
@@ -168,6 +185,7 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
     deps.invokeLambdaAgent &&
     deps.lambdaAgentFunctionArn
   ) {
+    validateLambdaDeliveryTarget(deps);
     const invokeResult = await deps.invokeLambdaAgent({
       functionArn: deps.lambdaAgentFunctionArn,
       userId: deps.userId,
@@ -204,6 +222,7 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
 
     // decision === "lambda": try Lambda, fall back to Fargate on failure
     try {
+      validateLambdaDeliveryTarget(deps);
       const invokeResult = await deps.invokeLambdaAgent({
         functionArn: deps.lambdaAgentFunctionArn,
         userId: deps.userId,

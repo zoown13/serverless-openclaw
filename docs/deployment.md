@@ -484,6 +484,16 @@ AI_PROVIDER=bedrock npx cdk deploy --all --profile $AWS_PROFILE --region $AWS_RE
 
 The SecretsStack skips the `AnthropicApiKey` SSM parameter when `AI_PROVIDER=bedrock`. Bedrock IAM permissions (`bedrock:InvokeModel`, `bedrock:InvokeModelWithResponseStream`) are provisioned on both Lambda and Fargate roles regardless of provider (no cost, avoids drift on provider switch).
 
+### Serverless Gmail / OAuth readiness
+
+For the Bedrock Lambda runtime, the current stabilization baseline is **chat-only**. Gmail and other tool-driven actions are not attempted unless the runtime is explicitly configured to be tool-ready.
+
+- `google-oauth-client-json` is only the OAuth app/client metadata
+- `openclaw-oauth-json` is the canonical user token secret used to mark Gmail as connected
+- `openclaw-auth-profiles-json` is reserved for the OpenClaw auth store and does **not** by itself make Gmail ready
+
+Important: the OAuth client JSON alone does **not** complete Gmail integration. A valid user token secret must be present in `openclaw-oauth-json`, otherwise the Lambda runtime degrades to chat-only and Gmail requests return an explicit "not connected yet" response instead of failing the whole cold start.
+
 ### Switching back to Anthropic
 
 ```bash

@@ -1,4 +1,20 @@
+import type { Channel } from "./types.js";
+
 export type AiProvider = "anthropic" | "bedrock";
+export type RuntimeCapability = "chat-only" | "tool-enabled";
+
+export interface RuntimeReadiness {
+  chatReady: boolean;
+  toolRuntimeReady: boolean;
+  gmailReady: boolean;
+}
+
+export interface SecretContract {
+  requiresAnthropicApiKey: boolean;
+  supportsOpenclawAuthProfiles: boolean;
+  supportsOpenclawOauth: boolean;
+  supportsGoogleOauthClient: boolean;
+}
 
 export interface ProviderConfig {
   provider: AiProvider;
@@ -6,6 +22,13 @@ export interface ProviderConfig {
   openclawApi: string;
   openclawAuth: string;
   defaultModel: string;
+}
+
+export interface ResolvedRuntimeConfig extends ProviderConfig {
+  capability: RuntimeCapability;
+  sessionNamespace: string;
+  readiness: RuntimeReadiness;
+  secretContract: SecretContract;
 }
 
 // Base Bedrock model ID (without CRIS prefix)
@@ -93,9 +116,55 @@ export function resolveModel(provider: "anthropic", aiModel?: string): string {
   return aiModel || PROVIDER_DEFAULTS[provider].defaultModel;
 }
 
+export function resolveRuntimeCapability(provider: AiProvider): RuntimeCapability {
+  return provider === "bedrock" ? "chat-only" : "tool-enabled";
+}
+
+export function resolveSessionNamespace(
+  provider: AiProvider,
+  capability: RuntimeCapability,
+): string {
+  return `${provider}-${capability === "tool-enabled" ? "tools" : "chat"}`;
+}
+
+export function buildRuntimeReadiness(
+  capability: RuntimeCapability,
+  overrides: Partial<RuntimeReadiness> = {},
+): RuntimeReadiness {
+  return {
+    chatReady: true,
+    toolRuntimeReady: capability === "tool-enabled",
+    gmailReady: false,
+    ...overrides,
+  };
+}
+
+export function applyRuntimeReadiness(
+  config: ResolvedRuntimeConfig,
+  readiness: RuntimeReadiness,
+  requestedCapability: RuntimeCapability = config.capability,
+): ResolvedRuntimeConfig {
+  const capability = readiness.toolRuntimeReady ? requestedCapability : "chat-only";
+
+  return {
+    ...config,
+    capability,
+    sessionNamespace: resolveSessionNamespace(config.provider, capability),
+    readiness,
+  };
+}
+
+export function buildRuntimeSessionId(
+  config: Pick<ResolvedRuntimeConfig, "sessionNamespace">,
+  channel: Channel,
+  baseSessionId: string,
+): string {
+  return `${config.sessionNamespace}:${channel}:${baseSessionId}`;
+}
+
 export function resolveProviderConfig(
   env?: { AI_PROVIDER?: string; AI_MODEL?: string; AWS_REGION?: string },
-): ProviderConfig {
+): ResolvedRuntimeConfig {
   const resolved = env ?? process.env;
   const raw = resolved.AI_PROVIDER ?? "anthropic";
   validateProvider(raw);
@@ -107,11 +176,22 @@ export function resolveProviderConfig(
       ? resolveBedrockModel(resolved.AWS_REGION, resolved.AI_MODEL)
       : resolveModel(raw, resolved.AI_MODEL);
 
+  const capability = resolveRuntimeCapability(raw);
+
   return {
     provider: raw,
     openclawProvider: defaults.openclawProvider,
     openclawApi: defaults.openclawApi,
     openclawAuth: defaults.openclawAuth,
     defaultModel,
+    capability,
+    sessionNamespace: resolveSessionNamespace(raw, capability),
+    readiness: buildRuntimeReadiness(capability),
+    secretContract: {
+      requiresAnthropicApiKey: raw === "anthropic",
+      supportsOpenclawAuthProfiles: true,
+      supportsOpenclawOauth: true,
+      supportsGoogleOauthClient: true,
+    },
   };
 }

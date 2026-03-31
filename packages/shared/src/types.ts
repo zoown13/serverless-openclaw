@@ -85,6 +85,8 @@ export interface LambdaAgentEvent {
   userId: string;
   sessionId: string;
   connectionId?: string;
+  /** WebSocket API Gateway callback URL for direct push (async invocation) */
+  callbackUrl?: string;
   message: string;
   model?: string;
   disableTools?: boolean;

@@ -402,6 +402,38 @@ describe("message service", () => {
       await expect(routeMessage(deps)).rejects.toThrow("Agent timeout");
     });
 
+    it("should fail fast when web lambda delivery metadata is incomplete", async () => {
+      const mockInvokeLambda = vi.fn().mockResolvedValue({ accepted: true });
+      const deps = makeDeps({
+        agentRuntime: "lambda",
+        invokeLambdaAgent: mockInvokeLambda,
+        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+        callbackUrl: "",
+      });
+
+      await expect(routeMessage(deps)).rejects.toThrow(
+        "Web Lambda delivery requires both connectionId and callbackUrl",
+      );
+      expect(mockInvokeLambda).not.toHaveBeenCalled();
+    });
+
+    it("should fail fast when telegram lambda delivery metadata is incomplete", async () => {
+      const mockInvokeLambda = vi.fn().mockResolvedValue({ accepted: true });
+      const deps = makeDeps({
+        agentRuntime: "lambda",
+        invokeLambdaAgent: mockInvokeLambda,
+        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+        channel: "telegram",
+        connectionId: "",
+        callbackUrl: "",
+      });
+
+      await expect(routeMessage(deps)).rejects.toThrow(
+        "Telegram Lambda delivery requires telegramChatId or connectionId",
+      );
+      expect(mockInvokeLambda).not.toHaveBeenCalled();
+    });
+
     it("should use Fargate path when agentRuntime is 'fargate'", async () => {
       const deps = makeDeps({
         agentRuntime: "fargate",

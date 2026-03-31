@@ -106,14 +106,6 @@ export async function handler(event: {
       agentRuntime,
       invokeLambdaAgent,
       lambdaAgentFunctionArn: process.env.LAMBDA_AGENT_FUNCTION_ARN ?? "",
-      onLambdaResponse: async (payloads) => {
-        for (const payload of payloads ?? []) {
-          if (payload.text) {
-            await pushToConnection(connectionId, { type: "message", content: payload.text });
-          }
-        }
-        await pushToConnection(connectionId, { type: "status", status: "Idle" });
-      },
     });
 
     if (result === "started" || result === "queued") {

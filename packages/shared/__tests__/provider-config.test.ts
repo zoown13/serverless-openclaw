@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  buildRuntimeSessionId,
   resolveCrisPrefix,
   resolveBedrockModel,
   resolveProviderConfig,
@@ -109,6 +110,9 @@ describe("resolveProviderConfig", () => {
     expect(config.defaultModel).toBe(`eu.${BEDROCK_BASE_MODEL}`);
     expect(config.openclawProvider).toBe("amazon-bedrock");
     expect(config.openclawApi).toBe("bedrock-converse-stream");
+    expect(config.capability).toBe("chat-only");
+    expect(config.sessionNamespace).toBe("bedrock-chat");
+    expect(config.secretContract.requiresAnthropicApiKey).toBe(false);
   });
 
   it("uses AI_MODEL override over region resolution for bedrock", () => {
@@ -133,6 +137,9 @@ describe("resolveProviderConfig", () => {
     expect(config.openclawProvider).toBe("anthropic");
     expect(config.openclawApi).toBe("anthropic");
     expect(config.defaultModel).toBe("claude-sonnet-4-20250514");
+    expect(config.capability).toBe("tool-enabled");
+    expect(config.sessionNamespace).toBe("anthropic-tools");
+    expect(config.readiness.toolRuntimeReady).toBe(true);
   });
 
   it("applies AI_MODEL override for anthropic", () => {
@@ -151,5 +158,12 @@ describe("resolveProviderConfig", () => {
   it("does not expose bedrockDiscovery on the config object", () => {
     const config = resolveProviderConfig({ AI_PROVIDER: "bedrock" });
     expect(config).not.toHaveProperty("bedrockDiscovery");
+  });
+
+  it("builds runtime session ids with namespace and channel", () => {
+    const config = resolveProviderConfig({ AI_PROVIDER: "bedrock" });
+    expect(buildRuntimeSessionId(config, "telegram", "session-123")).toBe(
+      "bedrock-chat:telegram:session-123",
+    );
   });
 });

@@ -180,6 +180,45 @@ function buildToolUnavailableMessage(runtimeConfig: ResolvedRuntimeConfig): stri
   return "This serverless runtime is currently chat-only for stability. Gmail and other tool actions are disabled on the Bedrock Lambda path right now.";
 }
 
+function buildEmailTokenBudgetPrompt(runtimeConfig: ResolvedRuntimeConfig): string | undefined {
+  if (!runtimeConfig.readiness.gmailReady || !runtimeConfig.readiness.toolRuntimeReady) {
+    return undefined;
+  }
+
+  const budget = runtimeConfig.emailTokenBudget;
+  const bodyAccessInstruction = budget.requireExplicitBodyAccess
+    ? "Do not read full message bodies or attachments unless the user explicitly asks for a specific message."
+    : "Only read a message body when the task truly needs it, and keep the scope narrow.";
+
+  return [
+    "When handling Gmail or email requests, operate in headers-first safe mode to control token usage.",
+    `Inspect at most ${budget.maxMessages} messages per step.`,
+    `Prefer sender, subject, date, and snippet previews truncated to ${budget.maxSnippetChars} characters.`,
+    bodyAccessInstruction,
+    `If body access is needed, read at most ${budget.maxBodyChars} characters from one message at a time and summarize incrementally before reading more.`,
+  ].join(" ");
+}
+
+function buildExtraSystemPrompt(
+  event: LambdaAgentEvent,
+  runtimeConfig: ResolvedRuntimeConfig,
+): string | undefined {
+  const prompts: string[] = [];
+
+  if (event.channel === "telegram" || !runtimeConfig.readiness.toolRuntimeReady) {
+    prompts.push(
+      "You are replying inside a serverless runtime. Respond with plain text only. Do not output function_calls blocks, XML tool tags, or shell commands. Do not ask the user to restart gateway/daemon/processes. If execution capabilities are unavailable, explain briefly and continue with a normal assistant answer. Do not claim Gmail or other tools are connected unless they are explicitly available.",
+    );
+  }
+
+  const emailTokenBudgetPrompt = buildEmailTokenBudgetPrompt(runtimeConfig);
+  if (emailTokenBudgetPrompt) {
+    prompts.push(emailTokenBudgetPrompt);
+  }
+
+  return prompts.length > 0 ? prompts.join(" ") : undefined;
+}
+
 async function ensureInitialized(): Promise<Awaited<ReturnType<typeof initConfig>>> {
   if (initializedConfig) {
     return initializedConfig;
@@ -353,10 +392,7 @@ export async function handler(
           event.channel === "telegram" ||
           !runtimeConfig.readiness.toolRuntimeReady,
         channel: event.channel,
-        extraSystemPrompt:
-          event.channel === "telegram" || !runtimeConfig.readiness.toolRuntimeReady
-            ? "You are replying inside a serverless runtime. Respond with plain text only. Do not output function_calls blocks, XML tool tags, or shell commands. Do not ask the user to restart gateway/daemon/processes. If execution capabilities are unavailable, explain briefly and continue with a normal assistant answer. Do not claim Gmail or other tools are connected unless they are explicitly available."
-          : undefined,
+        extraSystemPrompt: buildExtraSystemPrompt(event, runtimeConfig),
       });
 
       // Always upload session after run (even if no payloads)

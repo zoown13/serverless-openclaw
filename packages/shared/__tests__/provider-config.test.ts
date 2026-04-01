@@ -140,6 +140,13 @@ describe("resolveProviderConfig", () => {
     expect(config.capability).toBe("tool-enabled");
     expect(config.sessionNamespace).toBe("anthropic-tools");
     expect(config.readiness.toolRuntimeReady).toBe(true);
+    expect(config.emailTokenBudget).toEqual({
+      mode: "headers-first",
+      maxMessages: 5,
+      maxSnippetChars: 240,
+      maxBodyChars: 1600,
+      requireExplicitBodyAccess: true,
+    });
   });
 
   it("applies AI_MODEL override for anthropic", () => {
@@ -165,5 +172,23 @@ describe("resolveProviderConfig", () => {
     expect(buildRuntimeSessionId(config, "telegram", "session-123")).toBe(
       "bedrock-chat:telegram:session-123",
     );
+  });
+
+  it("applies Gmail token budget overrides from env", () => {
+    const config = resolveProviderConfig({
+      AI_PROVIDER: "anthropic",
+      GMAIL_TOOL_MAX_MESSAGES: "3",
+      GMAIL_TOOL_MAX_SNIPPET_CHARS: "120",
+      GMAIL_TOOL_MAX_BODY_CHARS: "800",
+      GMAIL_TOOL_REQUIRE_EXPLICIT_BODY: "false",
+    });
+
+    expect(config.emailTokenBudget).toEqual({
+      mode: "headers-first",
+      maxMessages: 3,
+      maxSnippetChars: 120,
+      maxBodyChars: 800,
+      requireExplicitBodyAccess: false,
+    });
   });
 });

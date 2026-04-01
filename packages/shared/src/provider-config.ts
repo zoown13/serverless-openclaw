@@ -3,6 +3,14 @@ import type { Channel } from "./types.js";
 export type AiProvider = "anthropic" | "bedrock";
 export type RuntimeCapability = "chat-only" | "tool-enabled";
 
+export interface EmailTokenBudget {
+  mode: "headers-first";
+  maxMessages: number;
+  maxSnippetChars: number;
+  maxBodyChars: number;
+  requireExplicitBodyAccess: boolean;
+}
+
 export interface RuntimeReadiness {
   chatReady: boolean;
   toolRuntimeReady: boolean;
@@ -24,10 +32,21 @@ export interface ProviderConfig {
   defaultModel: string;
 }
 
+interface ProviderRuntimeEnv {
+  AI_PROVIDER?: string;
+  AI_MODEL?: string;
+  AWS_REGION?: string;
+  GMAIL_TOOL_MAX_MESSAGES?: string;
+  GMAIL_TOOL_MAX_SNIPPET_CHARS?: string;
+  GMAIL_TOOL_MAX_BODY_CHARS?: string;
+  GMAIL_TOOL_REQUIRE_EXPLICIT_BODY?: string;
+}
+
 export interface ResolvedRuntimeConfig extends ProviderConfig {
   capability: RuntimeCapability;
   sessionNamespace: string;
   readiness: RuntimeReadiness;
+  emailTokenBudget: EmailTokenBudget;
   secretContract: SecretContract;
 }
 
@@ -162,10 +181,45 @@ export function buildRuntimeSessionId(
   return `${config.sessionNamespace}:${channel}:${baseSessionId}`;
 }
 
+function parsePositiveInteger(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseBooleanFlag(value: string | undefined, fallback: boolean): boolean {
+  if (value === undefined) return fallback;
+
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return fallback;
+}
+
+export function resolveEmailTokenBudget(env?: ProviderRuntimeEnv): EmailTokenBudget {
+  const resolved = (env ?? process.env) as ProviderRuntimeEnv;
+
+  return {
+    mode: "headers-first",
+    maxMessages: parsePositiveInteger(resolved.GMAIL_TOOL_MAX_MESSAGES, 5),
+    maxSnippetChars: parsePositiveInteger(
+      resolved.GMAIL_TOOL_MAX_SNIPPET_CHARS,
+      240,
+    ),
+    maxBodyChars: parsePositiveInteger(
+      resolved.GMAIL_TOOL_MAX_BODY_CHARS,
+      1600,
+    ),
+    requireExplicitBodyAccess: parseBooleanFlag(
+      resolved.GMAIL_TOOL_REQUIRE_EXPLICIT_BODY,
+      true,
+    ),
+  };
+}
+
 export function resolveProviderConfig(
-  env?: { AI_PROVIDER?: string; AI_MODEL?: string; AWS_REGION?: string },
+  env?: ProviderRuntimeEnv,
 ): ResolvedRuntimeConfig {
-  const resolved = env ?? process.env;
+  const resolved = (env ?? process.env) as ProviderRuntimeEnv;
   const raw = resolved.AI_PROVIDER ?? "anthropic";
   validateProvider(raw);
 
@@ -187,6 +241,7 @@ export function resolveProviderConfig(
     capability,
     sessionNamespace: resolveSessionNamespace(raw, capability),
     readiness: buildRuntimeReadiness(capability),
+    emailTokenBudget: resolveEmailTokenBudget(resolved),
     secretContract: {
       requiresAnthropicApiKey: raw === "anthropic",
       supportsOpenclawAuthProfiles: true,

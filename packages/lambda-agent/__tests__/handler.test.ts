@@ -20,6 +20,13 @@ const { mockInitConfig, mockDownload, mockUpload, mockResolveSecrets, mockRunAge
         toolRuntimeReady: true,
         gmailReady: true,
       },
+      emailTokenBudget: {
+        mode: "headers-first",
+        maxMessages: 5,
+        maxSnippetChars: 240,
+        maxBodyChars: 1600,
+        requireExplicitBodyAccess: true,
+      },
       secretContract: {
         requiresAnthropicApiKey: true,
         supportsOpenclawAuthProfiles: true,
@@ -277,6 +284,13 @@ describe("handler", () => {
           toolRuntimeReady: false,
           gmailReady: false,
         },
+        emailTokenBudget: {
+          mode: "headers-first",
+          maxMessages: 5,
+          maxSnippetChars: 240,
+          maxBodyChars: 1600,
+          requireExplicitBodyAccess: true,
+        },
         secretContract: {
           requiresAnthropicApiKey: false,
           supportsOpenclawAuthProfiles: true,
@@ -314,6 +328,13 @@ describe("handler", () => {
           toolRuntimeReady: false,
           gmailReady: false,
         },
+        emailTokenBudget: {
+          mode: "headers-first",
+          maxMessages: 5,
+          maxSnippetChars: 240,
+          maxBodyChars: 1600,
+          requireExplicitBodyAccess: true,
+        },
         secretContract: {
           requiresAnthropicApiKey: false,
           supportsOpenclawAuthProfiles: true,
@@ -343,6 +364,22 @@ describe("handler", () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toBe("Web delivery requires both connectionId and callbackUrl");
+  });
+
+  it("should add Gmail token budget guidance when tool runtime is ready", async () => {
+    const handler = await loadHandler();
+    await handler(createEvent({ message: "Summarize my recent Gmail messages" }));
+
+    expect(mockRunAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        extraSystemPrompt: expect.stringContaining("Inspect at most 5 messages"),
+      }),
+    );
+    expect(mockRunAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        extraSystemPrompt: expect.stringContaining("Do not read full message bodies"),
+      }),
+    );
   });
 
   it("should log Telegram delivery success", async () => {

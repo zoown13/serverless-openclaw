@@ -41,6 +41,9 @@ const { mockInitConfig, mockDownload, mockUpload, mockResolveSecrets, mockRunAge
   mockRelease: vi.fn().mockResolvedValue(undefined),
 }));
 
+const fetchMock = vi.fn();
+vi.stubGlobal("fetch", fetchMock);
+
 vi.mock("../src/config-init.js", () => ({
   initConfig: (...args: unknown[]) => mockInitConfig(...args),
 }));
@@ -73,6 +76,8 @@ describe("handler", () => {
   let originalProvider: string | undefined;
   let originalAnthropicPath: string | undefined;
   let originalTelegramTokenPath: string | undefined;
+  let infoSpy: ReturnType<typeof vi.spyOn>;
+  let errorSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     vi.resetModules();
@@ -83,6 +88,14 @@ describe("handler", () => {
     mockRunAgent.mockClear();
     mockAcquire.mockClear();
     mockRelease.mockClear();
+    fetchMock.mockReset();
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: vi.fn().mockResolvedValue("ok"),
+    });
+    infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
     // Set required env var
     originalBucket = process.env.SESSION_BUCKET;
@@ -101,6 +114,9 @@ describe("handler", () => {
   });
 
   afterEach(() => {
+    infoSpy.mockRestore();
+    errorSpy.mockRestore();
+
     if (originalBucket !== undefined) {
       process.env.SESSION_BUCKET = originalBucket;
     } else {
@@ -327,5 +343,70 @@ describe("handler", () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toBe("Web delivery requires both connectionId and callbackUrl");
+  });
+
+  it("should log Telegram delivery success", async () => {
+    process.env.SSM_TELEGRAM_BOT_TOKEN = "/serverless-openclaw/secrets/telegram-bot-token";
+    mockResolveSecrets.mockResolvedValue(
+      new Map([
+        ["/serverless-openclaw/secrets/anthropic-api-key", "test-api-key"],
+        ["/serverless-openclaw/secrets/telegram-bot-token", "telegram-token"],
+      ]),
+    );
+
+    const handler = await loadHandler();
+    const result = await handler(
+      createEvent({
+        channel: "telegram",
+        connectionId: undefined,
+        callbackUrl: undefined,
+        telegramChatId: "8585874705",
+      }),
+    ) as LambdaAgentResponse;
+
+    expect(result.success).toBe(true);
+    expect(fetchMock).toHaveBeenCalled();
+    expect(infoSpy).toHaveBeenCalledWith(
+      "[telegram] delivered message",
+      expect.objectContaining({
+        chatId: "8585874705",
+        status: 200,
+      }),
+    );
+  });
+
+  it("should log Telegram delivery failures for non-ok responses", async () => {
+    process.env.SSM_TELEGRAM_BOT_TOKEN = "/serverless-openclaw/secrets/telegram-bot-token";
+    mockResolveSecrets.mockResolvedValue(
+      new Map([
+        ["/serverless-openclaw/secrets/anthropic-api-key", "test-api-key"],
+        ["/serverless-openclaw/secrets/telegram-bot-token", "telegram-token"],
+      ]),
+    );
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      text: vi.fn().mockResolvedValue("Bad Request: chat not found"),
+    });
+
+    const handler = await loadHandler();
+    const result = await handler(
+      createEvent({
+        channel: "telegram",
+        connectionId: undefined,
+        callbackUrl: undefined,
+        telegramChatId: "8585874705",
+      }),
+    ) as LambdaAgentResponse;
+
+    expect(result.success).toBe(true);
+    expect(errorSpy).toHaveBeenCalledWith(
+      "[telegram] failed to deliver message",
+      expect.objectContaining({
+        chatId: "8585874705",
+        status: 400,
+        body: "Bad Request: chat not found",
+      }),
+    );
   });
 });

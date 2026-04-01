@@ -60,13 +60,35 @@ function normalizeTelegramChatId(chatId?: string): string | undefined {
 
 async function pushToTelegram(botToken: string, chatId: string, text: string): Promise<void> {
   try {
-    await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+    const response = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chat_id: chatId, text }),
     });
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      console.error("[telegram] failed to deliver message", {
+        chatId,
+        status: response.status,
+        body,
+        textLength: text.length,
+      });
+      return;
+    }
+
+    console.info("[telegram] delivered message", {
+      chatId,
+      status: response.status,
+      textLength: text.length,
+    });
   } catch {
     // Telegram failures should not block agent response.
+    console.error("[telegram] failed to deliver message", {
+      chatId,
+      error: "network-error",
+      textLength: text.length,
+    });
   }
 }
 

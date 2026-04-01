@@ -461,6 +461,7 @@ describe("message service", () => {
         agentRuntime: "both",
         invokeLambdaAgent: mockInvokeLambda,
         lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+        message: "check my gmail inbox",
         getTaskState: vi.fn().mockResolvedValue({
           PK: "USER#user-123",
           status: "Running",
@@ -476,6 +477,15 @@ describe("message service", () => {
       expect(result).toBe("sent");
       expect(mockFetch).toHaveBeenCalled();
       expect(mockInvokeLambda).not.toHaveBeenCalled();
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(body.runtimeClass).toBe("tool-enabled");
+      expect(body.emailTokenBudget).toEqual({
+        mode: "headers-first",
+        maxMessages: 5,
+        maxSnippetChars: 240,
+        maxBodyChars: 1600,
+        requireExplicitBodyAccess: true,
+      });
     });
 
     it("should use Lambda when AGENT_RUNTIME=both and no Fargate running", async () => {
@@ -498,6 +508,33 @@ describe("message service", () => {
       expect(deps.startTask).not.toHaveBeenCalled();
     });
 
+    it("should keep normal chat on Lambda when AGENT_RUNTIME=both and Fargate is already Running", async () => {
+      const mockInvokeLambda = vi.fn().mockResolvedValue({
+        success: true,
+        payloads: [{ text: "Lambda response" }],
+      });
+      const deps = makeDeps({
+        agentRuntime: "both",
+        invokeLambdaAgent: mockInvokeLambda,
+        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+        message: "hello there",
+        getTaskState: vi.fn().mockResolvedValue({
+          PK: "USER#user-123",
+          status: "Running",
+          publicIp: "1.2.3.4",
+          taskArn: "arn:task",
+          startedAt: "2024-01-01T00:00:00Z",
+          lastActivity: "2024-01-01T00:00:00Z",
+        }),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("lambda");
+      expect(mockInvokeLambda).toHaveBeenCalled();
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
     it("should start Fargate when AGENT_RUNTIME=both and message has /heavy hint", async () => {
       const mockInvokeLambda = vi.fn();
       const deps = makeDeps({
@@ -514,6 +551,34 @@ describe("message service", () => {
       expect(mockInvokeLambda).not.toHaveBeenCalled();
       expect(deps.startTask).toHaveBeenCalled();
       expect(deps.savePendingMessage).toHaveBeenCalled();
+      expect(deps.savePendingMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: "do something",
+        }),
+      );
+    });
+
+    it("should route Gmail requests to Fargate when AGENT_RUNTIME=both", async () => {
+      const mockInvokeLambda = vi.fn();
+      const deps = makeDeps({
+        agentRuntime: "both",
+        invokeLambdaAgent: mockInvokeLambda,
+        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+        message: "please read my latest gmail messages",
+        getTaskState: vi.fn().mockResolvedValue(null),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("started");
+      expect(mockInvokeLambda).not.toHaveBeenCalled();
+      expect(deps.startTask).toHaveBeenCalled();
+      expect(deps.savePendingMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: "please read my latest gmail messages",
+          connectionId: "conn-1",
+        }),
+      );
     });
 
     it("should fallback to Fargate when AGENT_RUNTIME=both and Lambda fails", async () => {

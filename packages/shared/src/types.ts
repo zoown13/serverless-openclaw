@@ -20,6 +20,15 @@ export interface ServerMessage {
 
 // === Channel ===
 export type Channel = "web" | "telegram";
+export type RuntimeClass = "chat-only" | "tool-enabled";
+
+export interface EmailTokenBudgetPolicy {
+  mode: "headers-first";
+  maxMessages: number;
+  maxSnippetChars: number;
+  maxBodyChars: number;
+  requireExplicitBodyAccess: boolean;
+}
 
 // === DynamoDB Items (architecture.md §5) ===
 export interface ConversationItem {
@@ -74,6 +83,8 @@ export interface BridgeMessageRequest {
   channel: Channel;
   connectionId: string;
   callbackUrl: string;
+  runtimeClass?: RuntimeClass;
+  emailTokenBudget?: EmailTokenBudgetPolicy;
 }
 
 export interface BridgeHealthResponse {

@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { classifyRoute, stripRouteHint } from "../../src/services/route-classifier.js";
+import {
+  classifyRoute,
+  classifyRouteRuntimeClass,
+  stripRouteHint,
+} from "../../src/services/route-classifier.js";
 import type { TaskStateItem } from "@serverless-openclaw/shared";
 
 const runningTask: TaskStateItem = {
@@ -12,9 +16,9 @@ const runningTask: TaskStateItem = {
 };
 
 describe("classifyRoute", () => {
-  it("returns 'fargate-reuse' when taskState is Running with publicIp", () => {
+  it("returns 'lambda' for normal chat even when taskState is Running with publicIp", () => {
     const result = classifyRoute({ message: "hello", taskState: runningTask });
-    expect(result).toBe("fargate-reuse");
+    expect(result).toBe("lambda");
   });
 
   it("returns 'lambda' when taskState is Running WITHOUT publicIp", () => {
@@ -40,6 +44,14 @@ describe("classifyRoute", () => {
     expect(result).toBe("lambda");
   });
 
+  it("returns 'fargate-reuse' for tool-heavy requests when taskState is Running", () => {
+    const result = classifyRoute({
+      message: "check my gmail inbox",
+      taskState: runningTask,
+    });
+    expect(result).toBe("fargate-reuse");
+  });
+
   it("returns 'fargate-new' when message starts with '/heavy'", () => {
     const result = classifyRoute({ message: "/heavy do something", taskState: null });
     expect(result).toBe("fargate-new");
@@ -58,6 +70,28 @@ describe("classifyRoute", () => {
   it("returns 'lambda' for normal messages", () => {
     const result = classifyRoute({ message: "what is the weather?", taskState: null });
     expect(result).toBe("lambda");
+  });
+
+  it("returns 'fargate-new' for Gmail requests", () => {
+    const result = classifyRoute({
+      message: "please summarize my latest emails",
+      taskState: null,
+    });
+    expect(result).toBe("fargate-new");
+  });
+});
+
+describe("classifyRouteRuntimeClass", () => {
+  it("classifies normal chat as chat-only", () => {
+    expect(classifyRouteRuntimeClass("hello there")).toBe("chat-only");
+  });
+
+  it("classifies /heavy hint as tool-enabled", () => {
+    expect(classifyRouteRuntimeClass("/heavy analyze this")).toBe("tool-enabled");
+  });
+
+  it("classifies browser requests as tool-enabled", () => {
+    expect(classifyRouteRuntimeClass("browse this website and summarize it")).toBe("tool-enabled");
   });
 });
 

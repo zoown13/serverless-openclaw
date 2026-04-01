@@ -126,6 +126,44 @@ describe("Bridge HTTP Server", () => {
 
       expect(deps.lifecycle.updateLastActivity).toHaveBeenCalled();
     });
+
+    it("should prepend tool-enabled Gmail guardrails before forwarding", async () => {
+      const res = await request(app)
+        .post("/message")
+        .set("Authorization", "Bearer test-secret-token")
+        .send({
+          userId: "user-1",
+          message: "Summarize my recent inbox",
+          channel: "web",
+          connectionId: "conn-123",
+          callbackUrl: "https://example.com/prod",
+          runtimeClass: "tool-enabled",
+          emailTokenBudget: {
+            mode: "headers-first",
+            maxMessages: 3,
+            maxSnippetChars: 120,
+            maxBodyChars: 800,
+            requireExplicitBodyAccess: true,
+          },
+        });
+
+      expect(res.status).toBe(202);
+
+      await vi.waitFor(() => {
+        expect(deps.openclawClient.sendMessage).toHaveBeenCalledWith(
+          "user-1",
+          expect.stringContaining("Inspect at most 3 items per step"),
+        );
+      });
+      expect(deps.openclawClient.sendMessage).toHaveBeenCalledWith(
+        "user-1",
+        expect.stringContaining("Do not read full message bodies or attachments unless the user explicitly asks for a specific message."),
+      );
+      expect(deps.openclawClient.sendMessage).toHaveBeenCalledWith(
+        "user-1",
+        expect.stringContaining("Summarize my recent inbox"),
+      );
+    });
   });
 
   describe("GET /status", () => {

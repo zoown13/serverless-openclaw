@@ -1,7 +1,11 @@
 import express from "express";
 import { createAuthMiddleware } from "./auth-middleware.js";
 import { publishMessageMetrics, publishFirstResponseTime } from "./metrics.js";
-import type { BridgeMessageRequest, ServerMessage, Channel } from "@serverless-openclaw/shared";
+import type {
+  BridgeMessageRequest,
+  ServerMessage,
+  Channel,
+} from "@serverless-openclaw/shared";
 
 export interface BridgeDeps {
   authToken: string;
@@ -25,6 +29,25 @@ export interface BridgeDeps {
 }
 
 const startTime = Date.now();
+
+function buildToolEnabledPrefix(
+  body: Partial<BridgeMessageRequest>,
+): string | undefined {
+  if (body.runtimeClass !== "tool-enabled") {
+    return undefined;
+  }
+
+  const budget = body.emailTokenBudget;
+  if (!budget) {
+    return "[System: Use tools incrementally. Prefer headers and summaries first, and avoid large email bodies unless explicitly requested.]";
+  }
+
+  const bodyAccessInstruction = budget.requireExplicitBodyAccess
+    ? "Do not read full message bodies or attachments unless the user explicitly asks for a specific message."
+    : "Only read a message body when the task truly needs it, and keep the scope narrow.";
+
+  return `[System: Operate in headers-first safe mode to control Gmail and browser token usage. Inspect at most ${budget.maxMessages} items per step. Prefer sender, subject, date, and snippet previews truncated to ${budget.maxSnippetChars} characters. ${bodyAccessInstruction} If body access is needed, read at most ${budget.maxBodyChars} characters from one item at a time and summarize incrementally before reading more.]`;
+}
 
 export function createApp(deps: BridgeDeps): express.Express {
   const app = express();
@@ -54,11 +77,21 @@ export function createApp(deps: BridgeDeps): express.Express {
     void (async () => {
       const msgStart = Date.now();
       try {
-        let prefix = deps.getAndClearHistoryPrefix?.() ?? "";
-        if (body.channel === "telegram") {
-          prefix += "[System: Respond in plain text only. Do not use markdown formatting such as **bold**, *italic*, ```code```, etc.]\n";
+        const prefixes: string[] = [];
+        const historyPrefix = deps.getAndClearHistoryPrefix?.();
+        if (historyPrefix) {
+          prefixes.push(historyPrefix.trimEnd());
         }
-        const messageToSend = prefix ? prefix + body.message! : body.message!;
+        if (body.channel === "telegram") {
+          prefixes.push("[System: Respond in plain text only. Do not use markdown formatting such as **bold**, *italic*, ```code```, etc.]");
+        }
+        const toolEnabledPrefix = buildToolEnabledPrefix(body);
+        if (toolEnabledPrefix) {
+          prefixes.push(toolEnabledPrefix);
+        }
+        const messageToSend = prefixes.length > 0
+          ? `${prefixes.join("\n")}\n${body.message!}`
+          : body.message!;
         const generator = deps.openclawClient.sendMessage(
           body.userId!,
           messageToSend,

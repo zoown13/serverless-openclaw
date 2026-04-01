@@ -9,12 +9,18 @@ import {
 } from "@serverless-openclaw/shared";
 import type {
   BridgeMessageRequest,
+  EmailTokenBudgetPolicy,
   PendingMessageItem,
+  RuntimeClass,
   TaskStateItem,
 } from "@serverless-openclaw/shared";
 import type { StartTaskParams } from "./container.js";
 import type { InvokeLambdaAgentParams } from "./lambda-agent.js";
-import { classifyRoute, stripRouteHint } from "./route-classifier.js";
+import {
+  classifyRoute,
+  classifyRouteRuntimeClass,
+  stripRouteHint,
+} from "./route-classifier.js";
 
 type FetchFn = (url: string, init: RequestInit) => Promise<{ ok: boolean; status: number; statusText: string }>;
 type Send = (command: unknown) => Promise<unknown>;
@@ -88,6 +94,71 @@ function hasValue(value?: string): boolean {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+function parsePositiveInteger(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseBooleanFlag(value: string | undefined, fallback: boolean): boolean {
+  if (value === undefined) return fallback;
+
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return fallback;
+}
+
+function resolveEmailTokenBudgetPolicy(): EmailTokenBudgetPolicy {
+  return {
+    mode: "headers-first",
+    maxMessages: parsePositiveInteger(process.env.GMAIL_TOOL_MAX_MESSAGES, 5),
+    maxSnippetChars: parsePositiveInteger(
+      process.env.GMAIL_TOOL_MAX_SNIPPET_CHARS,
+      240,
+    ),
+    maxBodyChars: parsePositiveInteger(
+      process.env.GMAIL_TOOL_MAX_BODY_CHARS,
+      1600,
+    ),
+    requireExplicitBodyAccess: parseBooleanFlag(
+      process.env.GMAIL_TOOL_REQUIRE_EXPLICIT_BODY,
+      true,
+    ),
+  };
+}
+
+function resolveBridgeConnectionId(deps: RouteDeps): string {
+  if (deps.channel === "telegram") {
+    if (hasValue(deps.connectionId)) {
+      return deps.connectionId;
+    }
+    if (hasValue(deps.telegramChatId)) {
+      return `telegram:${deps.telegramChatId!.trim()}`;
+    }
+  }
+
+  return deps.connectionId;
+}
+
+function buildBridgeMessageRequest(
+  deps: RouteDeps,
+  message: string,
+  runtimeClass: RuntimeClass,
+): BridgeMessageRequest {
+  return {
+    userId: deps.userId,
+    message,
+    channel: deps.channel,
+    connectionId: resolveBridgeConnectionId(deps),
+    callbackUrl: deps.callbackUrl,
+    runtimeClass,
+    emailTokenBudget:
+      runtimeClass === "tool-enabled"
+        ? resolveEmailTokenBudgetPolicy()
+        : undefined,
+  };
+}
+
 function validateLambdaDeliveryTarget(deps: RouteDeps): void {
   if (deps.channel === "web") {
     if (!hasValue(deps.connectionId) || !hasValue(deps.callbackUrl)) {
@@ -101,16 +172,25 @@ function validateLambdaDeliveryTarget(deps: RouteDeps): void {
   }
 }
 
-async function routeFargate(deps: RouteDeps, taskState: TaskStateItem | null): Promise<RouteResult> {
+async function routeFargate(
+  deps: RouteDeps,
+  taskState: TaskStateItem | null,
+  runtimeClass: RuntimeClass,
+): Promise<RouteResult> {
+  const bridgeMessage = buildBridgeMessageRequest(
+    deps,
+    deps.message,
+    runtimeClass,
+  );
+
   if (taskState?.status === "Running" && taskState.publicIp) {
     try {
-      await sendToBridge(deps.fetchFn, taskState.publicIp, deps.bridgeAuthToken, {
-        userId: deps.userId,
-        message: deps.message,
-        channel: deps.channel,
-        connectionId: deps.connectionId,
-        callbackUrl: deps.callbackUrl,
-      });
+      await sendToBridge(
+        deps.fetchFn,
+        taskState.publicIp,
+        deps.bridgeAuthToken,
+        bridgeMessage,
+      );
       return "sent";
     } catch (err) {
       console.warn(`Bridge unreachable at ${taskState.publicIp}, falling back to pending queue`, err);
@@ -122,13 +202,12 @@ async function routeFargate(deps: RouteDeps, taskState: TaskStateItem | null): P
     const prewarm = await deps.getTaskState(PREWARM_USER_ID);
     if (prewarm?.status === "Running" && prewarm.publicIp) {
       try {
-        await sendToBridge(deps.fetchFn, prewarm.publicIp, deps.bridgeAuthToken, {
-          userId: deps.userId,
-          message: deps.message,
-          channel: deps.channel,
-          connectionId: deps.connectionId,
-          callbackUrl: deps.callbackUrl,
-        });
+        await sendToBridge(
+          deps.fetchFn,
+          prewarm.publicIp,
+          deps.bridgeAuthToken,
+          bridgeMessage,
+        );
         // Transfer ownership: delete prewarm, create user entry
         await deps.deleteTaskState(PREWARM_USER_ID);
         await deps.putTaskState({
@@ -154,7 +233,7 @@ async function routeFargate(deps: RouteDeps, taskState: TaskStateItem | null): P
     SK: `${KEY_PREFIX.MSG}${now}#${uuid}`,
     message: deps.message,
     channel: deps.channel,
-    connectionId: deps.connectionId,
+    connectionId: bridgeMessage.connectionId,
     createdAt: new Date(now).toISOString(),
     ttl: Math.floor(now / 1000) + PENDING_MESSAGE_TTL_SEC,
   });
@@ -207,20 +286,14 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
     deps.lambdaAgentFunctionArn
   ) {
     const taskState = await deps.getTaskState(deps.userId);
+    const runtimeClass = classifyRouteRuntimeClass(deps.message);
     const decision = classifyRoute({ message: deps.message, taskState });
+    const routedMessage = stripRouteHint(deps.message);
 
-    if (decision === "fargate-reuse") {
-      // Fall through to Fargate path below with the already-fetched taskState
-      return routeFargate(deps, taskState);
+    if (decision === "fargate-reuse" || decision === "fargate-new") {
+      return routeFargate({ ...deps, message: routedMessage }, taskState, runtimeClass);
     }
 
-    if (decision === "fargate-new") {
-      // Strip hint and queue to Fargate (new container)
-      const strippedDeps = { ...deps, message: stripRouteHint(deps.message) };
-      return routeFargate(strippedDeps, taskState);
-    }
-
-    // decision === "lambda": try Lambda, fall back to Fargate on failure
     try {
       validateLambdaDeliveryTarget(deps);
       const invokeResult = await deps.invokeLambdaAgent({
@@ -238,11 +311,11 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
     } catch {
       // Lambda failed — fall back to Fargate
       console.warn("Lambda agent invoke failed, falling back to Fargate");
-      return routeFargate(deps, taskState);
+      return routeFargate(deps, taskState, runtimeClass);
     }
   }
 
   // Fargate path (default)
   const taskState = await deps.getTaskState(deps.userId);
-  return routeFargate(deps, taskState);
+  return routeFargate(deps, taskState, "tool-enabled");
 }

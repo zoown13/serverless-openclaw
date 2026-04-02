@@ -1,0 +1,295 @@
+import fs from "node:fs";
+import path from "node:path";
+import type { EmailTokenBudgetPolicy, RuntimeClass } from "@serverless-openclaw/shared";
+
+interface GmailToolOptions {
+  message: string;
+  runtimeClass?: RuntimeClass;
+  emailTokenBudget?: EmailTokenBudgetPolicy;
+}
+
+interface GogOauthExport {
+  email?: string;
+  refresh_token?: string;
+}
+
+interface GoogleClientCredentials {
+  client_id: string;
+  client_secret: string;
+}
+
+interface GmailMessageListResponse {
+  messages?: Array<{ id: string }>;
+  resultSizeEstimate?: number;
+}
+
+interface GmailMessageMetadataResponse {
+  snippet?: string;
+  payload?: {
+    headers?: Array<{ name?: string; value?: string }>;
+  };
+}
+
+const GMAIL_HINT_RE =
+  /(?:\bgmail\b|\bemail\b|\be-mail\b|\binbox\b|\bunread\b|지메일|이메일|메일(?:함)?|수신함|받은편지함|편지함|안 읽은|읽지 않은)/i;
+const GMAIL_SUMMARY_RE =
+  /(?:\baccess\b|\bconnect\b|\bintegrat(?:e|ion)?\b|\bfetch\b|\bload\b|\bget\b|\bcheck\b|\bshow\b|\blist\b|\bread\b|\bopen\b|\bsearch\b|\bsummar(?:ize|ise)\b|\banaly[sz]e\b|\breview\b|\btriage\b|\blatest\b|\brecent\b|\bunread\b|\binbox\b|접근|연동|연결|가져오|불러오|조회|확인|보여|봐|읽|열|검색|요약|분석|정리|최신|최근|수신함|받은편지함)/i;
+const GMAIL_UNSUPPORTED_ACTION_RE =
+  /(?:\bsend\b|\bcompose\b|\bdraft\b|\breply\b|\bforward\b|\bdelete\b|\barchive\b|\bwrite\b|보내|작성|답장|전달|삭제|보관)/i;
+
+function isSupportedGmailSummaryRequest(message: string, runtimeClass?: RuntimeClass): boolean {
+  if (runtimeClass !== "tool-enabled") {
+    return false;
+  }
+
+  if (!GMAIL_HINT_RE.test(message) || !GMAIL_SUMMARY_RE.test(message)) {
+    return false;
+  }
+
+  return !GMAIL_UNSUPPORTED_ACTION_RE.test(message);
+}
+
+function getHomeDir(): string {
+  return process.env.HOME ?? "/home/openclaw";
+}
+
+function readJsonFile<T>(filePath: string): T | undefined {
+  if (!fs.existsSync(filePath)) {
+    return undefined;
+  }
+
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf-8")) as T;
+  } catch {
+    return undefined;
+  }
+}
+
+function loadOauthExport(): GogOauthExport | undefined {
+  const filePath = path.join(getHomeDir(), ".openclaw", "credentials", "oauth.json");
+  return readJsonFile<GogOauthExport>(filePath);
+}
+
+function loadGoogleCredentials():
+  | GoogleClientCredentials
+  | undefined {
+  const filePath = path.join(getHomeDir(), ".config", "gogcli", "credentials.json");
+  const raw = readJsonFile<Record<string, unknown>>(filePath);
+
+  if (!raw || typeof raw !== "object") {
+    return undefined;
+  }
+
+  const directClientId = raw.client_id;
+  const directClientSecret = raw.client_secret;
+  if (typeof directClientId === "string" && typeof directClientSecret === "string") {
+    return {
+      client_id: directClientId,
+      client_secret: directClientSecret,
+    };
+  }
+
+  for (const key of ["installed", "web"] as const) {
+    const nested = raw[key];
+    if (
+      nested &&
+      typeof nested === "object" &&
+      typeof (nested as Record<string, unknown>).client_id === "string" &&
+      typeof (nested as Record<string, unknown>).client_secret === "string"
+    ) {
+      return {
+        client_id: (nested as Record<string, string>).client_id,
+        client_secret: (nested as Record<string, string>).client_secret,
+      };
+    }
+  }
+
+  return undefined;
+}
+
+function deriveQuery(message: string): string {
+  const parts: string[] = [];
+  const normalized = message.toLowerCase();
+
+  if (!/\ball\b|\bevery\b|전체|모든/.test(normalized)) {
+    parts.push("is:unread");
+  }
+
+  if (/\btoday\b|오늘/.test(normalized)) {
+    parts.push("newer_than:1d");
+  } else if (/\bmonth\b|30d|한 달|한달/.test(normalized)) {
+    parts.push("newer_than:30d");
+  } else {
+    parts.push("newer_than:7d");
+  }
+
+  return parts.join(" ");
+}
+
+async function exchangeRefreshToken(
+  refreshToken: string,
+  credentials: GoogleClientCredentials,
+): Promise<string> {
+  const response = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({
+      client_id: credentials.client_id,
+      client_secret: credentials.client_secret,
+      refresh_token: refreshToken,
+      grant_type: "refresh_token",
+    }),
+    signal: AbortSignal.timeout(10000),
+  });
+
+  const payload = (await response.json()) as {
+    access_token?: string;
+    error?: string;
+    error_description?: string;
+  };
+
+  if (!response.ok || typeof payload.access_token !== "string") {
+    const detail = payload.error_description ?? payload.error ?? `HTTP ${response.status}`;
+    throw new Error(
+      `Gmail token exchange failed: ${detail}. Ensure google-oauth-client-json matches the OAuth client used during gog auth add.`,
+    );
+  }
+
+  return payload.access_token;
+}
+
+async function gmailGetJson<T>(accessToken: string, url: string): Promise<T> {
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+    signal: AbortSignal.timeout(10000),
+  });
+
+  const payload = (await response.json()) as T & {
+    error?: {
+      message?: string;
+    };
+  };
+
+  if (!response.ok) {
+    const detail =
+      payload && typeof payload === "object" && "error" in payload
+        ? payload.error?.message
+        : undefined;
+    throw new Error(detail ?? `Gmail API request failed with HTTP ${response.status}`);
+  }
+
+  return payload;
+}
+
+function getHeader(
+  headers: Array<{ name?: string; value?: string }> | undefined,
+  name: string,
+): string {
+  return (
+    headers?.find((header) => header.name?.toLowerCase() === name.toLowerCase())?.value ??
+    "Unknown"
+  );
+}
+
+function sanitizeSnippet(snippet: string | undefined, maxChars: number): string {
+  const compact = (snippet ?? "").replace(/\s+/g, " ").trim();
+  if (compact.length <= maxChars) {
+    return compact || "No snippet available.";
+  }
+  return `${compact.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+}
+
+function formatSummary(
+  query: string,
+  inspected: number,
+  items: Array<{
+    from: string;
+    subject: string;
+    date: string;
+    snippet: string;
+  }>,
+): string {
+  if (items.length === 0) {
+    return `I checked Gmail headers-first with query "${query}" and found no matching messages.`;
+  }
+
+  const lines = [
+    `I checked Gmail headers-first with query "${query}" and inspected ${inspected} message(s).`,
+    "I did not open full bodies or attachments.",
+    "",
+  ];
+
+  items.forEach((item, index) => {
+    lines.push(`${index + 1}. ${item.subject}`);
+    lines.push(`From: ${item.from}`);
+    lines.push(`Date: ${item.date}`);
+    lines.push(`Snippet: ${item.snippet}`);
+    if (index < items.length - 1) {
+      lines.push("");
+    }
+  });
+
+  return lines.join("\n");
+}
+
+export async function maybeHandleCustomGmailRequest(
+  options: GmailToolOptions,
+): Promise<string | undefined> {
+  if (!isSupportedGmailSummaryRequest(options.message, options.runtimeClass)) {
+    return undefined;
+  }
+
+  const oauthExport = loadOauthExport();
+  const refreshToken = oauthExport?.refresh_token;
+  if (!refreshToken) {
+    return "Gmail is not connected in this runtime yet. I need a valid exported refresh token before I can inspect your inbox.";
+  }
+
+  const credentials = loadGoogleCredentials();
+  if (!credentials) {
+    return "Gmail OAuth client credentials are missing in this runtime. I need the desktop client credentials JSON that was used during gog auth add.";
+  }
+
+  const query = deriveQuery(options.message);
+  const maxMessages = options.emailTokenBudget?.maxMessages ?? 5;
+  const maxSnippetChars = options.emailTokenBudget?.maxSnippetChars ?? 240;
+
+  try {
+    const accessToken = await exchangeRefreshToken(refreshToken, credentials);
+    const listResponse = await gmailGetJson<GmailMessageListResponse>(
+      accessToken,
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=${maxMessages}`,
+    );
+
+    const messageIds = (listResponse.messages ?? []).slice(0, maxMessages);
+    const items = await Promise.all(
+      messageIds.map(async ({ id }) => {
+        const metadata = await gmailGetJson<GmailMessageMetadataResponse>(
+          accessToken,
+          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(id)}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`,
+        );
+
+        return {
+          from: getHeader(metadata.payload?.headers, "From"),
+          subject: getHeader(metadata.payload?.headers, "Subject"),
+          date: getHeader(metadata.payload?.headers, "Date"),
+          snippet: sanitizeSnippet(metadata.snippet, maxSnippetChars),
+        };
+      }),
+    );
+
+    return formatSummary(
+      query,
+      messageIds.length,
+      items,
+    );
+  } catch (err) {
+    return err instanceof Error
+      ? err.message
+      : "Gmail request failed for an unknown reason.";
+  }
+}

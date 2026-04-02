@@ -168,6 +168,24 @@ describe("message service", () => {
       );
     });
 
+    it("should preserve tool-enabled runtime metadata in pending messages", async () => {
+      const deps = makeDeps({
+        message: "Check my Gmail inbox and summarize unread emails",
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("started");
+      expect(deps.savePendingMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runtimeClass: "tool-enabled",
+          emailTokenBudget: expect.objectContaining({
+            mode: "headers-first",
+          }),
+        }),
+      );
+    });
+
     it("should save pending when task is Starting (no publicIp yet)", async () => {
       const deps = makeDeps({
         getTaskState: vi.fn().mockResolvedValue({

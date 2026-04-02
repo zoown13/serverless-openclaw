@@ -1,6 +1,7 @@
 import express from "express";
 import { createAuthMiddleware } from "./auth-middleware.js";
 import { publishMessageMetrics, publishFirstResponseTime } from "./metrics.js";
+import { maybeHandleCustomGmailRequest } from "./gmail-tool.js";
 import type {
   BridgeMessageRequest,
   ServerMessage,
@@ -77,6 +78,45 @@ export function createApp(deps: BridgeDeps): express.Express {
     void (async () => {
       const msgStart = Date.now();
       try {
+        const gmailResponse = await maybeHandleCustomGmailRequest({
+          message: body.message!,
+          runtimeClass: body.runtimeClass,
+          emailTokenBudget: body.emailTokenBudget,
+        });
+        if (gmailResponse !== undefined) {
+          await deps.callbackSender.send(body.connectionId!, {
+            type: "stream_chunk",
+            content: gmailResponse,
+            conversationId: undefined,
+          });
+          await deps.callbackSender.send(body.connectionId!, {
+            type: "stream_end",
+          });
+
+          const latency = Date.now() - msgStart;
+          void publishMessageMetrics({
+            latency,
+            responseLength: gmailResponse.length,
+            channel: deps.channel,
+          });
+
+          if (!firstResponseSent) {
+            firstResponseSent = true;
+            void publishFirstResponseTime(Date.now() - deps.processStartTime, deps.channel);
+          }
+
+          if (deps.onMessageComplete) {
+            await deps.onMessageComplete(
+              body.userId!,
+              body.message!,
+              gmailResponse,
+              body.channel! as "web" | "telegram",
+            ).catch(() => {});
+          }
+
+          return;
+        }
+
         const prefixes: string[] = [];
         const historyPrefix = deps.getAndClearHistoryPrefix?.();
         if (historyPrefix) {

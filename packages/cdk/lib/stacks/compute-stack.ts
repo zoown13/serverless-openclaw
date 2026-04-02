@@ -56,6 +56,21 @@ export class ComputeStack extends cdk.Stack {
       this, "TelegramBotToken",
       { parameterName: SSM_SECRETS.TELEGRAM_BOT_TOKEN },
     );
+    const openclawAuthProfilesJson = ssm.StringParameter.fromSecureStringParameterAttributes(
+      this,
+      "OpenclawAuthProfilesJson",
+      { parameterName: SSM_SECRETS.OPENCLAW_AUTH_PROFILES_JSON },
+    );
+    const openclawOauthJson = ssm.StringParameter.fromSecureStringParameterAttributes(
+      this,
+      "OpenclawOauthJson",
+      { parameterName: SSM_SECRETS.OPENCLAW_OAUTH_JSON },
+    );
+    const googleOauthClientJson = ssm.StringParameter.fromSecureStringParameterAttributes(
+      this,
+      "GoogleOauthClientJson",
+      { parameterName: SSM_SECRETS.GOOGLE_OAUTH_CLIENT_JSON },
+    );
 
     // ECS Cluster — FARGATE_SPOT only
     this.cluster = new ecs.Cluster(this, "Cluster", {
@@ -104,6 +119,9 @@ export class ComputeStack extends cdk.Stack {
         OPENCLAW_GATEWAY_TOKEN: ecs.Secret.fromSsmParameter(openclawGatewayToken),
         ...(anthropicApiKey ? { ANTHROPIC_API_KEY: ecs.Secret.fromSsmParameter(anthropicApiKey) } : {}),
         TELEGRAM_BOT_TOKEN: ecs.Secret.fromSsmParameter(telegramBotToken),
+        OPENCLAW_AUTH_PROFILES_JSON: ecs.Secret.fromSsmParameter(openclawAuthProfilesJson),
+        OPENCLAW_OAUTH_JSON: ecs.Secret.fromSsmParameter(openclawOauthJson),
+        GOOGLE_OAUTH_CLIENT_JSON: ecs.Secret.fromSsmParameter(googleOauthClientJson),
       },
       logging: ecs.LogDrivers.awsLogs({
         logGroup,

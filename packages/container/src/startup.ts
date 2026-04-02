@@ -4,6 +4,7 @@ import { CallbackSender } from "./callback-sender.js";
 import { OpenClawClient } from "./openclaw-client.js";
 import { LifecycleManager } from "./lifecycle.js";
 import { consumePendingMessages } from "./pending-messages.js";
+import { maybeHandleCustomGmailRequest } from "./gmail-tool.js";
 import { restoreFromS3 } from "./s3-sync.js";
 import { discoverPublicIp } from "./discover-public-ip.js";
 import {
@@ -138,6 +139,37 @@ export async function startContainer(opts: StartContainerOptions): Promise<void>
     userId,
     processMessage: async (msg: PendingMessageItem) => {
       const msgStart = new Date(msg.createdAt).getTime();
+
+      const gmailResponse = await maybeHandleCustomGmailRequest({
+        message: msg.message,
+        runtimeClass: msg.runtimeClass,
+        emailTokenBudget: msg.emailTokenBudget,
+      });
+      if (gmailResponse !== undefined) {
+        historyPrefix = "";
+        await callbackSender.send(msg.connectionId, {
+          type: "stream_chunk",
+          content: gmailResponse,
+        });
+        await callbackSender.send(msg.connectionId, {
+          type: "stream_end",
+        });
+
+        void publishMessageMetrics({
+          latency: Date.now() - msgStart,
+          responseLength: gmailResponse.length,
+          channel: msg.channel,
+        });
+
+        await saveMessagePair(
+          dynamoSend,
+          userId,
+          msg.message,
+          gmailResponse,
+          msg.channel,
+        ).catch(() => {});
+        return;
+      }
 
       const messageToSend = historyPrefix
         ? historyPrefix + msg.message

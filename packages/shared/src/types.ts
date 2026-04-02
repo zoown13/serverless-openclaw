@@ -72,6 +72,8 @@ export interface PendingMessageItem {
   message: string;
   channel: Channel;
   connectionId: string;
+  runtimeClass?: RuntimeClass;
+  emailTokenBudget?: EmailTokenBudgetPolicy;
   createdAt: string;
   ttl: number;
 }

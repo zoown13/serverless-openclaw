@@ -234,6 +234,8 @@ async function routeFargate(
     message: deps.message,
     channel: deps.channel,
     connectionId: bridgeMessage.connectionId,
+    runtimeClass: bridgeMessage.runtimeClass,
+    emailTokenBudget: bridgeMessage.emailTokenBudget,
     createdAt: new Date(now).toISOString(),
     ttl: Math.floor(now / 1000) + PENDING_MESSAGE_TTL_SEC,
   });

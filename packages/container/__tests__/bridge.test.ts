@@ -3,9 +3,17 @@ import request from "supertest";
 import { createApp } from "../src/bridge.js";
 import type { BridgeDeps } from "../src/bridge.js";
 
+const { gmailToolMock } = vi.hoisted(() => ({
+  gmailToolMock: vi.fn(),
+}));
+
 vi.mock("../src/metrics.js", () => ({
   publishMessageMetrics: vi.fn().mockResolvedValue(undefined),
   publishFirstResponseTime: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("../src/gmail-tool.js", () => ({
+  maybeHandleCustomGmailRequest: gmailToolMock,
 }));
 
 function createMockDeps(): BridgeDeps {
@@ -37,6 +45,8 @@ describe("Bridge HTTP Server", () => {
   let app: ReturnType<typeof createApp>;
 
   beforeEach(() => {
+    gmailToolMock.mockReset();
+    gmailToolMock.mockResolvedValue(undefined);
     deps = createMockDeps();
     app = createApp(deps);
   });
@@ -163,6 +173,35 @@ describe("Bridge HTTP Server", () => {
         "user-1",
         expect.stringContaining("Summarize my recent inbox"),
       );
+    });
+
+    it("should return a direct Gmail tool response without calling OpenClaw", async () => {
+      gmailToolMock.mockResolvedValue("Inbox summary result");
+
+      const res = await request(app)
+        .post("/message")
+        .set("Authorization", "Bearer test-secret-token")
+        .send({
+          userId: "user-1",
+          message: "Check my Gmail inbox",
+          channel: "web",
+          connectionId: "conn-123",
+          callbackUrl: "https://example.com/prod",
+          runtimeClass: "tool-enabled",
+        });
+
+      expect(res.status).toBe(202);
+
+      await vi.waitFor(() => {
+        expect(deps.callbackSender.send).toHaveBeenCalledWith(
+          "conn-123",
+          expect.objectContaining({
+            type: "stream_chunk",
+            content: "Inbox summary result",
+          }),
+        );
+      });
+      expect(deps.openclawClient.sendMessage).not.toHaveBeenCalled();
     });
   });
 

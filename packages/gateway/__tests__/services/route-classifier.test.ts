@@ -79,6 +79,14 @@ describe("classifyRoute", () => {
     });
     expect(result).toBe("fargate-new");
   });
+
+  it("returns 'fargate-new' for Korean Gmail access requests", () => {
+    const result = classifyRoute({
+      message: "지메일에 접근해서 읽지 않은 메일 5개 요약해줘",
+      taskState: null,
+    });
+    expect(result).toBe("fargate-new");
+  });
 });
 
 describe("classifyRouteRuntimeClass", () => {
@@ -92,6 +100,10 @@ describe("classifyRouteRuntimeClass", () => {
 
   it("classifies browser requests as tool-enabled", () => {
     expect(classifyRouteRuntimeClass("browse this website and summarize it")).toBe("tool-enabled");
+  });
+
+  it("classifies Korean Gmail access requests as tool-enabled", () => {
+    expect(classifyRouteRuntimeClass("내 Gmail 받은편지함 확인해줘")).toBe("tool-enabled");
   });
 });
 

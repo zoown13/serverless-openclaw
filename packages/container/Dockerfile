@@ -46,7 +46,8 @@ COPY --from=builder --chown=openclaw:openclaw /build/packages/shared/package.jso
 COPY --chown=openclaw:openclaw packages/container/package.json /app/
 COPY --chown=openclaw:openclaw packages/container/start-openclaw.sh /app/
 
-RUN chmod +x /app/start-openclaw.sh && \
+RUN sed -i 's/\r$//' /app/start-openclaw.sh && \
+    chmod +x /app/start-openclaw.sh && \
     mkdir -p /data/workspace && \
     chown openclaw:openclaw /data/workspace
 
@@ -57,4 +58,4 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
   CMD curl -f http://localhost:8080/health || exit 1
 
-ENTRYPOINT ["/app/start-openclaw.sh"]
+ENTRYPOINT ["/bin/bash", "/app/start-openclaw.sh"]

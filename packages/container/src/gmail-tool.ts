@@ -36,6 +36,28 @@ const GMAIL_SUMMARY_RE =
   /(?:\baccess\b|\bconnect\b|\bintegrat(?:e|ion)?\b|\bfetch\b|\bload\b|\bget\b|\bcheck\b|\bshow\b|\blist\b|\bread\b|\bopen\b|\bsearch\b|\bsummar(?:ize|ise)\b|\banaly[sz]e\b|\breview\b|\btriage\b|\blatest\b|\brecent\b|\bunread\b|\binbox\b|접근|연동|연결|가져오|불러오|조회|확인|보여|봐|읽|열|검색|요약|분석|정리|최신|최근|수신함|받은편지함)/i;
 const GMAIL_UNSUPPORTED_ACTION_RE =
   /(?:\bsend\b|\bcompose\b|\bdraft\b|\breply\b|\bforward\b|\bdelete\b|\barchive\b|\bwrite\b|보내|작성|답장|전달|삭제|보관)/i;
+const EXPLICIT_UNREAD_RE = /(?:\bunread\b|안 읽은|읽지 않은)/i;
+const TARGETED_SEARCH_RE =
+  /(?:\bfind\b|\blook for\b|\bsearch\b|\bfilter\b|\bsubject\b|\bfrom\b|찾|검색|조회|필터|조건|에서)/i;
+const ENGLISH_MONTH_NAMES = [
+  "january",
+  "february",
+  "march",
+  "april",
+  "may",
+  "june",
+  "july",
+  "august",
+  "september",
+  "october",
+  "november",
+  "december",
+] as const;
+
+interface MonthRange {
+  after: string;
+  before: string;
+}
 
 function isSupportedGmailSummaryRequest(message: string, runtimeClass?: RuntimeClass): boolean {
   if (runtimeClass !== "tool-enabled") {
@@ -107,21 +129,104 @@ function loadGoogleCredentials():
   return undefined;
 }
 
-function deriveQuery(message: string): string {
+function formatQueryDate(date: Date): string {
+  const year = date.getUTCFullYear();
+  const month = `${date.getUTCMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getUTCDate()}`.padStart(2, "0");
+  return `${year}/${month}/${day}`;
+}
+
+function extractMonthRange(message: string, now: Date): MonthRange | undefined {
+  const explicitYear = message.match(/\b(20\d{2})\b|(?:(20\d{2})\s*년)/);
+  const yearText = explicitYear?.[1] ?? explicitYear?.[2];
+
+  let month: number | undefined;
+  const koreanMonth = message.match(/\b(1[0-2]|0?[1-9])\s*월/);
+  if (koreanMonth) {
+    month = Number.parseInt(koreanMonth[1], 10);
+  } else {
+    const lower = message.toLowerCase();
+    const englishMonthIndex = ENGLISH_MONTH_NAMES.findIndex((name) => lower.includes(name));
+    if (englishMonthIndex >= 0) {
+      month = englishMonthIndex + 1;
+    }
+  }
+
+  if (!month) {
+    return undefined;
+  }
+
+  const currentYear = now.getUTCFullYear();
+  const currentMonth = now.getUTCMonth() + 1;
+  const year = yearText
+    ? Number.parseInt(yearText, 10)
+    : month > currentMonth
+      ? currentYear - 1
+      : currentYear;
+
+  const start = new Date(Date.UTC(year, month - 1, 1));
+  const end = new Date(Date.UTC(year, month, 1));
+  return {
+    after: formatQueryDate(start),
+    before: formatQueryDate(end),
+  };
+}
+
+function extractSemanticTerms(message: string): string[] {
+  const terms: string[] = [];
+
+  if (/카드/.test(message)) {
+    terms.push("카드");
+  }
+  if (/\bcard\b/i.test(message)) {
+    terms.push("card");
+  }
+  if (/명세서/.test(message)) {
+    terms.push("명세서");
+  }
+  if (/\bstatement\b|\bbilling\b|\bbill\b/i.test(message)) {
+    terms.push("statement");
+  }
+  if (/청구서/.test(message)) {
+    terms.push("청구서");
+  }
+  if (/\binvoice\b/i.test(message)) {
+    terms.push("invoice");
+  }
+  if (/영수증/.test(message)) {
+    terms.push("영수증");
+  }
+  if (/\breceipt\b/i.test(message)) {
+    terms.push("receipt");
+  }
+
+  return [...new Set(terms)];
+}
+
+function deriveQuery(message: string, now = new Date()): string {
   const parts: string[] = [];
   const normalized = message.toLowerCase();
+  const monthRange = extractMonthRange(message, now);
+  const semanticTerms = extractSemanticTerms(message);
+  const targetedSearch =
+    TARGETED_SEARCH_RE.test(message) || Boolean(monthRange) || semanticTerms.length > 0;
 
-  if (!/\ball\b|\bevery\b|전체|모든/.test(normalized)) {
+  if (EXPLICIT_UNREAD_RE.test(message) || (!targetedSearch && !/\ball\b|\bevery\b|전체|모든/.test(normalized))) {
     parts.push("is:unread");
   }
 
-  if (/\btoday\b|오늘/.test(normalized)) {
+  if (monthRange) {
+    parts.push(`after:${monthRange.after}`);
+    parts.push(`before:${monthRange.before}`);
+  } else if (/\btoday\b|오늘/.test(normalized)) {
     parts.push("newer_than:1d");
   } else if (/\bmonth\b|30d|한 달|한달/.test(normalized)) {
     parts.push("newer_than:30d");
-  } else {
+  } else if (!targetedSearch) {
     parts.push("newer_than:7d");
   }
+
+  parts.push(...semanticTerms);
 
   return parts.join(" ");
 }

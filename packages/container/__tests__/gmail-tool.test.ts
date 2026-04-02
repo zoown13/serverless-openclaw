@@ -16,6 +16,7 @@ function writeRuntimeFiles(homeDir: string, oauth: unknown, credentials: unknown
 describe("maybeHandleCustomGmailRequest", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.useRealTimers();
     delete process.env.HOME;
   });
 
@@ -178,5 +179,47 @@ describe("maybeHandleCustomGmailRequest", () => {
     expect(result).toContain("Alice <alice@example.com>");
     expect(result).toContain("Snippet: First unread email…");
     expect(result).toContain("2. Follow-up needed");
+  });
+
+  it("builds a targeted month query instead of reusing the default unread query", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-02T13:30:00Z"));
+
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "gmail-tool-"));
+    process.env.HOME = homeDir;
+    writeRuntimeFiles(
+      homeDir,
+      {
+        email: "zoown13@gmail.com",
+        refresh_token: "refresh-token",
+      },
+      {
+        client_id: "client-id",
+        client_secret: "client-secret",
+      },
+    );
+
+    const fetchMock = vi.fn(async (input: string | URL) => {
+      const url = input.toString();
+      if (url === "https://oauth2.googleapis.com/token") {
+        return {
+          ok: true,
+          json: async () => ({ access_token: "access-token" }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({ messages: [] }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await maybeHandleCustomGmailRequest({
+      message: "3월 카드 명세서 이메일에서 찾아서 요약할래?",
+      runtimeClass: "tool-enabled",
+    });
+
+    expect(result).toContain('query "after:2026/03/01 before:2026/04/01 카드 명세서"');
+    expect(result).not.toContain("is:unread newer_than:7d");
   });
 });

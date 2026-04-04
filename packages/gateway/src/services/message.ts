@@ -11,6 +11,7 @@ import type {
   BridgeMessageRequest,
   EmailTokenBudgetPolicy,
   PendingMessageItem,
+  RouteDecision,
   RuntimeClass,
   TaskStateItem,
 } from "@serverless-openclaw/shared";
@@ -21,9 +22,29 @@ import {
   classifyRouteRuntimeClass,
   stripRouteHint,
 } from "./route-classifier.js";
+import { publishGatewayCountMetric } from "./metrics.js";
 
 type FetchFn = (url: string, init: RequestInit) => Promise<{ ok: boolean; status: number; statusText: string }>;
 type Send = (command: unknown) => Promise<unknown>;
+
+function logRouteEvent(
+  event: string,
+  payload: Record<string, unknown>,
+  level: "info" | "warn" = "info",
+): void {
+  const entry = JSON.stringify({
+    component: "gateway",
+    event,
+    ...payload,
+  });
+
+  if (level === "warn") {
+    console.warn(entry);
+    return;
+  }
+
+  console.info(entry);
+}
 
 export async function sendToBridge(
   fetchFn: FetchFn,
@@ -61,6 +82,7 @@ export async function savePendingMessage(
 export interface RouteDeps {
   userId: string;
   message: string;
+  traceId: string;
   channel: "web" | "telegram";
   connectionId: string;
   telegramChatId?: string;
@@ -144,6 +166,7 @@ function buildBridgeMessageRequest(
   deps: RouteDeps,
   message: string,
   runtimeClass: RuntimeClass,
+  routeDecision: RouteDecision,
 ): BridgeMessageRequest {
   return {
     userId: deps.userId,
@@ -151,11 +174,33 @@ function buildBridgeMessageRequest(
     channel: deps.channel,
     connectionId: resolveBridgeConnectionId(deps),
     callbackUrl: deps.callbackUrl,
+    traceId: deps.traceId,
     runtimeClass,
+    routeDecision,
     emailTokenBudget:
       runtimeClass === "tool-enabled"
         ? resolveEmailTokenBudgetPolicy()
         : undefined,
+  };
+}
+
+function buildRouteLogPayload(
+  deps: RouteDeps,
+  runtimeClass: RuntimeClass,
+  routeDecision: RouteDecision,
+  taskState: TaskStateItem | null,
+  pendingQueued: boolean,
+): Record<string, unknown> {
+  return {
+    traceId: deps.traceId,
+    channel: deps.channel,
+    runtimeClass,
+    routeDecision,
+    taskStateStatus: taskState?.status ?? "none",
+    hasPublicIp: Boolean(taskState?.publicIp),
+    pendingQueued,
+    sessionId: deps.sessionId ?? `session-${deps.userId}`,
+    messageLength: deps.message.length,
   };
 }
 
@@ -176,11 +221,13 @@ async function routeFargate(
   deps: RouteDeps,
   taskState: TaskStateItem | null,
   runtimeClass: RuntimeClass,
+  routeDecision: RouteDecision,
 ): Promise<RouteResult> {
   const bridgeMessage = buildBridgeMessageRequest(
     deps,
     deps.message,
     runtimeClass,
+    routeDecision,
   );
 
   if (taskState?.status === "Running" && taskState.publicIp) {
@@ -191,9 +238,24 @@ async function routeFargate(
         deps.bridgeAuthToken,
         bridgeMessage,
       );
+      logRouteEvent(
+        "route.fargate.reused",
+        buildRouteLogPayload(deps, runtimeClass, routeDecision, taskState, false),
+      );
+      void publishGatewayCountMetric("RouteToFargate", {
+        channel: deps.channel,
+        runtime: "fargate",
+      });
       return "sent";
     } catch (err) {
-      console.warn(`Bridge unreachable at ${taskState.publicIp}, falling back to pending queue`, err);
+      logRouteEvent(
+        "route.fargate.reused",
+        {
+          ...buildRouteLogPayload(deps, runtimeClass, routeDecision, taskState, false),
+          error: err instanceof Error ? err.message : String(err),
+        },
+        "warn",
+      );
     }
   }
 
@@ -218,6 +280,14 @@ async function routeFargate(
           startedAt: prewarm.startedAt,
           lastActivity: new Date().toISOString(),
         });
+        logRouteEvent(
+          "route.fargate.reused",
+          buildRouteLogPayload(deps, runtimeClass, routeDecision, prewarm, false),
+        );
+        void publishGatewayCountMetric("RouteToFargate", {
+          channel: deps.channel,
+          runtime: "fargate",
+        });
         return "sent";
       } catch {
         // Bridge unreachable — fall through to normal path
@@ -234,10 +304,24 @@ async function routeFargate(
     message: deps.message,
     channel: deps.channel,
     connectionId: bridgeMessage.connectionId,
+    traceId: deps.traceId,
     runtimeClass: bridgeMessage.runtimeClass,
+    routeDecision: bridgeMessage.routeDecision,
     emailTokenBudget: bridgeMessage.emailTokenBudget,
     createdAt: new Date(now).toISOString(),
     ttl: Math.floor(now / 1000) + PENDING_MESSAGE_TTL_SEC,
+  });
+  logRouteEvent(
+    "route.pending.queued",
+    buildRouteLogPayload(deps, runtimeClass, routeDecision, taskState, true),
+  );
+  void publishGatewayCountMetric("PendingMessagesQueued", {
+    channel: deps.channel,
+    runtime: "fargate",
+  });
+  void publishGatewayCountMetric("RouteToFargate", {
+    channel: deps.channel,
+    runtime: "fargate",
   });
 
   // If no task or stale Running state, clear stale state and start a new one
@@ -253,6 +337,10 @@ async function routeFargate(
       startedAt: new Date().toISOString(),
       lastActivity: new Date().toISOString(),
     });
+    logRouteEvent(
+      "route.fargate.started",
+      buildRouteLogPayload(deps, runtimeClass, routeDecision, taskState, true),
+    );
     return "started";
   }
 
@@ -266,11 +354,17 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
     deps.invokeLambdaAgent &&
     deps.lambdaAgentFunctionArn
   ) {
+    const runtimeClass = classifyRouteRuntimeClass(deps.message);
+    logRouteEvent(
+      "route.classified",
+      buildRouteLogPayload(deps, runtimeClass, "lambda", null, false),
+    );
     validateLambdaDeliveryTarget(deps);
     const invokeResult = await deps.invokeLambdaAgent({
       functionArn: deps.lambdaAgentFunctionArn,
       userId: deps.userId,
       sessionId: deps.sessionId ?? `session-${deps.userId}`,
+      traceId: deps.traceId,
       message: deps.message,
       channel: deps.channel,
       connectionId: deps.connectionId,
@@ -278,6 +372,14 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
       callbackUrl: deps.callbackUrl,
     });
     assertLambdaInvokeAccepted(invokeResult);
+    logRouteEvent(
+      "route.lambda.invoked",
+      buildRouteLogPayload(deps, runtimeClass, "lambda", null, false),
+    );
+    void publishGatewayCountMetric("RouteToLambda", {
+      channel: deps.channel,
+      runtime: "lambda",
+    });
     return "lambda";
   }
 
@@ -291,9 +393,18 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
     const runtimeClass = classifyRouteRuntimeClass(deps.message);
     const decision = classifyRoute({ message: deps.message, taskState });
     const routedMessage = stripRouteHint(deps.message);
+    logRouteEvent(
+      "route.classified",
+      buildRouteLogPayload(deps, runtimeClass, decision, taskState, false),
+    );
 
     if (decision === "fargate-reuse" || decision === "fargate-new") {
-      return routeFargate({ ...deps, message: routedMessage }, taskState, runtimeClass);
+      return routeFargate(
+        { ...deps, message: routedMessage },
+        taskState,
+        runtimeClass,
+        decision,
+      );
     }
 
     try {
@@ -302,6 +413,7 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
         functionArn: deps.lambdaAgentFunctionArn,
         userId: deps.userId,
         sessionId: deps.sessionId ?? `session-${deps.userId}`,
+        traceId: deps.traceId,
         message: deps.message,
         channel: deps.channel,
         connectionId: deps.connectionId,
@@ -309,15 +421,63 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
         callbackUrl: deps.callbackUrl,
       });
       assertLambdaInvokeAccepted(invokeResult);
+      logRouteEvent(
+        "route.lambda.invoked",
+        buildRouteLogPayload(deps, runtimeClass, decision, taskState, false),
+      );
+      void publishGatewayCountMetric("RouteToLambda", {
+        channel: deps.channel,
+        runtime: "lambda",
+      });
       return "lambda";
-    } catch {
+    } catch (err) {
       // Lambda failed — fall back to Fargate
-      console.warn("Lambda agent invoke failed, falling back to Fargate");
-      return routeFargate(deps, taskState, runtimeClass);
+      const fallbackDecision: RouteDecision =
+        taskState?.status === "Running" && taskState.publicIp
+          ? "fargate-reuse"
+          : "fargate-new";
+      logRouteEvent(
+        "route.lambda.fallback_to_fargate",
+        {
+          ...buildRouteLogPayload(
+            deps,
+            runtimeClass,
+            fallbackDecision,
+            taskState,
+            false,
+          ),
+          error: err instanceof Error ? err.message : String(err),
+        },
+        "warn",
+      );
+      void publishGatewayCountMetric("RouteFallbackToFargate", {
+        channel: deps.channel,
+        runtime: "fargate",
+      });
+      return routeFargate(
+        { ...deps, message: routedMessage },
+        taskState,
+        runtimeClass,
+        fallbackDecision,
+      );
     }
   }
 
   // Fargate path (default)
   const taskState = await deps.getTaskState(deps.userId);
-  return routeFargate(deps, taskState, "tool-enabled");
+  const routeDecision: RouteDecision =
+    taskState?.status === "Running" && taskState.publicIp
+      ? "fargate-reuse"
+      : "fargate-new";
+  logRouteEvent(
+    "route.classified",
+    buildRouteLogPayload(
+      deps,
+      "tool-enabled",
+      routeDecision,
+      taskState,
+      false,
+    ),
+  );
+  return routeFargate(deps, taskState, "tool-enabled", routeDecision);
 }

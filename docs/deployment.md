@@ -550,3 +550,29 @@ curl "https://api.telegram.org/bot<BOT_TOKEN>/getWebhookInfo"
 - Webhook URL not registered → run `make telegram-webhook`
 - Secret token mismatch (403 Forbidden) → run `make telegram-webhook` to re-register with SSM secret
 - Lambda error → check CloudWatch logs for `telegram-webhook` function
+
+## 12. Tracing a single request
+
+When you need to explain one user request end-to-end, follow the log groups in this order:
+
+1. `/aws/lambda/serverless-openclaw-ws-message` for Web ingress, or `/aws/lambda/serverless-openclaw-telegram-webhook` for Telegram ingress
+2. `/aws/lambda/serverless-openclaw-agent` when the request was routed to the Lambda runtime
+3. `/ecs/serverless-openclaw` when the request was routed to Fargate or drained from the pending queue
+
+The common join key is `traceId`. The gateway emits `route.classified` first, then either `route.lambda.invoked`, `route.fargate.reused`, `route.fargate.started`, `route.pending.queued`, or `route.lambda.fallback_to_fargate`. The downstream runtime keeps the same `traceId`, so you can search CloudWatch Logs Insights for that value and read the structured `event` field in chronological order.
+
+For Lambda requests, start with `lambda.request.accepted` and `lambda.runtime.summary`, then check `lambda.tool.blocked` or the delivery events:
+
+- `lambda.delivery.websocket.success`
+- `lambda.delivery.websocket.failure`
+- `lambda.delivery.telegram.success`
+- `lambda.delivery.telegram.failure`
+
+For Fargate requests, start with `bridge.message.accepted`. Gmail requests emit these structured events:
+
+- `bridge.gmail.matched`
+- `bridge.gmail.query.built`
+- `bridge.gmail.query.result`
+- `bridge.gmail.query.failure`
+
+To diagnose a Gmail query mismatch, compare the original runtime decision in `route.classified` with the sanitized Gmail query in `bridge.gmail.query.built`, then confirm the final match counts in `bridge.gmail.query.result`. If the request reached Fargate but `bridge.gmail.query.result` shows `outcome=no-results`, the routing worked and the issue is the derived Gmail query rather than runtime selection.

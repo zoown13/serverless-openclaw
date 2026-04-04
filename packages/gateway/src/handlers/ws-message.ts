@@ -39,10 +39,11 @@ async function pushToConnection(connectionId: string, msg: ServerMessage): Promi
 }
 
 export async function handler(event: {
-  requestContext: { connectionId?: string };
+  requestContext: { connectionId?: string; requestId?: string };
   body?: string;
 }): Promise<APIGatewayProxyResultV2> {
   const connectionId = event.requestContext.connectionId!;
+  const traceId = event.requestContext.requestId ?? `ws-${connectionId}`;
 
   if (!event.body) {
     return { statusCode: 400, body: JSON.stringify({ error: "Missing body" }) };
@@ -82,6 +83,7 @@ export async function handler(event: {
     const result = await routeMessage({
       userId,
       message: msg.message ?? "",
+      traceId,
       channel: "web",
       connectionId,
       callbackUrl: process.env.WEBSOCKET_CALLBACK_URL ?? "",

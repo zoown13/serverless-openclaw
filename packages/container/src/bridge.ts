@@ -1,7 +1,14 @@
 import express from "express";
 import { createAuthMiddleware } from "./auth-middleware.js";
-import { publishMessageMetrics, publishFirstResponseTime } from "./metrics.js";
-import { maybeHandleCustomGmailRequest } from "./gmail-tool.js";
+import {
+  publishCountMetric,
+  publishMessageMetrics,
+  publishFirstResponseTime,
+} from "./metrics.js";
+import {
+  maybeHandleCustomGmailRequest,
+  type GmailTelemetryEvent,
+} from "./gmail-tool.js";
 import type {
   BridgeMessageRequest,
   ServerMessage,
@@ -30,6 +37,48 @@ export interface BridgeDeps {
 }
 
 const startTime = Date.now();
+
+function logBridgeEvent(
+  event: string,
+  payload: Record<string, unknown>,
+  level: "info" | "error" = "info",
+): void {
+  const entry = JSON.stringify({
+    component: "bridge",
+    event,
+    ...payload,
+  });
+
+  if (level === "error") {
+    console.error(entry);
+    return;
+  }
+
+  console.info(entry);
+}
+
+function resolveTraceId(body: Partial<BridgeMessageRequest>): string {
+  return body.traceId ?? `bridge-${body.userId ?? "unknown"}`;
+}
+
+function resolveDeliveryType(
+  channel: Partial<BridgeMessageRequest>["channel"],
+): "websocket" | "telegram" {
+  return channel === "telegram" ? "telegram" : "websocket";
+}
+
+function buildBridgeLogContext(
+  body: Partial<BridgeMessageRequest>,
+): Record<string, unknown> {
+  return {
+    traceId: resolveTraceId(body),
+    channel: body.channel ?? "unknown",
+    runtimeClass: body.runtimeClass ?? "chat-only",
+    routeDecision: body.routeDecision ?? "lambda",
+    messageLength: body.message?.length ?? 0,
+    deliveryType: resolveDeliveryType(body.channel),
+  };
+}
 
 function buildToolEnabledPrefix(
   body: Partial<BridgeMessageRequest>,
@@ -77,11 +126,69 @@ export function createApp(deps: BridgeDeps): express.Express {
     // Fire-and-forget async processing
     void (async () => {
       const msgStart = Date.now();
+      const logContext = buildBridgeLogContext(body);
+      const deliveryType = resolveDeliveryType(body.channel);
+      const gmailTelemetry = (event: GmailTelemetryEvent) => {
+        switch (event.event) {
+          case "matched":
+            logBridgeEvent("bridge.gmail.matched", logContext);
+            void publishCountMetric("GmailToolMatched", {
+              channel: body.channel!,
+              runtime: "fargate",
+            });
+            return;
+          case "queryBuilt":
+            logBridgeEvent("bridge.gmail.query.built", {
+              ...logContext,
+              sanitizedQuery: event.sanitizedQuery,
+              isUnread: event.isUnread,
+              dateRange: event.dateRange,
+              keywordCount: event.keywordCount,
+            });
+            return;
+          case "result":
+            logBridgeEvent("bridge.gmail.query.result", {
+              ...logContext,
+              sanitizedQuery: event.sanitizedQuery,
+              outcome: event.outcome,
+              isUnread: event.isUnread,
+              dateRange: event.dateRange,
+              keywordCount: event.keywordCount,
+              matchedCount: event.matchedCount,
+              inspectedCount: event.inspectedCount,
+            });
+            void publishCountMetric(
+              event.outcome === "success" ? "GmailToolSuccess" : "GmailToolNoResults",
+              {
+                channel: body.channel!,
+                runtime: "fargate",
+              },
+            );
+            return;
+          case "failure":
+            logBridgeEvent("bridge.gmail.query.failure", {
+              ...logContext,
+              sanitizedQuery: event.sanitizedQuery,
+              reason: event.reason,
+              isUnread: event.isUnread,
+              dateRange: event.dateRange,
+              keywordCount: event.keywordCount,
+            }, "error");
+            void publishCountMetric("GmailToolFailure", {
+              channel: body.channel!,
+              runtime: "fargate",
+            });
+        }
+      };
+
+      logBridgeEvent("bridge.message.accepted", logContext);
+
       try {
         const gmailResponse = await maybeHandleCustomGmailRequest({
           message: body.message!,
           runtimeClass: body.runtimeClass,
           emailTokenBudget: body.emailTokenBudget,
+          onTelemetry: gmailTelemetry,
         });
         if (gmailResponse !== undefined) {
           await deps.callbackSender.send(body.connectionId!, {
@@ -114,6 +221,16 @@ export function createApp(deps: BridgeDeps): express.Express {
             ).catch(() => {});
           }
 
+          logBridgeEvent("bridge.delivery.success", {
+            ...logContext,
+            deliveryType,
+            source: "gmail-tool",
+          });
+          void publishCountMetric("DeliverySuccess", {
+            channel: body.channel!,
+            runtime: "fargate",
+            deliveryType,
+          });
           return;
         }
 
@@ -132,6 +249,7 @@ export function createApp(deps: BridgeDeps): express.Express {
         const messageToSend = prefixes.length > 0
           ? `${prefixes.join("\n")}\n${body.message!}`
           : body.message!;
+        logBridgeEvent("bridge.openclaw.forwarded", logContext);
         const generator = deps.openclawClient.sendMessage(
           body.userId!,
           messageToSend,
@@ -171,11 +289,32 @@ export function createApp(deps: BridgeDeps): express.Express {
             body.channel! as "web" | "telegram",
           ).catch(() => {});
         }
+
+        logBridgeEvent("bridge.delivery.success", {
+          ...logContext,
+          deliveryType,
+          source: "openclaw",
+        });
+        void publishCountMetric("DeliverySuccess", {
+          channel: body.channel!,
+          runtime: "fargate",
+          deliveryType,
+        });
       } catch (err) {
         await deps.callbackSender.send(body.connectionId!, {
           type: "error",
           error: err instanceof Error ? err.message : "Unknown error",
         }).catch(() => {});
+        logBridgeEvent("bridge.delivery.failure", {
+          ...logContext,
+          deliveryType,
+          error: err instanceof Error ? err.message : String(err),
+        }, "error");
+        void publishCountMetric("DeliveryFailure", {
+          channel: body.channel!,
+          runtime: "fargate",
+          deliveryType,
+        });
       }
     })();
   });

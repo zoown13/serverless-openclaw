@@ -6,6 +6,7 @@ export interface InvokeLambdaAgentParams {
   functionArn: string;
   userId: string;
   sessionId: string;
+  traceId?: string;
   message: string;
   channel: "web" | "telegram";
   connectionId?: string;
@@ -28,6 +29,7 @@ export async function invokeLambdaAgent(
   const payload = {
     userId: params.userId,
     sessionId: params.sessionId,
+    traceId: params.traceId,
     message: params.message,
     channel: params.channel,
     connectionId: params.connectionId,

@@ -191,12 +191,14 @@ describe("CallbackSender — Telegram routing", () => {
     expect(mockWsSend).not.toHaveBeenCalled();
   });
 
-  it("should handle fetch failure gracefully", async () => {
+  it("should surface fetch failure after logging it", async () => {
     mockFetch.mockRejectedValue(new Error("Network error"));
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     await sender.send("telegram:12345", { type: "stream_chunk", content: "hi" });
-    await sender.send("telegram:12345", { type: "stream_end" });
+    await expect(
+      sender.send("telegram:12345", { type: "stream_end" }),
+    ).rejects.toThrow("Network error");
 
     expect(consoleSpy).toHaveBeenCalledWith(
       expect.stringContaining("Failed to send Telegram message"),

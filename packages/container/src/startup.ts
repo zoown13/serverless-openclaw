@@ -4,7 +4,10 @@ import { CallbackSender } from "./callback-sender.js";
 import { OpenClawClient } from "./openclaw-client.js";
 import { LifecycleManager } from "./lifecycle.js";
 import { consumePendingMessages } from "./pending-messages.js";
-import { maybeHandleCustomGmailRequest } from "./gmail-tool.js";
+import {
+  maybeHandleCustomGmailRequest,
+  type GmailTelemetryEvent,
+} from "./gmail-tool.js";
 import { restoreFromS3 } from "./s3-sync.js";
 import { discoverPublicIp } from "./discover-public-ip.js";
 import {
@@ -13,7 +16,11 @@ import {
   formatHistoryContext,
 } from "./conversation-store.js";
 import type { PendingMessageItem, Channel } from "@serverless-openclaw/shared";
-import { publishStartupMetrics, publishMessageMetrics } from "./metrics.js";
+import {
+  publishCountMetric,
+  publishStartupMetrics,
+  publishMessageMetrics,
+} from "./metrics.js";
 import { waitForPort, notifyTelegram, getTelegramChatId } from "./utils.js";
 
 type Send = (command: unknown) => Promise<unknown>;
@@ -32,6 +39,25 @@ export interface StartContainerOptions {
   dynamoSend: Send;
   ecsSend: Send;
   ec2Send: Send;
+}
+
+function logBridgeEvent(
+  event: string,
+  payload: Record<string, unknown>,
+  level: "info" | "error" = "info",
+): void {
+  const entry = JSON.stringify({
+    component: "bridge",
+    event,
+    ...payload,
+  });
+
+  if (level === "error") {
+    console.error(entry);
+    return;
+  }
+
+  console.info(entry);
 }
 
 export async function startContainer(opts: StartContainerOptions): Promise<void> {
@@ -139,64 +165,169 @@ export async function startContainer(opts: StartContainerOptions): Promise<void>
     userId,
     processMessage: async (msg: PendingMessageItem) => {
       const msgStart = new Date(msg.createdAt).getTime();
+      const traceId = msg.traceId ?? `pending-${msg.SK}`;
+      const deliveryType = msg.channel === "telegram" ? "telegram" : "websocket";
+      const logContext = {
+        traceId,
+        channel: msg.channel,
+        runtimeClass: msg.runtimeClass ?? "tool-enabled",
+        routeDecision: msg.routeDecision ?? "fargate-new",
+        messageLength: msg.message.length,
+        deliveryType,
+        pendingMessage: true,
+      };
+      const gmailTelemetry = (event: GmailTelemetryEvent) => {
+        switch (event.event) {
+          case "matched":
+            logBridgeEvent("bridge.gmail.matched", logContext);
+            void publishCountMetric("GmailToolMatched", {
+              channel: msg.channel,
+              runtime: "fargate",
+            });
+            return;
+          case "queryBuilt":
+            logBridgeEvent("bridge.gmail.query.built", {
+              ...logContext,
+              sanitizedQuery: event.sanitizedQuery,
+              isUnread: event.isUnread,
+              dateRange: event.dateRange,
+              keywordCount: event.keywordCount,
+            });
+            return;
+          case "result":
+            logBridgeEvent("bridge.gmail.query.result", {
+              ...logContext,
+              sanitizedQuery: event.sanitizedQuery,
+              outcome: event.outcome,
+              isUnread: event.isUnread,
+              dateRange: event.dateRange,
+              keywordCount: event.keywordCount,
+              matchedCount: event.matchedCount,
+              inspectedCount: event.inspectedCount,
+            });
+            void publishCountMetric(
+              event.outcome === "success" ? "GmailToolSuccess" : "GmailToolNoResults",
+              {
+                channel: msg.channel,
+                runtime: "fargate",
+              },
+            );
+            return;
+          case "failure":
+            logBridgeEvent("bridge.gmail.query.failure", {
+              ...logContext,
+              sanitizedQuery: event.sanitizedQuery,
+              reason: event.reason,
+              isUnread: event.isUnread,
+              dateRange: event.dateRange,
+              keywordCount: event.keywordCount,
+            }, "error");
+            void publishCountMetric("GmailToolFailure", {
+              channel: msg.channel,
+              runtime: "fargate",
+            });
+        }
+      };
 
-      const gmailResponse = await maybeHandleCustomGmailRequest({
-        message: msg.message,
-        runtimeClass: msg.runtimeClass,
-        emailTokenBudget: msg.emailTokenBudget,
-      });
-      if (gmailResponse !== undefined) {
-        historyPrefix = "";
-        await callbackSender.send(msg.connectionId, {
-          type: "stream_chunk",
-          content: gmailResponse,
+      logBridgeEvent("bridge.message.accepted", logContext);
+      try {
+        const gmailResponse = await maybeHandleCustomGmailRequest({
+          message: msg.message,
+          runtimeClass: msg.runtimeClass,
+          emailTokenBudget: msg.emailTokenBudget,
+          onTelemetry: gmailTelemetry,
         });
+        if (gmailResponse !== undefined) {
+          historyPrefix = "";
+          await callbackSender.send(msg.connectionId, {
+            type: "stream_chunk",
+            content: gmailResponse,
+          });
+          await callbackSender.send(msg.connectionId, {
+            type: "stream_end",
+          });
+
+          void publishMessageMetrics({
+            latency: Date.now() - msgStart,
+            responseLength: gmailResponse.length,
+            channel: msg.channel,
+          });
+
+          await saveMessagePair(
+            dynamoSend,
+            userId,
+            msg.message,
+            gmailResponse,
+            msg.channel,
+          ).catch(() => {});
+          logBridgeEvent("bridge.delivery.success", {
+            ...logContext,
+            source: "gmail-tool",
+          });
+          void publishCountMetric("DeliverySuccess", {
+            channel: msg.channel,
+            runtime: "fargate",
+            deliveryType,
+          });
+          void publishCountMetric("PendingMessagesDrained", {
+            channel: msg.channel,
+            runtime: "fargate",
+          });
+          return;
+        }
+
+        const messageToSend = historyPrefix
+          ? historyPrefix + msg.message
+          : msg.message;
+        historyPrefix = "";
+        logBridgeEvent("bridge.openclaw.forwarded", logContext);
+
+        const generator = openclawClient.sendMessage(userId, messageToSend);
+        let fullResponse = "";
+        for await (const chunk of generator) {
+          fullResponse += chunk;
+          await callbackSender.send(msg.connectionId, {
+            type: "stream_chunk",
+            content: chunk,
+          });
+        }
         await callbackSender.send(msg.connectionId, {
           type: "stream_end",
         });
 
         void publishMessageMetrics({
           latency: Date.now() - msgStart,
-          responseLength: gmailResponse.length,
+          responseLength: fullResponse.length,
           channel: msg.channel,
         });
 
-        await saveMessagePair(
-          dynamoSend,
-          userId,
-          msg.message,
-          gmailResponse,
-          msg.channel,
-        ).catch(() => {});
-        return;
-      }
-
-      const messageToSend = historyPrefix
-        ? historyPrefix + msg.message
-        : msg.message;
-      historyPrefix = "";
-
-      const generator = openclawClient.sendMessage(userId, messageToSend);
-      let fullResponse = "";
-      for await (const chunk of generator) {
-        fullResponse += chunk;
-        await callbackSender.send(msg.connectionId, {
-          type: "stream_chunk",
-          content: chunk,
+        if (fullResponse) {
+          await saveMessagePair(dynamoSend, userId, msg.message, fullResponse, msg.channel).catch(() => {});
+        }
+        logBridgeEvent("bridge.delivery.success", {
+          ...logContext,
+          source: "openclaw",
         });
-      }
-      await callbackSender.send(msg.connectionId, {
-        type: "stream_end",
-      });
-
-      void publishMessageMetrics({
-        latency: Date.now() - msgStart,
-        responseLength: fullResponse.length,
-        channel: msg.channel,
-      });
-
-      if (fullResponse) {
-        await saveMessagePair(dynamoSend, userId, msg.message, fullResponse, msg.channel).catch(() => {});
+        void publishCountMetric("DeliverySuccess", {
+          channel: msg.channel,
+          runtime: "fargate",
+          deliveryType,
+        });
+        void publishCountMetric("PendingMessagesDrained", {
+          channel: msg.channel,
+          runtime: "fargate",
+        });
+      } catch (err) {
+        logBridgeEvent("bridge.delivery.failure", {
+          ...logContext,
+          error: err instanceof Error ? err.message : String(err),
+        }, "error");
+        void publishCountMetric("DeliveryFailure", {
+          channel: msg.channel,
+          runtime: "fargate",
+          deliveryType,
+        });
+        throw err;
       }
     },
   });

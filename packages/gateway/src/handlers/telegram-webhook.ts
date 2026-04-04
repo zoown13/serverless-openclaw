@@ -1,4 +1,4 @@
-import type { APIGatewayProxyResultV2 } from "aws-lambda";
+import type { APIGatewayProxyResultV2, Context } from "aws-lambda";
 import { timingSafeEqual } from "node:crypto";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
@@ -30,7 +30,7 @@ interface TelegramUpdate {
 export async function handler(event: {
   headers: Record<string, string | undefined>;
   body?: string;
-}): Promise<APIGatewayProxyResultV2> {
+}, context?: Pick<Context, "awsRequestId">): Promise<APIGatewayProxyResultV2> {
   const secrets = await resolveSecrets([
     process.env.SSM_BRIDGE_AUTH_TOKEN!,
     process.env.SSM_TELEGRAM_BOT_TOKEN!,
@@ -153,6 +153,7 @@ export async function handler(event: {
   await routeMessage({
     userId,
     message: text,
+    traceId: context?.awsRequestId ?? `telegram-${chatId}`,
     channel: "telegram",
     connectionId,
     telegramChatId: String(chatId),

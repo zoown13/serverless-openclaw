@@ -21,6 +21,7 @@ export interface ServerMessage {
 // === Channel ===
 export type Channel = "web" | "telegram";
 export type RuntimeClass = "chat-only" | "tool-enabled";
+export type RouteDecision = "lambda" | "fargate-reuse" | "fargate-new";
 
 export interface EmailTokenBudgetPolicy {
   mode: "headers-first";
@@ -72,7 +73,9 @@ export interface PendingMessageItem {
   message: string;
   channel: Channel;
   connectionId: string;
+  traceId?: string;
   runtimeClass?: RuntimeClass;
+  routeDecision?: RouteDecision;
   emailTokenBudget?: EmailTokenBudgetPolicy;
   createdAt: string;
   ttl: number;
@@ -85,7 +88,9 @@ export interface BridgeMessageRequest {
   channel: Channel;
   connectionId: string;
   callbackUrl: string;
+  traceId?: string;
   runtimeClass?: RuntimeClass;
+  routeDecision?: RouteDecision;
   emailTokenBudget?: EmailTokenBudgetPolicy;
 }
 
@@ -97,6 +102,7 @@ export interface BridgeHealthResponse {
 export interface LambdaAgentEvent {
   userId: string;
   sessionId: string;
+  traceId?: string;
   connectionId?: string;
   /** WebSocket API Gateway callback URL for direct push (async invocation) */
   callbackUrl?: string;

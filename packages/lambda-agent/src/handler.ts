@@ -13,6 +13,7 @@ import { SessionSync } from "./session-sync.js";
 import { SessionLock } from "./session-lock.js";
 import { resolveSecrets } from "./secrets.js";
 import { runAgent } from "./agent-runner.js";
+import { publishLambdaDeliveryMetric } from "./metrics.js";
 import {
   ApiGatewayManagementApiClient,
   PostToConnectionCommand,
@@ -23,6 +24,32 @@ const providerConfig = resolveProviderConfig();
 
 // Initialized once per Lambda cold start
 let initializedConfig: Awaited<ReturnType<typeof initConfig>> | undefined;
+
+interface DeliveryTelemetry {
+  traceId: string;
+  channel: "web" | "telegram";
+  deliveryType: "websocket" | "telegram";
+  deliveryTarget: Record<string, string>;
+}
+
+function logLambdaEvent(
+  event: string,
+  payload: Record<string, unknown>,
+  level: "info" | "error" = "info",
+): void {
+  const entry = JSON.stringify({
+    component: "lambda-agent",
+    event,
+    ...payload,
+  });
+
+  if (level === "error") {
+    console.error(entry);
+    return;
+  }
+
+  console.info(entry);
+}
 
 function logRuntimeSummary(runtimeConfig: ResolvedRuntimeConfig): void {
   console.info(
@@ -37,6 +64,7 @@ async function pushToConnection(
   callbackUrl: string,
   connectionId: string,
   msg: ServerMessage,
+  telemetry?: DeliveryTelemetry,
 ): Promise<void> {
   const apigw = new ApiGatewayManagementApiClient({ endpoint: callbackUrl });
   try {
@@ -46,8 +74,41 @@ async function pushToConnection(
         Data: JSON.stringify(msg),
       }),
     );
+
+    if (telemetry) {
+      logLambdaEvent("lambda.delivery.websocket.success", {
+        traceId: telemetry.traceId,
+        channel: telemetry.channel,
+        deliveryType: telemetry.deliveryType,
+        deliveryTarget: telemetry.deliveryTarget,
+        messageType: msg.type,
+      });
+      void publishLambdaDeliveryMetric("DeliverySuccess", {
+        channel: telemetry.channel,
+        deliveryType: "websocket",
+      });
+    }
   } catch (err: unknown) {
-    // GoneException = client disconnected, not an error
+    const errorName = err instanceof Error ? err.name : "UnknownError";
+    const errorMessage = err instanceof Error ? err.message : String(err);
+
+    if (telemetry) {
+      logLambdaEvent("lambda.delivery.websocket.failure", {
+        traceId: telemetry.traceId,
+        channel: telemetry.channel,
+        deliveryType: telemetry.deliveryType,
+        deliveryTarget: telemetry.deliveryTarget,
+        messageType: msg.type,
+        error: errorMessage,
+        errorName,
+      }, "error");
+      void publishLambdaDeliveryMetric("DeliveryFailure", {
+        channel: telemetry.channel,
+        deliveryType: "websocket",
+      });
+    }
+
+    // GoneException = client disconnected, not an error for control flow
     if (err instanceof Error && err.name === "GoneException") return;
     console.error("[push] Failed to push to connection:", err);
   }
@@ -58,7 +119,12 @@ function normalizeTelegramChatId(chatId?: string): string | undefined {
   return chatId.startsWith("telegram:") ? chatId.slice(9) : chatId;
 }
 
-async function pushToTelegram(botToken: string, chatId: string, text: string): Promise<void> {
+async function pushToTelegram(
+  botToken: string,
+  chatId: string,
+  text: string,
+  telemetry?: DeliveryTelemetry,
+): Promise<void> {
   try {
     const response = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
       method: "POST",
@@ -68,26 +134,63 @@ async function pushToTelegram(botToken: string, chatId: string, text: string): P
 
     if (!response.ok) {
       const body = await response.text().catch(() => "");
+      logLambdaEvent("lambda.delivery.telegram.failure", {
+        traceId: telemetry?.traceId,
+        channel: telemetry?.channel ?? "telegram",
+        deliveryType: "telegram",
+        deliveryTarget: telemetry?.deliveryTarget ?? { type: "telegram", chatId },
+        status: response.status,
+        error: body,
+        textLength: text.length,
+      }, "error");
       console.error("[telegram] failed to deliver message", {
         chatId,
         status: response.status,
         body,
         textLength: text.length,
       });
+      void publishLambdaDeliveryMetric("DeliveryFailure", {
+        channel: telemetry?.channel ?? "telegram",
+        deliveryType: "telegram",
+      });
       return;
     }
 
+    logLambdaEvent("lambda.delivery.telegram.success", {
+      traceId: telemetry?.traceId,
+      channel: telemetry?.channel ?? "telegram",
+      deliveryType: "telegram",
+      deliveryTarget: telemetry?.deliveryTarget ?? { type: "telegram", chatId },
+      status: response.status,
+      textLength: text.length,
+    });
     console.info("[telegram] delivered message", {
       chatId,
       status: response.status,
       textLength: text.length,
     });
-  } catch {
+    void publishLambdaDeliveryMetric("DeliverySuccess", {
+      channel: telemetry?.channel ?? "telegram",
+      deliveryType: "telegram",
+    });
+  } catch (err) {
+    logLambdaEvent("lambda.delivery.telegram.failure", {
+      traceId: telemetry?.traceId,
+      channel: telemetry?.channel ?? "telegram",
+      deliveryType: "telegram",
+      deliveryTarget: telemetry?.deliveryTarget ?? { type: "telegram", chatId },
+      error: err instanceof Error ? err.message : "network-error",
+      textLength: text.length,
+    }, "error");
     // Telegram failures should not block agent response.
     console.error("[telegram] failed to deliver message", {
       chatId,
       error: "network-error",
       textLength: text.length,
+    });
+    void publishLambdaDeliveryMetric("DeliveryFailure", {
+      channel: telemetry?.channel ?? "telegram",
+      deliveryType: "telegram",
     });
   }
 }
@@ -101,6 +204,8 @@ async function pushPayloads(
     isTelegram: boolean;
     telegramBotToken?: string;
     telegramChatId?: string;
+    traceId: string;
+    channel: "web" | "telegram";
   },
 ): Promise<void> {
   if (options.canPush && options.callbackUrl && options.connectionId) {
@@ -109,6 +214,11 @@ async function pushPayloads(
         await pushToConnection(options.callbackUrl, options.connectionId, {
           type: "message",
           content: payload.text,
+        }, {
+          traceId: options.traceId,
+          channel: options.channel,
+          deliveryType: "websocket",
+          deliveryTarget: { type: "websocket", connectionId: options.connectionId },
         });
       }
     }
@@ -118,7 +228,12 @@ async function pushPayloads(
   if (options.isTelegram && options.telegramBotToken && options.telegramChatId) {
     for (const payload of payloads ?? []) {
       if (payload.text) {
-        await pushToTelegram(options.telegramBotToken, options.telegramChatId, payload.text);
+        await pushToTelegram(options.telegramBotToken, options.telegramChatId, payload.text, {
+          traceId: options.traceId,
+          channel: options.channel,
+          deliveryType: "telegram",
+          deliveryTarget: { type: "telegram", chatId: options.telegramChatId },
+        });
       }
     }
   }
@@ -126,6 +241,7 @@ async function pushPayloads(
 
 async function pushIdleStatus(
   canPush: boolean,
+  traceId: string,
   callbackUrl?: string,
   connectionId?: string,
 ): Promise<void> {
@@ -134,6 +250,11 @@ async function pushIdleStatus(
   await pushToConnection(callbackUrl, connectionId, {
     type: "status",
     status: "Idle",
+  }, {
+    traceId,
+    channel: "web",
+    deliveryType: "websocket",
+    deliveryTarget: { type: "websocket", connectionId },
   });
 }
 
@@ -288,6 +409,7 @@ export async function handler(
   event: LambdaAgentEvent,
 ): Promise<LambdaAgentResponse> {
   const startTime = Date.now();
+  const traceId = event.traceId ?? `lambda-${event.sessionId}`;
 
   // Ensure HOME points to /tmp for OpenClaw config resolution
   process.env.HOME = "/tmp";
@@ -325,6 +447,11 @@ export async function handler(
       await pushToConnection(event.callbackUrl!, event.connectionId!, {
         type: "error",
         error: "Session is already being processed",
+      }, {
+        traceId,
+        channel: event.channel,
+        deliveryType: "websocket",
+        deliveryTarget: { type: "websocket", connectionId: event.connectionId! },
       });
     }
     return {
@@ -336,12 +463,33 @@ export async function handler(
   const configInit = await ensureInitialized();
   const runtimeConfig = configInit.runtimeConfig;
   const sessionId = buildRuntimeSessionId(runtimeConfig, event.channel, event.sessionId);
+  const deliveryTarget = event.channel === "web"
+    ? { type: "websocket", connectionId: event.connectionId ?? "unknown" }
+    : { type: "telegram", chatId: telegramChatId ?? "unknown" };
+  const requestLogPayload = {
+    traceId,
+    channel: event.channel,
+    provider: runtimeConfig.provider,
+    model: event.model ?? runtimeConfig.defaultModel,
+    capability: runtimeConfig.capability,
+    sessionNamespace: runtimeConfig.sessionNamespace,
+    deliveryTarget,
+    sessionId,
+    messageLength: event.message.length,
+  };
+  logLambdaEvent("lambda.request.accepted", requestLogPayload);
+  logLambdaEvent("lambda.runtime.summary", requestLogPayload);
 
   // Push "running" status before starting
   if (canPush) {
     await pushToConnection(event.callbackUrl!, event.connectionId!, {
       type: "status",
       status: "running",
+    }, {
+      traceId,
+      channel: event.channel,
+      deliveryType: "websocket",
+      deliveryTarget: { type: "websocket", connectionId: event.connectionId! },
     });
   } else if (isTelegram && telegramBotTokenPath) {
     const secrets = await resolveSecrets([telegramBotTokenPath]);
@@ -349,6 +497,7 @@ export async function handler(
   }
 
   if (!runtimeConfig.readiness.toolRuntimeReady && isToolRequest(event.message)) {
+    logLambdaEvent("lambda.tool.blocked", requestLogPayload);
     const payloads = [{ text: buildToolUnavailableMessage(runtimeConfig) }];
     await pushPayloads(payloads, {
       canPush,
@@ -357,8 +506,10 @@ export async function handler(
       isTelegram,
       telegramBotToken,
       telegramChatId,
+      traceId,
+      channel: event.channel,
     });
-    await pushIdleStatus(canPush, event.callbackUrl, event.connectionId);
+    await pushIdleStatus(canPush, traceId, event.callbackUrl, event.connectionId);
 
     return {
       success: true,
@@ -405,13 +556,20 @@ export async function handler(
         isTelegram,
         telegramBotToken,
         telegramChatId,
+        traceId,
+        channel: event.channel,
       });
 
       if (isTelegram && telegramBotToken) {
-        await pushToTelegram(telegramBotToken, telegramChatId!, "✅ Done");
+        await pushToTelegram(telegramBotToken, telegramChatId!, "✅ Done", {
+          traceId,
+          channel: event.channel,
+          deliveryType: "telegram",
+          deliveryTarget: { type: "telegram", chatId: telegramChatId! },
+        });
       }
 
-      await pushIdleStatus(canPush, event.callbackUrl, event.connectionId);
+      await pushIdleStatus(canPush, traceId, event.callbackUrl, event.connectionId);
 
       return {
         success: true,
@@ -431,12 +589,22 @@ export async function handler(
         await pushToConnection(event.callbackUrl!, event.connectionId!, {
           type: "error",
           error: errorMessage,
+        }, {
+          traceId,
+          channel: event.channel,
+          deliveryType: "websocket",
+          deliveryTarget: { type: "websocket", connectionId: event.connectionId! },
         });
       } else if (isTelegram && telegramBotToken) {
-        await pushToTelegram(telegramBotToken, telegramChatId!, `❌ ${errorMessage}`);
+        await pushToTelegram(telegramBotToken, telegramChatId!, `❌ ${errorMessage}`, {
+          traceId,
+          channel: event.channel,
+          deliveryType: "telegram",
+          deliveryTarget: { type: "telegram", chatId: telegramChatId! },
+        });
       }
 
-      await pushIdleStatus(canPush, event.callbackUrl, event.connectionId);
+      await pushIdleStatus(canPush, traceId, event.callbackUrl, event.connectionId);
 
       return {
         success: false,

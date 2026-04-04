@@ -195,4 +195,31 @@ describe("metrics", () => {
       expect(mockSend).toHaveBeenCalledTimes(1);
     });
   });
+
+  describe("publishCountMetric", () => {
+    it("should publish low-cardinality observability dimensions", async () => {
+      const { publishCountMetric } = await loadModule();
+
+      await publishCountMetric("DeliverySuccess", {
+        channel: "telegram",
+        runtime: "fargate",
+        deliveryType: "telegram",
+      }, 2);
+
+      expect(mockSend).toHaveBeenCalledTimes(1);
+
+      const input = getCommandInput();
+      const metric = input.MetricData!.find(
+        (m) => m.MetricName === "DeliverySuccess",
+      );
+      expect(metric!.Value).toBe(2);
+      expect(metric!.Dimensions).toEqual(
+        expect.arrayContaining([
+          { Name: "Channel", Value: "telegram" },
+          { Name: "Runtime", Value: "fargate" },
+          { Name: "DeliveryType", Value: "telegram" },
+        ]),
+      );
+    });
+  });
 });

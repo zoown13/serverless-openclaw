@@ -93,9 +93,9 @@ export class CallbackSender {
   ): Promise<void> {
     const chatId = connectionId.slice(9); // Remove "telegram:" prefix
     const plain = stripMarkdown(text);
-    try {
-      for (let i = 0; i < plain.length; i += TELEGRAM_MAX_LENGTH) {
-        const chunk = plain.slice(i, i + TELEGRAM_MAX_LENGTH);
+    for (let i = 0; i < plain.length; i += TELEGRAM_MAX_LENGTH) {
+      const chunk = plain.slice(i, i + TELEGRAM_MAX_LENGTH);
+      try {
         const resp = await fetch(
           `https://api.telegram.org/bot${this.telegramBotToken}/sendMessage`,
           {
@@ -105,16 +105,25 @@ export class CallbackSender {
           },
         );
         if (!resp.ok) {
+          const body = await resp.text().catch(() => "");
           console.error(
             `[callback] Telegram API error ${resp.status} for ${connectionId}`,
           );
+          throw new Error(
+            body
+              ? `Telegram delivery failed (${resp.status}): ${body}`
+              : `Telegram delivery failed with status ${resp.status}`,
+          );
         }
+      } catch (error) {
+        if (!(error instanceof Error) || !error.message.startsWith("Telegram delivery failed")) {
+          console.error(
+            `[callback] Failed to send Telegram message for ${connectionId}`,
+            error,
+          );
+        }
+        throw error;
       }
-    } catch (err) {
-      console.error(
-        `[callback] Failed to send Telegram message to ${connectionId}:`,
-        err,
-      );
     }
   }
 }

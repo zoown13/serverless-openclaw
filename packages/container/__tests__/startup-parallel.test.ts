@@ -54,6 +54,7 @@ const mockListen = vi.fn(
 
 const mockPublishStartupMetrics = vi.fn(async () => {});
 const mockPublishMessageMetrics = vi.fn(async () => {});
+const mockPublishCountMetric = vi.fn(async () => {});
 const mockStartPeriodicBackup = vi.fn();
 
 vi.mock("../src/s3-sync.js", () => ({
@@ -77,6 +78,8 @@ vi.mock("../src/metrics.js", () => ({
     mockPublishStartupMetrics(...args),
   publishMessageMetrics: (...args: unknown[]) =>
     mockPublishMessageMetrics(...args),
+  publishCountMetric: (...args: unknown[]) =>
+    mockPublishCountMetric(...args),
 }));
 
 vi.mock("../src/discover-public-ip.js", () => ({

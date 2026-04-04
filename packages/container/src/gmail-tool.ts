@@ -6,7 +6,36 @@ interface GmailToolOptions {
   message: string;
   runtimeClass?: RuntimeClass;
   emailTokenBudget?: EmailTokenBudgetPolicy;
+  onTelemetry?: (event: GmailTelemetryEvent) => void;
 }
+
+export type GmailTelemetryEvent =
+  | { event: "matched" }
+  | {
+    event: "queryBuilt";
+    sanitizedQuery: string;
+    isUnread: boolean;
+    dateRange?: string;
+    keywordCount: number;
+  }
+  | {
+    event: "result";
+    sanitizedQuery: string;
+    outcome: "success" | "no-results";
+    isUnread: boolean;
+    dateRange?: string;
+    keywordCount: number;
+    matchedCount: number;
+    inspectedCount: number;
+  }
+  | {
+    event: "failure";
+    sanitizedQuery?: string;
+    reason: string;
+    isUnread: boolean;
+    dateRange?: string;
+    keywordCount: number;
+  };
 
 interface GogOauthExport {
   email?: string;
@@ -231,6 +260,37 @@ function deriveQuery(message: string, now = new Date()): string {
   return parts.join(" ");
 }
 
+export function sanitizeQueryForLogs(query: string): string {
+  return query
+    .replace(/\S+@\S+/g, "[REDACTED]")
+    .replace(/\b(?:bearer|token|access_token|refresh_token|oauth)[^\s]*/gi, "[REDACTED]")
+    .replace(/\b\d{8,}\b/g, "[REDACTED]");
+}
+
+function summarizeQuery(query: string): {
+  sanitizedQuery: string;
+  isUnread: boolean;
+  dateRange?: string;
+  keywordCount: number;
+} {
+  const sanitizedQuery = sanitizeQueryForLogs(query);
+  const tokens = query.split(/\s+/).filter(Boolean);
+  const dateTokens = tokens.filter((token) =>
+    /^(?:after:|before:|newer_than:)/i.test(token),
+  );
+  const keywordCount = tokens.filter(
+    (token) =>
+      !/^(?:after:|before:|newer_than:|is:unread)$/i.test(token),
+  ).length;
+
+  return {
+    sanitizedQuery,
+    isUnread: /\bis:unread\b/i.test(query),
+    dateRange: dateTokens.length > 0 ? dateTokens.join(" ") : undefined,
+    keywordCount,
+  };
+}
+
 async function exchangeRefreshToken(
   refreshToken: string,
   credentials: GoogleClientCredentials,
@@ -348,18 +408,45 @@ export async function maybeHandleCustomGmailRequest(
     return undefined;
   }
 
+  options.onTelemetry?.({ event: "matched" });
+
+  const query = deriveQuery(options.message);
+  const querySummary = summarizeQuery(query);
+  options.onTelemetry?.({
+    event: "queryBuilt",
+    sanitizedQuery: querySummary.sanitizedQuery,
+    isUnread: querySummary.isUnread,
+    dateRange: querySummary.dateRange,
+    keywordCount: querySummary.keywordCount,
+  });
+
   const oauthExport = loadOauthExport();
   const refreshToken = oauthExport?.refresh_token;
   if (!refreshToken) {
+    options.onTelemetry?.({
+      event: "failure",
+      sanitizedQuery: querySummary.sanitizedQuery,
+      reason: "missing-refresh-token",
+      isUnread: querySummary.isUnread,
+      dateRange: querySummary.dateRange,
+      keywordCount: querySummary.keywordCount,
+    });
     return "Gmail is not connected in this runtime yet. I need a valid exported refresh token before I can inspect your inbox.";
   }
 
   const credentials = loadGoogleCredentials();
   if (!credentials) {
+    options.onTelemetry?.({
+      event: "failure",
+      sanitizedQuery: querySummary.sanitizedQuery,
+      reason: "missing-client-credentials",
+      isUnread: querySummary.isUnread,
+      dateRange: querySummary.dateRange,
+      keywordCount: querySummary.keywordCount,
+    });
     return "Gmail OAuth client credentials are missing in this runtime. I need the desktop client credentials JSON that was used during gog auth add.";
   }
 
-  const query = deriveQuery(options.message);
   const maxMessages = options.emailTokenBudget?.maxMessages ?? 5;
   const maxSnippetChars = options.emailTokenBudget?.maxSnippetChars ?? 240;
 
@@ -371,6 +458,19 @@ export async function maybeHandleCustomGmailRequest(
     );
 
     const messageIds = (listResponse.messages ?? []).slice(0, maxMessages);
+    if (messageIds.length === 0) {
+      options.onTelemetry?.({
+        event: "result",
+        sanitizedQuery: querySummary.sanitizedQuery,
+        outcome: "no-results",
+        isUnread: querySummary.isUnread,
+        dateRange: querySummary.dateRange,
+        keywordCount: querySummary.keywordCount,
+        matchedCount: listResponse.resultSizeEstimate ?? 0,
+        inspectedCount: 0,
+      });
+    }
+
     const items = await Promise.all(
       messageIds.map(async ({ id }) => {
         const metadata = await gmailGetJson<GmailMessageMetadataResponse>(
@@ -387,12 +487,33 @@ export async function maybeHandleCustomGmailRequest(
       }),
     );
 
+    if (messageIds.length > 0) {
+      options.onTelemetry?.({
+        event: "result",
+        sanitizedQuery: querySummary.sanitizedQuery,
+        outcome: "success",
+        isUnread: querySummary.isUnread,
+        dateRange: querySummary.dateRange,
+        keywordCount: querySummary.keywordCount,
+        matchedCount: listResponse.resultSizeEstimate ?? messageIds.length,
+        inspectedCount: messageIds.length,
+      });
+    }
+
     return formatSummary(
       query,
       messageIds.length,
       items,
     );
   } catch (err) {
+    options.onTelemetry?.({
+      event: "failure",
+      sanitizedQuery: querySummary.sanitizedQuery,
+      reason: err instanceof Error ? err.message : "unknown-error",
+      isUnread: querySummary.isUnread,
+      dateRange: querySummary.dateRange,
+      keywordCount: querySummary.keywordCount,
+    });
     return err instanceof Error
       ? err.message
       : "Gmail request failed for an unknown reason.";

@@ -2,7 +2,16 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type { LambdaAgentEvent, LambdaAgentResponse } from "../src/types.js";
 
 // Use vi.hoisted to ensure mock references are stable across vi.resetModules()
-const { mockInitConfig, mockDownload, mockUpload, mockResolveSecrets, mockRunAgent, mockAcquire, mockRelease } = vi.hoisted(() => ({
+const {
+  mockInitConfig,
+  mockDownload,
+  mockUpload,
+  mockResolveSecrets,
+  mockRunAgent,
+  mockAcquire,
+  mockRelease,
+  mockPublishLambdaDeliveryMetric,
+} = vi.hoisted(() => ({
   mockInitConfig: vi.fn().mockResolvedValue({
     configDir: "/tmp/.openclaw",
     sessionsDir: "/tmp/.openclaw/agents/default/sessions",
@@ -46,6 +55,7 @@ const { mockInitConfig, mockDownload, mockUpload, mockResolveSecrets, mockRunAge
   mockRunAgent: vi.fn(),
   mockAcquire: vi.fn().mockResolvedValue(true),
   mockRelease: vi.fn().mockResolvedValue(undefined),
+  mockPublishLambdaDeliveryMetric: vi.fn().mockResolvedValue(undefined),
 }));
 
 const fetchMock = vi.fn();
@@ -78,6 +88,10 @@ vi.mock("../src/session-lock.js", () => ({
   })),
 }));
 
+vi.mock("../src/metrics.js", () => ({
+  publishLambdaDeliveryMetric: (...args: unknown[]) => mockPublishLambdaDeliveryMetric(...args),
+}));
+
 describe("handler", () => {
   let originalBucket: string | undefined;
   let originalProvider: string | undefined;
@@ -95,6 +109,7 @@ describe("handler", () => {
     mockRunAgent.mockClear();
     mockAcquire.mockClear();
     mockRelease.mockClear();
+    mockPublishLambdaDeliveryMetric.mockClear();
     fetchMock.mockReset();
     fetchMock.mockResolvedValue({
       ok: true,
@@ -158,6 +173,7 @@ describe("handler", () => {
     return {
       userId: "user-123",
       sessionId: "session-456",
+      traceId: "trace-456",
       message: "Hello",
       channel: "web",
       connectionId: "conn-123",
@@ -404,12 +420,12 @@ describe("handler", () => {
     expect(result.success).toBe(true);
     expect(fetchMock).toHaveBeenCalled();
     expect(infoSpy).toHaveBeenCalledWith(
-      "[telegram] delivered message",
-      expect.objectContaining({
-        chatId: "8585874705",
-        status: 200,
-      }),
+      expect.stringContaining("\"event\":\"lambda.delivery.telegram.success\""),
     );
+    expect(mockPublishLambdaDeliveryMetric).toHaveBeenCalledWith("DeliverySuccess", {
+      channel: "telegram",
+      deliveryType: "telegram",
+    });
   });
 
   it("should log Telegram delivery failures for non-ok responses", async () => {
@@ -438,12 +454,24 @@ describe("handler", () => {
 
     expect(result.success).toBe(true);
     expect(errorSpy).toHaveBeenCalledWith(
-      "[telegram] failed to deliver message",
-      expect.objectContaining({
-        chatId: "8585874705",
-        status: 400,
-        body: "Bad Request: chat not found",
-      }),
+      expect.stringContaining("\"event\":\"lambda.delivery.telegram.failure\""),
+    );
+    expect(mockPublishLambdaDeliveryMetric).toHaveBeenCalledWith("DeliveryFailure", {
+      channel: "telegram",
+      deliveryType: "telegram",
+    });
+  });
+
+  it("should log request acceptance with traceId", async () => {
+    const handler = await loadHandler();
+
+    await handler(createEvent());
+
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"event\":\"lambda.request.accepted\""),
+    );
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"traceId\":\"trace-456\""),
     );
   });
 });

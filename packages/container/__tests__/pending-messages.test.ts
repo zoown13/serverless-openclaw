@@ -1,145 +1,100 @@
+import { QueryCommand, DeleteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { KEY_PREFIX, TABLE_NAMES, type PendingMessageItem } from "@serverless-openclaw/shared";
 import { consumePendingMessages } from "../src/pending-messages.js";
 
-const mockDynamoSend = vi.fn();
-
-vi.mock("@aws-sdk/lib-dynamodb", () => ({
-  DynamoDBDocumentClient: {
-    from: vi.fn(() => ({ send: mockDynamoSend })),
-  },
-  QueryCommand: vi.fn((params: unknown) => ({ input: params, _tag: "QueryCommand" })),
-  DeleteCommand: vi.fn((params: unknown) => ({ input: params, _tag: "DeleteCommand" })),
-}));
-
-vi.mock("@aws-sdk/client-dynamodb", () => ({
-  DynamoDBClient: vi.fn(() => ({})),
-}));
+function makeMessage(sk: string): PendingMessageItem {
+  return {
+    PK: `${KEY_PREFIX.USER}user-1`,
+    SK: sk,
+    connectionId: "connection-1",
+    message: "hello",
+    channel: "telegram",
+    createdAt: new Date().toISOString(),
+    ttl: Math.floor(Date.now() / 1000) + 300,
+  };
+}
 
 describe("consumePendingMessages", () => {
-  const mockProcessMessage = vi.fn();
+  const dynamoSend = vi.fn<(command: unknown) => Promise<unknown>>();
+  const processMessage = vi.fn<(msg: PendingMessageItem) => Promise<void>>();
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockProcessMessage.mockResolvedValue(undefined);
   });
 
-  it("should query PendingMessages for the user", async () => {
-    mockDynamoSend
-      .mockResolvedValueOnce({ Items: [] }); // Query returns empty
+  it("keeps processing when one pending message fails and leaves it queued", async () => {
+    const first = makeMessage("MSG#1");
+    const second = makeMessage("MSG#2");
 
-    await consumePendingMessages({
-      dynamoSend: mockDynamoSend,
-      userId: "user-123",
-      processMessage: mockProcessMessage,
+    dynamoSend.mockImplementation(async (command: unknown) => {
+      if (command instanceof QueryCommand) {
+        return { Items: [first, second] };
+      }
+      return {};
     });
 
-    expect(mockDynamoSend).toHaveBeenCalledWith(
-      expect.objectContaining({
-        input: expect.objectContaining({
-          TableName: expect.stringContaining("PendingMessages"),
-          KeyConditionExpression: "PK = :pk",
-          ExpressionAttributeValues: { ":pk": "USER#user-123" },
-        }),
-      }),
+    processMessage
+      .mockRejectedValueOnce(new Error("telegram delivery failed"))
+      .mockResolvedValueOnce();
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const consumed = await consumePendingMessages({
+      dynamoSend,
+      userId: "user-1",
+      processMessage,
+    });
+
+    expect(consumed).toBe(1);
+    expect(processMessage).toHaveBeenCalledTimes(2);
+    expect(dynamoSend).toHaveBeenCalledWith(expect.any(QueryCommand));
+    expect(dynamoSend).toHaveBeenCalledTimes(2);
+
+    const deleteInput = vi
+      .mocked(dynamoSend)
+      .mock.calls
+      .map(([command]) => command)
+      .find((command): command is DeleteCommand => command instanceof DeleteCommand);
+
+    expect(deleteInput?.input).toMatchObject({
+      TableName: TABLE_NAMES.PENDING_MESSAGES,
+      Key: { PK: second.PK, SK: second.SK },
+    });
+    expect(warnSpy).toHaveBeenCalledWith(
+      `[pending] failed to process message ${first.SK} for user-1; leaving it queued`,
+      expect.any(Error),
     );
+
+    warnSpy.mockRestore();
   });
 
-  it("should process messages in order and delete them", async () => {
-    const messages = [
-      {
-        PK: "USER#user-123",
-        SK: "MSG#1000#uuid1",
-        message: "hello",
-        channel: "web",
-        connectionId: "conn-1",
-        createdAt: "2024-01-01T00:00:00Z",
-        ttl: 9999999999,
-      },
-      {
-        PK: "USER#user-123",
-        SK: "MSG#1001#uuid2",
-        message: "world",
-        channel: "web",
-        connectionId: "conn-1",
-        createdAt: "2024-01-01T00:00:01Z",
-        ttl: 9999999999,
-      },
-    ];
+  it("does not throw when deleting a processed pending message fails", async () => {
+    const msg = makeMessage("MSG#3");
 
-    mockDynamoSend
-      .mockResolvedValueOnce({ Items: messages }) // Query
-      .mockResolvedValue({}); // DeleteCommand calls
-
-    const count = await consumePendingMessages({
-      dynamoSend: mockDynamoSend,
-      userId: "user-123",
-      processMessage: mockProcessMessage,
+    dynamoSend.mockImplementation(async (command: unknown) => {
+      if (command instanceof QueryCommand) {
+        return { Items: [msg] };
+      }
+      throw new Error("dynamo delete failed");
     });
 
-    expect(count).toBe(2);
-    expect(mockProcessMessage).toHaveBeenCalledTimes(2);
-    expect(mockProcessMessage).toHaveBeenNthCalledWith(1, messages[0]);
-    expect(mockProcessMessage).toHaveBeenNthCalledWith(2, messages[1]);
+    processMessage.mockResolvedValueOnce();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    // Should have 1 Query + 2 Deletes = 3 calls total
-    expect(mockDynamoSend).toHaveBeenCalledTimes(3);
-  });
-
-  it("should return 0 for empty queue", async () => {
-    mockDynamoSend.mockResolvedValueOnce({ Items: [] });
-
-    const count = await consumePendingMessages({
-      dynamoSend: mockDynamoSend,
-      userId: "user-123",
-      processMessage: mockProcessMessage,
+    const consumed = await consumePendingMessages({
+      dynamoSend,
+      userId: "user-1",
+      processMessage,
     });
 
-    expect(count).toBe(0);
-    expect(mockProcessMessage).not.toHaveBeenCalled();
-  });
-
-  it("should handle undefined Items in query response", async () => {
-    mockDynamoSend.mockResolvedValueOnce({});
-
-    const count = await consumePendingMessages({
-      dynamoSend: mockDynamoSend,
-      userId: "user-123",
-      processMessage: mockProcessMessage,
-    });
-
-    expect(count).toBe(0);
-  });
-
-  it("should delete message after successful processing", async () => {
-    const msg = {
-      PK: "USER#user-123",
-      SK: "MSG#1000#uuid1",
-      message: "hello",
-      channel: "web",
-      connectionId: "conn-1",
-      createdAt: "2024-01-01T00:00:00Z",
-      ttl: 9999999999,
-    };
-
-    mockDynamoSend
-      .mockResolvedValueOnce({ Items: [msg] })
-      .mockResolvedValue({});
-
-    await consumePendingMessages({
-      dynamoSend: mockDynamoSend,
-      userId: "user-123",
-      processMessage: mockProcessMessage,
-    });
-
-    // Second call should be DeleteCommand
-    expect(mockDynamoSend).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        input: expect.objectContaining({
-          TableName: expect.stringContaining("PendingMessages"),
-          Key: { PK: "USER#user-123", SK: "MSG#1000#uuid1" },
-        }),
-      }),
+    expect(consumed).toBe(0);
+    expect(processMessage).toHaveBeenCalledWith(msg);
+    expect(warnSpy).toHaveBeenCalledWith(
+      `[pending] failed to delete message ${msg.SK} for user-1; it may be retried`,
+      expect.any(Error),
     );
+
+    warnSpy.mockRestore();
   });
 });

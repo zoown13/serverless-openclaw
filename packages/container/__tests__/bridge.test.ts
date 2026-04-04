@@ -1,15 +1,17 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import request from "supertest";
 import { createApp } from "../src/bridge.js";
 import type { BridgeDeps } from "../src/bridge.js";
 
-const { gmailToolMock } = vi.hoisted(() => ({
+const { gmailToolMock, publishCountMetricMock } = vi.hoisted(() => ({
   gmailToolMock: vi.fn(),
+  publishCountMetricMock: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("../src/metrics.js", () => ({
   publishMessageMetrics: vi.fn().mockResolvedValue(undefined),
   publishFirstResponseTime: vi.fn().mockResolvedValue(undefined),
+  publishCountMetric: (...args: unknown[]) => publishCountMetricMock(...args),
 }));
 
 vi.mock("../src/gmail-tool.js", () => ({
@@ -43,12 +45,22 @@ function createMockDeps(): BridgeDeps {
 describe("Bridge HTTP Server", () => {
   let deps: BridgeDeps;
   let app: ReturnType<typeof createApp>;
+  let infoSpy: ReturnType<typeof vi.spyOn>;
+  let errorSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     gmailToolMock.mockReset();
     gmailToolMock.mockResolvedValue(undefined);
+    publishCountMetricMock.mockClear();
     deps = createMockDeps();
     app = createApp(deps);
+    infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    infoSpy.mockRestore();
+    errorSpy.mockRestore();
   });
 
   describe("GET /health", () => {
@@ -188,6 +200,8 @@ describe("Bridge HTTP Server", () => {
           connectionId: "conn-123",
           callbackUrl: "https://example.com/prod",
           runtimeClass: "tool-enabled",
+          traceId: "trace-123",
+          routeDecision: "fargate-new",
         });
 
       expect(res.status).toBe(202);
@@ -202,6 +216,104 @@ describe("Bridge HTTP Server", () => {
         );
       });
       expect(deps.openclawClient.sendMessage).not.toHaveBeenCalled();
+      expect(infoSpy).toHaveBeenCalledWith(
+        expect.stringContaining("\"event\":\"bridge.delivery.success\""),
+      );
+      expect(publishCountMetricMock).toHaveBeenCalledWith("DeliverySuccess", {
+        channel: "web",
+        runtime: "fargate",
+        deliveryType: "websocket",
+      });
+    });
+
+    it("should log Gmail telemetry with sanitized query metadata", async () => {
+      gmailToolMock.mockImplementation(async (options: { onTelemetry?: (event: unknown) => void }) => {
+        options.onTelemetry?.({ event: "matched" });
+        options.onTelemetry?.({
+          event: "queryBuilt",
+          sanitizedQuery: "after:2026/03/01 [REDACTED]",
+          isUnread: false,
+          dateRange: "after:2026/03/01 before:2026/04/01",
+          keywordCount: 2,
+        });
+        options.onTelemetry?.({
+          event: "result",
+          sanitizedQuery: "after:2026/03/01 [REDACTED]",
+          outcome: "no-results",
+          isUnread: false,
+          dateRange: "after:2026/03/01 before:2026/04/01",
+          keywordCount: 2,
+          matchedCount: 0,
+          inspectedCount: 0,
+        });
+        return "No matches";
+      });
+
+      const res = await request(app)
+        .post("/message")
+        .set("Authorization", "Bearer test-secret-token")
+        .send({
+          userId: "user-1",
+          message: "Find card statements from march for zoown13@gmail.com token 1234567890",
+          channel: "web",
+          connectionId: "conn-123",
+          callbackUrl: "https://example.com/prod",
+          runtimeClass: "tool-enabled",
+          traceId: "trace-telemetry",
+          routeDecision: "fargate-new",
+        });
+
+      expect(res.status).toBe(202);
+
+      await vi.waitFor(() => {
+        expect(infoSpy).toHaveBeenCalledWith(
+          expect.stringContaining("\"event\":\"bridge.gmail.query.built\""),
+        );
+      });
+      expect(infoSpy).toHaveBeenCalledWith(
+        expect.stringContaining("[REDACTED]"),
+      );
+      expect(publishCountMetricMock).toHaveBeenCalledWith("GmailToolMatched", {
+        channel: "web",
+        runtime: "fargate",
+      });
+      expect(publishCountMetricMock).toHaveBeenCalledWith("GmailToolNoResults", {
+        channel: "web",
+        runtime: "fargate",
+      });
+    });
+
+    it("should record delivery failure when callback delivery throws", async () => {
+      gmailToolMock.mockResolvedValue("Inbox summary result");
+      deps.callbackSender.send = vi.fn().mockRejectedValue(new Error("telegram send failed"));
+      app = createApp(deps);
+
+      const res = await request(app)
+        .post("/message")
+        .set("Authorization", "Bearer test-secret-token")
+        .send({
+          userId: "user-1",
+          message: "Check my Gmail inbox",
+          channel: "telegram",
+          connectionId: "telegram:999001111",
+          callbackUrl: "https://example.com/prod",
+          runtimeClass: "tool-enabled",
+          traceId: "trace-delivery-failure",
+          routeDecision: "fargate-new",
+        });
+
+      expect(res.status).toBe(202);
+
+      await vi.waitFor(() => {
+        expect(errorSpy).toHaveBeenCalledWith(
+          expect.stringContaining("\"event\":\"bridge.delivery.failure\""),
+        );
+      });
+      expect(publishCountMetricMock).toHaveBeenCalledWith("DeliveryFailure", {
+        channel: "telegram",
+        runtime: "fargate",
+        deliveryType: "telegram",
+      });
     });
   });
 

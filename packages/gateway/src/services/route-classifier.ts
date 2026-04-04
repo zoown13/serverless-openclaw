@@ -1,6 +1,8 @@
-import type { RuntimeClass, TaskStateItem } from "@serverless-openclaw/shared";
-
-export type RouteDecision = "lambda" | "fargate-reuse" | "fargate-new";
+import type {
+  RouteDecision,
+  RuntimeClass,
+  TaskStateItem,
+} from "@serverless-openclaw/shared";
 
 export interface ClassifyRouteParams {
   message: string;

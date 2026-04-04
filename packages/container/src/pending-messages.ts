@@ -26,15 +26,34 @@ export async function consumePendingMessages(
 
   const items = result.Items ?? [];
 
+  let consumed = 0;
+
   for (const msg of items) {
-    await deps.processMessage(msg);
-    await deps.dynamoSend(
-      new DeleteCommand({
-        TableName: TABLE_NAMES.PENDING_MESSAGES,
-        Key: { PK: msg.PK, SK: msg.SK },
-      }),
-    );
+    try {
+      await deps.processMessage(msg);
+    } catch (error) {
+      console.warn(
+        `[pending] failed to process message ${msg.SK} for ${deps.userId}; leaving it queued`,
+        error,
+      );
+      continue;
+    }
+
+    try {
+      await deps.dynamoSend(
+        new DeleteCommand({
+          TableName: TABLE_NAMES.PENDING_MESSAGES,
+          Key: { PK: msg.PK, SK: msg.SK },
+        }),
+      );
+      consumed += 1;
+    } catch (error) {
+      console.warn(
+        `[pending] failed to delete message ${msg.SK} for ${deps.userId}; it may be retried`,
+        error,
+      );
+    }
   }
 
-  return items.length;
+  return consumed;
 }

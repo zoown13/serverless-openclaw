@@ -343,6 +343,22 @@ describe("CDK Stacks E2E — synth all stacks", () => {
         DashboardName: "ServerlessOpenClaw",
       });
     });
+
+    it("Dashboard includes routing and Gmail observability widgets", () => {
+      const dashboards = monitoringTemplate.findResources("AWS::CloudWatch::Dashboard");
+      const dashboardJson = JSON.stringify(dashboards);
+
+      expect(dashboardJson).toContain("Routing & Runtime Selection");
+      expect(dashboardJson).toContain("Gmail Tool & Delivery Outcomes");
+      expect(dashboardJson).toContain("RouteToLambda");
+      expect(dashboardJson).toContain("RouteToFargate");
+      expect(dashboardJson).toContain("RouteFallbackToFargate");
+      expect(dashboardJson).toContain("PendingMessagesQueued");
+      expect(dashboardJson).toContain("PendingMessagesDrained");
+      expect(dashboardJson).toContain("GmailToolSuccess");
+      expect(dashboardJson).toContain("DeliverySuccess");
+      expect(dashboardJson).toContain("DeliveryFailure");
+    });
   });
 });
 

@@ -1,21 +1,36 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   routeMessage,
   savePendingMessage,
   sendToBridge,
 } from "../../src/services/message.js";
 
+const publishGatewayCountMetricMock = vi.fn().mockResolvedValue(undefined);
+
 vi.mock("@aws-sdk/lib-dynamodb", () => ({
   PutCommand: vi.fn((params: unknown) => ({ input: params, _tag: "PutCommand" })),
+}));
+
+vi.mock("../../src/services/metrics.js", () => ({
+  publishGatewayCountMetric: (...args: unknown[]) => publishGatewayCountMetricMock(...args),
 }));
 
 describe("message service", () => {
   const mockDynamoSend = vi.fn();
   const mockFetch = vi.fn();
+  let infoSpy: ReturnType<typeof vi.spyOn>;
+  let warnSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     vi.clearAllMocks();
     mockFetch.mockResolvedValue({ ok: true, status: 202 });
+    infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    infoSpy.mockRestore();
+    warnSpy.mockRestore();
   });
 
   describe("sendToBridge", () => {
@@ -110,6 +125,7 @@ describe("message service", () => {
     const baseDeps = {
       userId: "user-123",
       message: "hello",
+      traceId: "trace-123",
       channel: "web" as const,
       connectionId: "conn-1",
       callbackUrl: "https://cb",
@@ -179,6 +195,8 @@ describe("message service", () => {
       expect(deps.savePendingMessage).toHaveBeenCalledWith(
         expect.objectContaining({
           runtimeClass: "tool-enabled",
+          traceId: "trace-123",
+          routeDecision: "fargate-new",
           emailTokenBudget: expect.objectContaining({
             mode: "headers-first",
           }),
@@ -616,6 +634,32 @@ describe("message service", () => {
       expect(result).toBe("started");
       expect(mockInvokeLambda).toHaveBeenCalled();
       expect(deps.startTask).toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("\"event\":\"route.lambda.fallback_to_fargate\""),
+      );
+    });
+
+    it("should emit structured route logs and route metrics for Lambda requests", async () => {
+      const mockInvokeLambda = vi.fn().mockResolvedValue({ accepted: true });
+      const deps = makeDeps({
+        agentRuntime: "lambda",
+        invokeLambdaAgent: mockInvokeLambda,
+        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("lambda");
+      expect(infoSpy).toHaveBeenCalledWith(
+        expect.stringContaining("\"event\":\"route.classified\""),
+      );
+      expect(infoSpy).toHaveBeenCalledWith(
+        expect.stringContaining("\"event\":\"route.lambda.invoked\""),
+      );
+      expect(publishGatewayCountMetricMock).toHaveBeenCalledWith("RouteToLambda", {
+        channel: "web",
+        runtime: "lambda",
+      });
     });
   });
 });

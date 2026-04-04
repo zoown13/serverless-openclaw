@@ -200,6 +200,28 @@ describe("message service", () => {
       );
     });
 
+    it("should accept Gmail clarification replies with punctuation", async () => {
+      const deps = makeDeps({
+        message: "지메일에서 확인해줘.",
+        getPendingClarification: vi.fn().mockResolvedValue({
+          kind: "payment_source",
+          channel: "web",
+          originalMessage: "이번주 결제한 금액이 어느정도 되려나?",
+          connectionId: "conn-1",
+          callbackUrl: "https://cb",
+          createdAt: "2026-04-04T00:00:00Z",
+          expiresAt: "2099-04-04T00:05:00Z",
+        }),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("started");
+      expect(deps.deletePendingClarification).toHaveBeenCalledWith("user-123", "web");
+      expect(deps.startTask).toHaveBeenCalled();
+      expect(deps.sendClarification).not.toHaveBeenCalled();
+    });
+
     it("should replay the original message through Lambda after a general clarification reply", async () => {
       const mockInvokeLambda = vi.fn().mockResolvedValue({ accepted: true });
       const deps = makeDeps({
@@ -228,6 +250,36 @@ describe("message service", () => {
         }),
       );
       expect(deps.startTask).not.toHaveBeenCalled();
+    });
+
+    it("should accept general clarification replies with punctuation", async () => {
+      const mockInvokeLambda = vi.fn().mockResolvedValue({ accepted: true });
+      const deps = makeDeps({
+        message: "일반 답변으로 해줘.",
+        agentRuntime: "both",
+        invokeLambdaAgent: mockInvokeLambda,
+        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+        getPendingClarification: vi.fn().mockResolvedValue({
+          kind: "payment_source",
+          channel: "web",
+          originalMessage: "이번주 결제한 금액이 어느정도 되려나?",
+          connectionId: "conn-1",
+          callbackUrl: "https://cb",
+          createdAt: "2026-04-04T00:00:00Z",
+          expiresAt: "2099-04-04T00:05:00Z",
+        }),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("lambda");
+      expect(deps.deletePendingClarification).toHaveBeenCalledWith("user-123", "web");
+      expect(mockInvokeLambda).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: "이번주 결제한 금액이 어느정도 되려나?",
+        }),
+      );
+      expect(deps.sendClarification).not.toHaveBeenCalled();
     });
 
     it("should resend the same clarification once for a short ambiguous follow-up", async () => {

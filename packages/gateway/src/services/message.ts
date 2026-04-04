@@ -124,12 +124,14 @@ const GMAIL_CONFIRMATION_PATTERNS = [
   /^(?:지메일|지메일에서|gmail|gmail에서)$/i,
   /^(?:메일에서|이메일에서|메일로|이메일로)$/i,
   /^(?:지메일에서|gmail에서)\s*확인해줘$/i,
+  /^(?:지메일|지메일에서|gmail|gmail에서|메일에서|이메일에서)(?:\s*확인해줘(?:요)?|\s*봐줘|\s*해주세요)?$/i,
 ];
 const GENERAL_CONFIRMATION_PATTERNS = [
   /^(?:일반|일반으로)$/i,
   /^(?:그냥 답변|일반 답변)$/i,
   /^(?:채팅으로|추론으로)$/i,
   /^(?:일반 답변으로 해줘|그냥 답변해줘)$/i,
+  /^(?:일반|일반 답변|그냥 답변|채팅|추론)(?:으로)?(?:\s*해줘(?:요)?|\s*해주세요)?$/i,
 ];
 
 type ClarificationChoice = "gmail" | "general";
@@ -148,6 +150,13 @@ function hasValue(value?: string): boolean {
 
 function normalizeMessage(value: string): string {
   return value.replace(/\s+/g, " ").trim();
+}
+
+function normalizeClarificationReply(value: string): string {
+  return normalizeMessage(value)
+    .normalize("NFKC")
+    .replace(/[.!?~。？！]+$/gu, "")
+    .trim();
 }
 
 function parsePositiveInteger(value: string | undefined, fallback: number): number {
@@ -239,7 +248,7 @@ function buildRouteLogPayload(
 }
 
 function parseClarificationChoice(message: string): ClarificationChoice | null {
-  const normalized = normalizeMessage(message);
+  const normalized = normalizeClarificationReply(message);
 
   if (GMAIL_CONFIRMATION_PATTERNS.some((pattern) => pattern.test(normalized))) {
     return "gmail";

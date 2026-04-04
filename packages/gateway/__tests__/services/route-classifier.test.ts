@@ -106,6 +106,10 @@ describe("classifyRouteRuntimeClass", () => {
     expect(classifyRouteRuntimeClass("내 Gmail 받은편지함 확인해줘")).toBe("tool-enabled");
   });
 
+  it("classifies short Korean Gmail confirmation replies as tool-enabled", () => {
+    expect(classifyRouteRuntimeClass("지메일에서 확인해줘.")).toBe("tool-enabled");
+  });
+
   it("classifies Korean Gmail body selection requests as tool-enabled", () => {
     expect(classifyRouteRuntimeClass("1번 메일 자세히 보여줘")).toBe("tool-enabled");
   });

@@ -135,6 +135,25 @@ const GENERAL_CONFIRMATION_PATTERNS = [
 ];
 
 type ClarificationChoice = "gmail" | "general";
+const GMAIL_CONFIRMATION_TOKENS = [
+  "지메일",
+  "gmail",
+  "이메일",
+  "메일에서",
+  "이메일에서",
+  "gmail에서",
+];
+const GENERAL_CONFIRMATION_TOKENS = [
+  "일반",
+  "일반답변",
+  "그냥답변",
+  "채팅",
+  "추론",
+];
+const SHORT_GMAIL_CONFIRMATION_PATTERN =
+  /(?:지메일|gmail|이메일|메일(?:에서|로)?)/i;
+const SHORT_GENERAL_CONFIRMATION_PATTERN =
+  /(?:일반|그냥\s*답변|채팅|추론)/i;
 
 function assertLambdaInvokeAccepted(result: unknown): void {
   if (typeof result !== "object" || result === null) return;
@@ -157,6 +176,10 @@ function normalizeClarificationReply(value: string): string {
     .normalize("NFKC")
     .replace(/[.!?~。？！]+$/gu, "")
     .trim();
+}
+
+function compactClarificationReply(value: string): string {
+  return normalizeClarificationReply(value).replace(/[\s\p{P}\p{S}]+/gu, "");
 }
 
 function parsePositiveInteger(value: string | undefined, fallback: number): number {
@@ -249,12 +272,34 @@ function buildRouteLogPayload(
 
 function parseClarificationChoice(message: string): ClarificationChoice | null {
   const normalized = normalizeClarificationReply(message);
+  const compact = compactClarificationReply(message);
 
   if (GMAIL_CONFIRMATION_PATTERNS.some((pattern) => pattern.test(normalized))) {
     return "gmail";
   }
 
+  if (GMAIL_CONFIRMATION_TOKENS.some((token) => compact.includes(token))) {
+    return "gmail";
+  }
+
   if (GENERAL_CONFIRMATION_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return "general";
+  }
+
+  if (GENERAL_CONFIRMATION_TOKENS.some((token) => compact.includes(token))) {
+    return "general";
+  }
+
+  // Accept short source-choice replies from chat apps even when the phrasing
+  // does not match the stricter confirmation patterns exactly.
+  if (normalized.length <= 24 && SHORT_GMAIL_CONFIRMATION_PATTERN.test(normalized)) {
+    return "gmail";
+  }
+
+  if (
+    normalized.length <= 24 &&
+    SHORT_GENERAL_CONFIRMATION_PATTERN.test(normalized)
+  ) {
     return "general";
   }
 

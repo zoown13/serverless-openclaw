@@ -96,7 +96,7 @@ function buildToolEnabledPrefix(
     ? "Do not read full message bodies or attachments unless the user explicitly asks for a specific message."
     : "Only read a message body when the task truly needs it, and keep the scope narrow.";
 
-  return `[System: Operate in headers-first safe mode to control Gmail and browser token usage. Inspect at most ${budget.maxMessages} items per step. Prefer sender, subject, date, and snippet previews truncated to ${budget.maxSnippetChars} characters. ${bodyAccessInstruction} If body access is needed, read at most ${budget.maxBodyChars} characters from one item at a time and summarize incrementally before reading more.]`;
+  return `[System: Operate in headers-first safe mode to control Gmail and browser token usage. Inspect at most ${budget.maxMessages} items per step. Prefer sender, subject, date, and snippet previews truncated to ${budget.maxSnippetChars} characters. ${bodyAccessInstruction} If the user clearly identifies one Gmail result, open only that single message body. Never inspect attachments in this runtime. If body access is needed, read at most ${budget.maxBodyChars} characters from one item at a time and summarize incrementally before reading more.]`;
 }
 
 export function createApp(deps: BridgeDeps): express.Express {
@@ -185,6 +185,8 @@ export function createApp(deps: BridgeDeps): express.Express {
 
       try {
         const gmailResponse = await maybeHandleCustomGmailRequest({
+          userId: body.userId!,
+          sessionKey: body.connectionId!,
           message: body.message!,
           runtimeClass: body.runtimeClass,
           emailTokenBudget: body.emailTokenBudget,

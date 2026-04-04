@@ -13,16 +13,16 @@ const FARGATE_HINTS = ["/heavy", "/fargate"];
 const EMAIL_HINT_PATTERN =
   /(?:\bgmail\b|\bemail\b|\be-mail\b|\bmailbox\b|\binbox\b|\bunread\b|지메일|이메일|메일(?:함)?|수신함|받은편지함|편지함|안 읽은|읽지 않은)/i;
 const EMAIL_ACTION_PATTERN =
-  /(?:\baccess\b|\bconnect\b|\bintegrat(?:e|ion)?\b|\bfetch\b|\bload\b|\bget\b|\bcheck\b|\bread\b|\bopen\b|\bsearch\b|\bsend\b|\bsummar(?:ize|ise)\b|\banaly[sz]e\b|\breview\b|\btriage\b|접근|연동|연결|가져오|불러오|조회|확인|읽|열|검색|보내|요약|분석|정리|분류|찾|살펴|보여|봐)/i;
+  /(?:\baccess\b|\bconnect\b|\bintegrat(?:e|ion)?\b|\bfetch\b|\bload\b|\bget\b|\bcheck\b|\bread\b|\bopen\b|\bsearch\b|\bsend\b|\bsummar(?:ize|ise)\b|\banaly[sz]e\b|\breview\b|\btriage\b|\bbody\b|\bcontent\b|\bdetails?\b|\bdetailed\b|접근|연동|연결|가져오|불러오|조회|확인|읽|열|검색|보내|요약|분석|정리|분류|찾|살펴|보여|봐|본문|내용|자세히|상세)/i;
 const TOOL_HEAVY_PATTERNS = [
-  /(?:check|read|open|search|send|summari[sz]e|analy[sz]e).*(?:gmail|email|mailbox|inbox|attachment)/i,
-  /(?:gmail|email|mailbox|inbox|attachment).*(?:check|read|open|search|send|summari[sz]e|analy[sz]e)/i,
+  /(?:check|read|open|search|send|summari[sz]e|analy[sz]e|show|body|content|details?).*(?:gmail|email|mailbox|inbox|attachment|message)/i,
+  /(?:gmail|email|mailbox|inbox|attachment|message).*(?:check|read|open|search|send|summari[sz]e|analy[sz]e|show|body|content|details?)/i,
   /(?:browse|open|visit|search|crawl|scrape|look up|navigate).*(?:web|browser|site|website|page|url|internet)/i,
   /(?:browser|website|web page|site|internet|url|link).*(?:open|browse|visit|search|check|look up|navigate)/i,
   /\b(use|run|call|invoke)\b.*\btool\b/i,
   /\btool\b.*\b(use|run|call|invoke)\b/i,
-  /(?:확인|읽|열|검색|보내|요약|분석).*(?:지메일|이메일|메일|받은편지함|첨부파일)/,
-  /(?:지메일|이메일|메일|받은편지함|첨부파일).*(?:확인|읽|열|검색|보내|요약|분석)/,
+  /(?:확인|읽|열|검색|보내|요약|분석|자세히|상세|본문|내용|보여).*(?:지메일|이메일|메일|받은편지함|첨부파일|메시지)/,
+  /(?:지메일|이메일|메일|받은편지함|첨부파일|메시지).*(?:확인|읽|열|검색|보내|요약|분석|자세히|상세|본문|내용|보여)/,
   /(?:브라우저|웹|사이트|페이지|인터넷|링크|주소).*(?:열|찾|검색|접속|확인|둘러|탐색)/,
   /(?:열|찾|검색|접속|확인|둘러|탐색).*(?:브라우저|웹|사이트|페이지|인터넷|링크|주소)/,
   /도구.*(?:사용|실행|호출)/,

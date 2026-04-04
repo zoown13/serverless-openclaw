@@ -34,6 +34,9 @@ cp .env.example .env
 #   FARGATE_MEMORY=2048    # optional (must be compatible with CPU), default: 2048
 #   PREWARM_SCHEDULE=0 9 ? * MON-FRI *   # optional, comma-separated cron expressions
 #   PREWARM_DURATION=60                   # optional, minutes (default: 60)
+#   PENDING_MESSAGE_MAX_RETRIES=3         # optional, Fargate pending queue retry budget
+#   PENDING_MESSAGE_BASE_RETRY_DELAY_MS=30000   # optional, exponential backoff base delay
+#   PENDING_MESSAGE_MAX_RETRY_DELAY_MS=600000   # optional, exponential backoff ceiling
 ```
 
 Then load the environment before running any AWS/CDK commands:
@@ -288,6 +291,11 @@ Set in `.env` or exported before running CDK commands.
 | `AI_PROVIDER` | `anthropic` | `anthropic` \| `bedrock` | AI provider selection |
 | `AI_MODEL` | _(provider default)_ | any model ID | Override default model |
 | `DEPLOY_WEB` | `true` | `true` \| `false` | Include WebStack deployment |
+| `PENDING_MESSAGE_MAX_RETRIES` | `3` | positive integer | Retry budget before soft dead-lettering a pending message |
+| `PENDING_MESSAGE_BASE_RETRY_DELAY_MS` | `30000` | positive integer (ms) | Base delay used for exponential retry backoff in Fargate |
+| `PENDING_MESSAGE_MAX_RETRY_DELAY_MS` | `600000` | positive integer (ms) | Upper bound for pending-message retry delay in Fargate |
+
+These pending-queue settings are consumed by the Fargate container only. They do not affect the Lambda chat runtime. The defaults preserve the current behavior, while letting operations tune retry aggressiveness without rebuilding the image.
 
 ---
 

@@ -261,6 +261,30 @@ export class MonitoringStack extends cdk.Stack {
         height: 4,
         leftYAxis: { label: "count" },
       }),
+      new cloudwatch.GraphWidget({
+        title: "Pending Queue — retry / dead-letter",
+        left: [
+          ...CHANNELS.map((ch) =>
+            dimensionMetric(
+              "PendingMessagesRetryScheduled",
+              { Channel: ch, Runtime: "fargate" },
+              "Sum",
+              `RetryScheduled (${ch})`,
+              cloudwatch.Unit.COUNT,
+            )),
+          ...CHANNELS.map((ch) =>
+            dimensionMetric(
+              "PendingMessagesDeadLettered",
+              { Channel: ch, Runtime: "fargate" },
+              "Sum",
+              `DeadLettered (${ch})`,
+              cloudwatch.Unit.COUNT,
+            )),
+        ],
+        width: 6,
+        height: 4,
+        leftYAxis: { label: "count" },
+      }),
     );
 
     dashboard.addWidgets(

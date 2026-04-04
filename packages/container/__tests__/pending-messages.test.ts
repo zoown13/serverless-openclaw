@@ -1,7 +1,12 @@
 import { QueryCommand, DeleteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { KEY_PREFIX, TABLE_NAMES, type PendingMessageItem } from "@serverless-openclaw/shared";
+import { publishCountMetric } from "../src/metrics.js";
 import { consumePendingMessages } from "../src/pending-messages.js";
+
+vi.mock("../src/metrics.js", () => ({
+  publishCountMetric: vi.fn(),
+}));
 
 function makeMessage(sk: string): PendingMessageItem {
   return {
@@ -85,6 +90,10 @@ describe("consumePendingMessages", () => {
       ),
       expect.any(Error),
     );
+    expect(publishCountMetric).toHaveBeenCalledWith("PendingMessagesRetryScheduled", {
+      channel: first.channel,
+      runtime: "fargate",
+    });
 
     warnSpy.mockRestore();
   });
@@ -186,6 +195,10 @@ describe("consumePendingMessages", () => {
       `[pending] dead-lettered message ${msg.SK} for user-1 after 3 attempts`,
       expect.any(Error),
     );
+    expect(publishCountMetric).toHaveBeenCalledWith("PendingMessagesDeadLettered", {
+      channel: msg.channel,
+      runtime: "fargate",
+    });
 
     warnSpy.mockRestore();
   });

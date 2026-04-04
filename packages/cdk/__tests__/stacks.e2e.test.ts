@@ -355,6 +355,8 @@ describe("CDK Stacks E2E — synth all stacks", () => {
       expect(dashboardJson).toContain("RouteFallbackToFargate");
       expect(dashboardJson).toContain("PendingMessagesQueued");
       expect(dashboardJson).toContain("PendingMessagesDrained");
+      expect(dashboardJson).toContain("PendingMessagesRetryScheduled");
+      expect(dashboardJson).toContain("PendingMessagesDeadLettered");
       expect(dashboardJson).toContain("GmailToolSuccess");
       expect(dashboardJson).toContain("DeliverySuccess");
       expect(dashboardJson).toContain("DeliveryFailure");

@@ -4,6 +4,7 @@ import {
   KEY_PREFIX,
 } from "@serverless-openclaw/shared";
 import type { PendingMessageItem } from "@serverless-openclaw/shared";
+import { publishCountMetric } from "./metrics.js";
 
 interface ConsumeDeps {
   dynamoSend: (command: unknown) => Promise<unknown>;
@@ -71,6 +72,10 @@ export async function consumePendingMessages(
             },
           }),
         );
+        await publishCountMetric("PendingMessagesDeadLettered", {
+          channel: msg.channel,
+          runtime: "fargate",
+        });
         console.warn(
           `[pending] dead-lettered message ${msg.SK} for ${deps.userId} after ${retryCount} attempts`,
           error,
@@ -94,6 +99,10 @@ export async function consumePendingMessages(
           },
         }),
       );
+      await publishCountMetric("PendingMessagesRetryScheduled", {
+        channel: msg.channel,
+        runtime: "fargate",
+      });
       console.warn(
         `[pending] failed to process message ${msg.SK} for ${deps.userId}; retry ${retryCount}/${MAX_PENDING_RETRIES} at ${nextAttemptAt}`,
         error,

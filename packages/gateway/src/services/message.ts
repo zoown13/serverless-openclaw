@@ -10,10 +10,11 @@ import {
 import type {
   BridgeMessageRequest,
   Channel,
-  PendingClarificationState,
   EmailTokenBudgetPolicy,
   PendingMessageItem,
   RouteDecision,
+  RoutingContextState,
+  RoutingSourceChoice,
   RuntimeClass,
   TaskStateItem,
 } from "@serverless-openclaw/shared";
@@ -97,15 +98,15 @@ export interface RouteDeps {
   putTaskState: (item: TaskStateItem) => Promise<void>;
   savePendingMessage: (item: PendingMessageItem) => Promise<void>;
   deleteTaskState: (userId: string) => Promise<void>;
-  getPendingClarification: (
+  getRoutingContext: (
     userId: string,
     channel: Channel,
-  ) => Promise<PendingClarificationState | null>;
-  putPendingClarification: (
+  ) => Promise<RoutingContextState | null>;
+  putRoutingContext: (
     userId: string,
-    state: PendingClarificationState,
+    state: RoutingContextState,
   ) => Promise<void>;
-  deletePendingClarification: (userId: string, channel: Channel) => Promise<void>;
+  deleteRoutingContext: (userId: string, channel: Channel) => Promise<void>;
   sendClarification: (text: string) => Promise<void>;
   startTaskParams: StartTaskParams;
   /** Lambda agent runtime support (Phase 2) */
@@ -117,9 +118,11 @@ export interface RouteDeps {
 
 export type RouteResult = "sent" | "queued" | "started" | "lambda" | "clarify";
 
-const CLARIFICATION_TTL_MS = 5 * 60 * 1000;
+const ROUTING_CONTEXT_TTL_MS = 5 * 60 * 1000;
 const PAYMENT_SOURCE_CLARIFICATION =
   "지메일에서 확인할까요, 아니면 일반 답변으로 도와드릴까요?";
+const ROUTING_CONTEXT_CANCEL_PATTERN =
+  /^(?:취소|그만|끝|됐어|done|cancel|stop)$/i;
 const GMAIL_CONFIRMATION_PATTERNS = [
   /^(?:지메일|지메일에서|gmail|gmail에서)$/i,
   /^(?:메일에서|이메일에서|메일로|이메일로)$/i,
@@ -156,6 +159,8 @@ const SHORT_GENERAL_CONFIRMATION_PATTERN =
   /(?:일반|그냥\s*답변|채팅|추론)/i;
 const PAYMENT_FOLLOWUP_PATTERN =
   /(?:얼마|얼마나|합계|총액|총합|정리|요약|분석|설명|보여|알려|더|계속|그거|그걸|그건|그럼|썼|쓴|사용|결제|지출|카드값)/i;
+const SHORT_CONTINUATION_PATTERN =
+  /(?:더|다시|그거|그걸|그건|그럼|이번주|이번 달|이번달|카드사별|합계|총액|요약|정리)/i;
 
 function assertLambdaInvokeAccepted(result: unknown): void {
   if (typeof result !== "object" || result === null) return;
@@ -308,19 +313,19 @@ function parseClarificationChoice(message: string): ClarificationChoice | null {
   return null;
 }
 
-function isExpiredClarification(state: PendingClarificationState): boolean {
-  return Date.parse(state.expiresAt) <= Date.now();
-}
-
 function isShortAmbiguousReply(message: string): boolean {
   return normalizeMessage(message).length <= 20;
 }
 
-function shouldReuseResolvedClarificationContext(
-  state: PendingClarificationState,
+function isContextExpired(state: RoutingContextState): boolean {
+  return Date.parse(state.expiresAt) <= Date.now();
+}
+
+function shouldReuseActiveTaskContext(
+  state: RoutingContextState,
   message: string,
 ): boolean {
-  if (!state.resolvedRuntimeClass) {
+  if (state.status !== "active_task" || !state.runtimeClass) {
     return false;
   }
 
@@ -330,39 +335,52 @@ function shouldReuseResolvedClarificationContext(
     return false;
   }
 
-  if (
-    GMAIL_CONFIRMATION_PATTERNS.some((pattern) => pattern.test(normalized)) ||
-    GENERAL_CONFIRMATION_PATTERNS.some((pattern) => pattern.test(normalized))
-  ) {
+  if (ROUTING_CONTEXT_CANCEL_PATTERN.test(normalized)) {
     return false;
   }
 
-  if (state.kind !== "payment_source") {
+  if (state.intentKind !== "payment_summary") {
     return normalized.length <= 40;
   }
 
-  return normalized.length <= 40 || PAYMENT_FOLLOWUP_PATTERN.test(normalized);
+  return (
+    PAYMENT_FOLLOWUP_PATTERN.test(normalized) ||
+    SHORT_CONTINUATION_PATTERN.test(normalized)
+  );
 }
 
-function buildPendingClarification(
+function buildRoutingContext(
   deps: RouteDeps,
-  originalMessage: string,
-  resendCount = 0,
-  resolvedRuntimeClass?: RuntimeClass,
-): PendingClarificationState {
-  const createdAt = new Date().toISOString();
+  status: RoutingContextState["status"],
+  canonicalGoal: string,
+  options: {
+    sourceChoice?: RoutingSourceChoice;
+    runtimeClass?: RuntimeClass;
+    clarificationResendCount?: number;
+    createdAt?: string;
+  } = {},
+): RoutingContextState {
+  const now = new Date();
+  const createdAt = options.createdAt ?? now.toISOString();
   return {
-    kind: "payment_source",
+    status,
+    intentKind: "payment_summary",
     channel: deps.channel,
-    originalMessage,
+    canonicalGoal,
     connectionId: deps.connectionId,
     callbackUrl: deps.callbackUrl,
     telegramChatId: deps.telegramChatId,
-    resendCount,
     createdAt,
-    expiresAt: new Date(Date.now() + CLARIFICATION_TTL_MS).toISOString(),
-    ...(resolvedRuntimeClass
-      ? { resolvedRuntimeClass }
+    lastActivityAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + ROUTING_CONTEXT_TTL_MS).toISOString(),
+    ...(options.sourceChoice
+      ? { sourceChoice: options.sourceChoice }
+      : {}),
+    ...(options.runtimeClass
+      ? { runtimeClass: options.runtimeClass }
+      : {}),
+    ...(options.clarificationResendCount !== undefined
+      ? { clarificationResendCount: options.clarificationResendCount }
       : {}),
   };
 }
@@ -587,7 +605,7 @@ async function routeForcedRuntimeClass(
   return routeFargate({ ...deps, message }, taskState, runtimeClass, routeDecision);
 }
 
-async function maybeHandlePendingClarification(
+async function maybeHandleRoutingContext(
   deps: RouteDeps,
 ): Promise<{
   handled: boolean;
@@ -595,130 +613,196 @@ async function maybeHandlePendingClarification(
   replayMessage?: string;
   replayRuntimeClass?: RuntimeClass;
 }> {
-  const pending = await deps.getPendingClarification(deps.userId, deps.channel);
-  if (!pending) {
+  const context = await deps.getRoutingContext(deps.userId, deps.channel);
+  if (!context) {
     return { handled: false };
   }
 
-  if (isExpiredClarification(pending)) {
-    await deps.deletePendingClarification(deps.userId, deps.channel);
+  if (isContextExpired(context)) {
+    await deps.deleteRoutingContext(deps.userId, deps.channel);
+    logRouteEvent("route.context.expired", {
+      traceId: deps.traceId,
+      channel: deps.channel,
+      status: context.status,
+      intentKind: context.intentKind,
+    });
     return { handled: false };
   }
 
-  if (pending.resolvedRuntimeClass) {
-    if (shouldReuseResolvedClarificationContext(pending, deps.message)) {
-      await deps.deletePendingClarification(deps.userId, deps.channel);
-      logRouteEvent("route.clarification.context_applied", {
+  if (context.status === "active_task") {
+    const normalized = normalizeClarificationReply(deps.message);
+    if (ROUTING_CONTEXT_CANCEL_PATTERN.test(normalized)) {
+      await deps.deleteRoutingContext(deps.userId, deps.channel);
+      await deps.sendClarification("알겠습니다. 현재 작업 문맥을 종료할게요.");
+      logRouteEvent("route.context.cleared", {
         traceId: deps.traceId,
         channel: deps.channel,
-        kind: pending.kind,
-        runtimeClass: pending.resolvedRuntimeClass,
+        status: context.status,
+        intentKind: context.intentKind,
+        reason: "explicit_cancel",
+      });
+      return { handled: true, result: "clarify" };
+    }
+
+    if (shouldReuseActiveTaskContext(context, deps.message)) {
+      const activeRuntimeClass = context.runtimeClass;
+      if (!activeRuntimeClass) {
+        await deps.deleteRoutingContext(deps.userId, deps.channel);
+        logRouteEvent("route.context.cleared", {
+          traceId: deps.traceId,
+          channel: deps.channel,
+          status: context.status,
+          intentKind: context.intentKind,
+          reason: "missing_runtime",
+        });
+        return { handled: false };
+      }
+      await deps.putRoutingContext(
+        deps.userId,
+        buildRoutingContext(
+          deps,
+          "active_task",
+          context.canonicalGoal,
+          {
+            createdAt: context.createdAt,
+            sourceChoice: context.sourceChoice,
+            runtimeClass: activeRuntimeClass,
+          },
+        ),
+      );
+      logRouteEvent("route.context.reused", {
+        traceId: deps.traceId,
+        channel: deps.channel,
+        status: context.status,
+        intentKind: context.intentKind,
+        runtimeClass: activeRuntimeClass,
       });
       return {
         handled: false,
         replayMessage: deps.message,
-        replayRuntimeClass: pending.resolvedRuntimeClass,
+        replayRuntimeClass: activeRuntimeClass,
       };
     }
 
-    await deps.deletePendingClarification(deps.userId, deps.channel);
+    await deps.deleteRoutingContext(deps.userId, deps.channel);
+    logRouteEvent("route.context.cleared", {
+      traceId: deps.traceId,
+      channel: deps.channel,
+      status: context.status,
+      intentKind: context.intentKind,
+      reason: "topic_switched",
+    });
     return { handled: false };
   }
 
   const choice = parseClarificationChoice(deps.message);
-  if (choice === "gmail") {
-    await deps.putPendingClarification(
+  if (choice && context.status === "awaiting_source") {
+    const sourceChoice: RoutingSourceChoice =
+      choice === "gmail" ? "gmail" : "general";
+    const runtimeClass: RuntimeClass =
+      sourceChoice === "gmail" ? "tool-enabled" : "chat-only";
+    await deps.putRoutingContext(
       deps.userId,
-      buildPendingClarification(
+      buildRoutingContext(
         deps,
-        pending.originalMessage,
-        0,
-        "tool-enabled",
+        "active_task",
+        context.canonicalGoal,
+        {
+          createdAt: context.createdAt,
+          sourceChoice,
+          runtimeClass,
+        },
       ),
     );
-    logRouteEvent("route.clarification.resolved", {
+    logRouteEvent("route.context.resolved", {
       traceId: deps.traceId,
       channel: deps.channel,
       choice,
-      kind: pending.kind,
+      status: "active_task",
+      intentKind: context.intentKind,
+      runtimeClass,
     });
     return {
       handled: false,
-      replayMessage: pending.originalMessage,
-      replayRuntimeClass: "tool-enabled",
+      replayMessage: context.canonicalGoal,
+      replayRuntimeClass: runtimeClass,
     };
   }
 
-  if (choice === "general") {
-    await deps.putPendingClarification(
-      deps.userId,
-      buildPendingClarification(
-        deps,
-        pending.originalMessage,
-        0,
-        "chat-only",
-      ),
-    );
-    logRouteEvent("route.clarification.resolved", {
-      traceId: deps.traceId,
-      channel: deps.channel,
-      choice,
-      kind: pending.kind,
-    });
-    return {
-      handled: false,
-      replayMessage: pending.originalMessage,
-      replayRuntimeClass: "chat-only",
-    };
-  }
-
-  if (isShortAmbiguousReply(deps.message)) {
-    const resendCount = pending.resendCount ?? 0;
+  if (context.status === "awaiting_source" && isShortAmbiguousReply(deps.message)) {
+    const resendCount = context.clarificationResendCount ?? 0;
     if (resendCount >= 1) {
-      await deps.deletePendingClarification(deps.userId, deps.channel);
+      await deps.deleteRoutingContext(deps.userId, deps.channel);
+      logRouteEvent("route.context.cleared", {
+        traceId: deps.traceId,
+        channel: deps.channel,
+        status: context.status,
+        intentKind: context.intentKind,
+        reason: "ambiguous_reply_exhausted",
+      });
       return { handled: false };
     }
-    await deps.putPendingClarification(
+    await deps.putRoutingContext(
       deps.userId,
-      buildPendingClarification(deps, pending.originalMessage, resendCount + 1),
+      buildRoutingContext(
+        deps,
+        "awaiting_source",
+        context.canonicalGoal,
+        {
+          createdAt: context.createdAt,
+          clarificationResendCount: resendCount + 1,
+        },
+      ),
     );
     await deps.sendClarification(PAYMENT_SOURCE_CLARIFICATION);
-    logRouteEvent("route.clarification.sent", {
+    logRouteEvent("route.context.reused", {
       traceId: deps.traceId,
       channel: deps.channel,
-      kind: pending.kind,
-      resendCount: resendCount + 1,
+      status: context.status,
+      intentKind: context.intentKind,
+      clarificationResendCount: resendCount + 1,
     });
     return { handled: true, result: "clarify" };
   }
 
-  await deps.deletePendingClarification(deps.userId, deps.channel);
+  await deps.deleteRoutingContext(deps.userId, deps.channel);
+  logRouteEvent("route.context.cleared", {
+    traceId: deps.traceId,
+    channel: deps.channel,
+    status: context.status,
+    intentKind: context.intentKind,
+    reason: "fresh_message",
+  });
   return { handled: false };
 }
 
 export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
-  const pendingResolution = await maybeHandlePendingClarification(deps);
-  if (pendingResolution.handled) {
-    return pendingResolution.result ?? "clarify";
+  const routingContextResolution = await maybeHandleRoutingContext(deps);
+  if (routingContextResolution.handled) {
+    return routingContextResolution.result ?? "clarify";
   }
-  if (pendingResolution.replayMessage && pendingResolution.replayRuntimeClass) {
+  if (
+    routingContextResolution.replayMessage &&
+    routingContextResolution.replayRuntimeClass
+  ) {
     return routeForcedRuntimeClass(
       deps,
-      pendingResolution.replayMessage,
-      pendingResolution.replayRuntimeClass,
+      routingContextResolution.replayMessage,
+      routingContextResolution.replayRuntimeClass,
     );
   }
 
   if (isAmbiguousPaymentSourceQuestion(deps.message)) {
-    await deps.putPendingClarification(
+    await deps.putRoutingContext(
       deps.userId,
-      buildPendingClarification(deps, deps.message),
+      buildRoutingContext(deps, "awaiting_source", deps.message),
     );
     await deps.sendClarification(PAYMENT_SOURCE_CLARIFICATION);
-    logRouteEvent("route.clarification.sent", {
+    logRouteEvent("route.context.created", {
       traceId: deps.traceId,
       channel: deps.channel,
-      kind: "payment_source",
+      status: "awaiting_source",
+      intentKind: "payment_summary",
     });
     return "clarify";
   }
@@ -750,21 +834,22 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
     logRouteEvent(
       "route.classified",
       buildRouteLogPayload(deps, runtimeClass, decision, taskState, false),
-    );
-
-    if (decision === "clarify") {
-      await deps.putPendingClarification(
-        deps.userId,
-        buildPendingClarification(deps, routedMessage),
       );
-      await deps.sendClarification(PAYMENT_SOURCE_CLARIFICATION);
-      logRouteEvent("route.clarification.sent", {
-        traceId: deps.traceId,
-        channel: deps.channel,
-        kind: "payment_source",
-      });
-      return "clarify";
-    }
+
+      if (decision === "clarify") {
+        await deps.putRoutingContext(
+          deps.userId,
+          buildRoutingContext(deps, "awaiting_source", routedMessage),
+        );
+        await deps.sendClarification(PAYMENT_SOURCE_CLARIFICATION);
+        logRouteEvent("route.context.created", {
+          traceId: deps.traceId,
+          channel: deps.channel,
+          status: "awaiting_source",
+          intentKind: "payment_summary",
+        });
+        return "clarify";
+      }
 
     if (decision === "fargate-reuse" || decision === "fargate-new") {
       return routeFargate(

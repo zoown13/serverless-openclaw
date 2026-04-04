@@ -23,6 +23,9 @@ export type Channel = "web" | "telegram";
 export type RuntimeClass = "chat-only" | "tool-enabled";
 export type RouteDecision = "lambda" | "fargate-reuse" | "fargate-new" | "clarify";
 export type ClarificationKind = "payment_source";
+export type RoutingContextStatus = "awaiting_source" | "active_task";
+export type RoutingIntentKind = "payment_summary";
+export type RoutingSourceChoice = "gmail" | "general";
 
 export interface EmailTokenBudgetPolicy {
   mode: "headers-first";
@@ -32,18 +35,24 @@ export interface EmailTokenBudgetPolicy {
   requireExplicitBodyAccess: boolean;
 }
 
-export interface PendingClarificationState {
-  kind: ClarificationKind;
+export interface RoutingContextState {
+  status: RoutingContextStatus;
+  intentKind: RoutingIntentKind;
   channel: Channel;
-  originalMessage: string;
+  canonicalGoal: string;
   connectionId: string;
   callbackUrl: string;
   telegramChatId?: string;
-  resendCount?: number;
-  resolvedRuntimeClass?: RuntimeClass;
+  sourceChoice?: RoutingSourceChoice;
+  runtimeClass?: RuntimeClass;
+  clarificationResendCount?: number;
   createdAt: string;
+  lastActivityAt: string;
   expiresAt: string;
 }
+
+/** @deprecated Use RoutingContextState for new code. */
+export type PendingClarificationState = RoutingContextState;
 
 // === DynamoDB Items (architecture.md §5) ===
 export interface ConversationItem {

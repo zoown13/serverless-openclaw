@@ -10,10 +10,10 @@ import {
 import type { ClientMessage, ServerMessage } from "@serverless-openclaw/shared";
 import { getConnection } from "../services/connections.js";
 import {
-  deletePendingClarification,
-  getPendingClarification,
-  putPendingClarification,
-} from "../services/clarification.js";
+  deleteRoutingContext,
+  getRoutingContext,
+  putRoutingContext,
+} from "../services/routing-context.js";
 import { getTaskState, putTaskState, deleteTaskState } from "../services/task-state.js";
 import { routeMessage, savePendingMessage } from "../services/message.js";
 import { startTask } from "../services/container.js";
@@ -95,9 +95,9 @@ export async function handler(event: {
       putTaskState: (item) => putTaskState(dynamoSend, item),
       savePendingMessage: (item) => savePendingMessage(dynamoSend, item),
       deleteTaskState: (uid) => deleteTaskState(dynamoSend, uid),
-      getPendingClarification: (uid, channel) => getPendingClarification(dynamoSend, uid, channel),
-      putPendingClarification: (uid, state) => putPendingClarification(dynamoSend, uid, state),
-      deletePendingClarification: (uid, channel) => deletePendingClarification(dynamoSend, uid, channel),
+      getRoutingContext: (uid, channel) => getRoutingContext(dynamoSend, uid, channel),
+      putRoutingContext: (uid, state) => putRoutingContext(dynamoSend, uid, state),
+      deleteRoutingContext: (uid, channel) => deleteRoutingContext(dynamoSend, uid, channel),
       sendClarification: (clarification) => pushToConnection(connectionId, {
         type: "message",
         content: clarification,

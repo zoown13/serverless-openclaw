@@ -43,6 +43,37 @@ Interpretation:
 - `RetryScheduled`: the message failed, was kept in queue, and will not be retried before `nextAttemptAt`
 - `DeadLettered`: the retry budget was exhausted and the message will not be retried automatically
 
+## Redrive pending messages
+
+Use this when an operator decides a failed or dead-lettered message is safe to retry.
+
+Preview first:
+
+```powershell
+powershell -File .\scripts\redrive-pending-messages.ps1 -UserId telegram:8585874705
+```
+
+Redrive one dead-lettered message by sort key:
+
+```powershell
+powershell -File .\scripts\redrive-pending-messages.ps1 -UserId telegram:8585874705 -SortKey "MSG#1775292899197#1775292899197-2uo3z3" -Execute
+```
+
+Force retry-scheduled messages to become eligible again:
+
+```powershell
+powershell -File .\scripts\redrive-pending-messages.ps1 -UserId telegram:8585874705 -State RetryScheduled -Execute
+```
+
+What redrive does:
+
+- sets `retryCount` back to `0`
+- removes `nextAttemptAt`
+- removes `deadLetteredAt`
+- removes `lastError`
+
+Redriven messages become eligible the next time the user-specific Fargate task starts and drains the pending queue.
+
 ## Trace a single request by `traceId`
 
 ### Gateway Lambda

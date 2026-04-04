@@ -77,6 +77,10 @@ export interface PendingMessageItem {
   runtimeClass?: RuntimeClass;
   routeDecision?: RouteDecision;
   emailTokenBudget?: EmailTokenBudgetPolicy;
+  retryCount?: number;
+  nextAttemptAt?: string;
+  lastError?: string;
+  deadLetteredAt?: string;
   createdAt: string;
   ttl: number;
 }

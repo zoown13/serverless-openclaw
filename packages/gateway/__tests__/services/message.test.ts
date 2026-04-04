@@ -156,6 +156,8 @@ describe("message service", () => {
       });
 
       const result = await routeMessage(deps);
+      const clarificationState = (deps.putPendingClarification as ReturnType<typeof vi.fn>).mock
+        .calls[0][1];
 
       expect(result).toBe("clarify");
       expect(deps.putPendingClarification).toHaveBeenCalledWith(
@@ -166,6 +168,12 @@ describe("message service", () => {
           channel: "web",
         }),
       );
+      expect(
+        Object.prototype.hasOwnProperty.call(
+          clarificationState as Record<string, unknown>,
+          "resolvedRuntimeClass",
+        ),
+      ).toBe(false);
       expect(deps.sendClarification).toHaveBeenCalledWith(
         "지메일에서 확인할까요, 아니면 일반 답변으로 도와드릴까요?",
       );

@@ -359,9 +359,11 @@ function buildPendingClarification(
     callbackUrl: deps.callbackUrl,
     telegramChatId: deps.telegramChatId,
     resendCount,
-    resolvedRuntimeClass,
     createdAt,
     expiresAt: new Date(Date.now() + CLARIFICATION_TTL_MS).toISOString(),
+    ...(resolvedRuntimeClass
+      ? { resolvedRuntimeClass }
+      : {}),
   };
 }
 

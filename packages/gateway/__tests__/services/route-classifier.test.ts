@@ -121,12 +121,25 @@ describe("classifyRouteRuntimeClass", () => {
   it("classifies Korean payment summary questions as tool-enabled", () => {
     expect(classifyRouteRuntimeClass("이번주 결제한 금액이 어느정도 되려나?")).toBe("tool-enabled");
   });
+
+  it("classifies compact Korean payment summary questions as tool-enabled", () => {
+    expect(classifyRouteRuntimeClass("이번주 카드값이 얼마나 나왔을까")).toBe("tool-enabled");
+  });
 });
 
 describe("classifyRoute payment routing", () => {
   it("routes Korean payment summary questions to clarification first", () => {
     const result = classifyRoute({
       message: "이번주 결제한 금액이 어느정도 되려나?",
+      taskState: runningTask,
+    });
+
+    expect(result).toBe("clarify");
+  });
+
+  it("routes compact Korean payment summary questions to clarification first", () => {
+    const result = classifyRoute({
+      message: "이번주 카드값이 얼마나 나왔을까",
       taskState: runningTask,
     });
 

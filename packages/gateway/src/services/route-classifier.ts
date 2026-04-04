@@ -20,6 +20,8 @@ const PAYMENT_DATA_PATTERN =
   /(?:결제|지출|사용금액|사용 금액|승인내역|카드값|카드\s*(?:사용|결제)|청구서|영수증|명세서|\bpayment(?:s)?\b|\bcharge(?:s|d)?\b|\btransaction(?:s)?\b|\bspent\b|\bspend\b|\bbilling\b|\binvoice\b|\breceipt\b|\bstatement\b)/i;
 const PAYMENT_SUMMARY_PATTERN =
   /(?:얼마|총액|합계|총합|어느 정도|어느정도|얼마나|계산|정리|요약|찾|알려|보여|확인|\bhow much\b|\btotal\b|\bsum\b|\bcalculate\b|\bshow\b|\bcheck\b|\bfind\b)/i;
+const PAYMENT_LOOKUP_PATTERN =
+  /(?:결제(?:한)?|지출|카드(?:값|사용|결제)?|사용금액|사용 금액).*(?:금액|얼마|얼마나|총액|합계|총합|어느 정도|어느정도|정도|나왔|썼|쓴|되려나)|(?:금액|얼마|얼마나|총액|합계|총합|어느 정도|어느정도|정도|나왔|썼|쓴|되려나).*(?:결제(?:한)?|지출|카드(?:값|사용|결제)?|사용금액|사용 금액)/i;
 const TOOL_HEAVY_PATTERNS = [
   /(?:check|read|open|search|send|summari[sz]e|analy[sz]e|show|body|content|details?).*(?:gmail|email|mailbox|inbox|attachment|message)/i,
   /(?:gmail|email|mailbox|inbox|attachment|message).*(?:check|read|open|search|send|summari[sz]e|analy[sz]e|show|body|content|details?)/i,
@@ -35,8 +37,28 @@ const TOOL_HEAVY_PATTERNS = [
   /(?:사용|실행|호출).*도구/,
 ];
 
+function normalizeIntentMessage(message: string): string {
+  return message.normalize("NFKC").replace(/\s+/gu, " ").trim();
+}
+
+function compactIntentMessage(message: string): string {
+  return normalizeIntentMessage(message).replace(/[\s\p{P}\p{S}]+/gu, "");
+}
+
+function looksLikePaymentDataLookup(message: string): boolean {
+  const normalized = normalizeIntentMessage(message);
+  const compact = compactIntentMessage(message);
+
+  return (
+    (PAYMENT_DATA_PATTERN.test(normalized) && PAYMENT_SUMMARY_PATTERN.test(normalized)) ||
+    (PAYMENT_DATA_PATTERN.test(compact) && PAYMENT_SUMMARY_PATTERN.test(compact)) ||
+    PAYMENT_LOOKUP_PATTERN.test(normalized) ||
+    PAYMENT_LOOKUP_PATTERN.test(compact)
+  );
+}
+
 function hasFargateHint(message: string): boolean {
-  const lowerMsg = message.trimStart().toLowerCase();
+  const lowerMsg = normalizeIntentMessage(message).toLowerCase();
   for (const hint of FARGATE_HINTS) {
     if (lowerMsg.startsWith(hint)) {
       return true;
@@ -46,32 +68,35 @@ function hasFargateHint(message: string): boolean {
 }
 
 export function classifyRouteRuntimeClass(message: string): RuntimeClass {
-  if (hasFargateHint(message)) {
+  const normalized = normalizeIntentMessage(message);
+
+  if (hasFargateHint(normalized)) {
     return "tool-enabled";
   }
 
   if (
-    EMAIL_HINT_PATTERN.test(message) &&
-    (EMAIL_ACTION_PATTERN.test(message) || EMAIL_QUERY_PATTERN.test(message))
+    EMAIL_HINT_PATTERN.test(normalized) &&
+    (EMAIL_ACTION_PATTERN.test(normalized) || EMAIL_QUERY_PATTERN.test(normalized))
   ) {
     return "tool-enabled";
   }
 
-  if (PAYMENT_DATA_PATTERN.test(message) && PAYMENT_SUMMARY_PATTERN.test(message)) {
+  if (looksLikePaymentDataLookup(normalized)) {
     return "tool-enabled";
   }
 
-  return TOOL_HEAVY_PATTERNS.some((pattern) => pattern.test(message))
+  return TOOL_HEAVY_PATTERNS.some((pattern) => pattern.test(normalized))
     ? "tool-enabled"
     : "chat-only";
 }
 
 export function isAmbiguousPaymentSourceQuestion(message: string): boolean {
+  const normalized = normalizeIntentMessage(message);
+
   return (
-    PAYMENT_DATA_PATTERN.test(message) &&
-    PAYMENT_SUMMARY_PATTERN.test(message) &&
-    !EMAIL_HINT_PATTERN.test(message) &&
-    !hasFargateHint(message)
+    looksLikePaymentDataLookup(normalized) &&
+    !EMAIL_HINT_PATTERN.test(normalized) &&
+    !hasFargateHint(normalized)
   );
 }
 

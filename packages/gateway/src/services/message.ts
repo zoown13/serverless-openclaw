@@ -154,6 +154,8 @@ const SHORT_GMAIL_CONFIRMATION_PATTERN =
   /(?:지메일|gmail|이메일|메일(?:에서|로)?)/i;
 const SHORT_GENERAL_CONFIRMATION_PATTERN =
   /(?:일반|그냥\s*답변|채팅|추론)/i;
+const PAYMENT_FOLLOWUP_PATTERN =
+  /(?:얼마|얼마나|합계|총액|총합|정리|요약|분석|설명|보여|알려|더|계속|그거|그걸|그건|그럼|썼|쓴|사용|결제|지출|카드값)/i;
 
 function assertLambdaInvokeAccepted(result: unknown): void {
   if (typeof result !== "object" || result === null) return;
@@ -314,10 +316,39 @@ function isShortAmbiguousReply(message: string): boolean {
   return normalizeMessage(message).length <= 20;
 }
 
+function shouldReuseResolvedClarificationContext(
+  state: PendingClarificationState,
+  message: string,
+): boolean {
+  if (!state.resolvedRuntimeClass) {
+    return false;
+  }
+
+  const normalized = normalizeClarificationReply(message);
+
+  if (normalized.length === 0) {
+    return false;
+  }
+
+  if (
+    GMAIL_CONFIRMATION_PATTERNS.some((pattern) => pattern.test(normalized)) ||
+    GENERAL_CONFIRMATION_PATTERNS.some((pattern) => pattern.test(normalized))
+  ) {
+    return false;
+  }
+
+  if (state.kind !== "payment_source") {
+    return normalized.length <= 40;
+  }
+
+  return normalized.length <= 40 || PAYMENT_FOLLOWUP_PATTERN.test(normalized);
+}
+
 function buildPendingClarification(
   deps: RouteDeps,
   originalMessage: string,
   resendCount = 0,
+  resolvedRuntimeClass?: RuntimeClass,
 ): PendingClarificationState {
   const createdAt = new Date().toISOString();
   return {
@@ -328,6 +359,7 @@ function buildPendingClarification(
     callbackUrl: deps.callbackUrl,
     telegramChatId: deps.telegramChatId,
     resendCount,
+    resolvedRuntimeClass,
     createdAt,
     expiresAt: new Date(Date.now() + CLARIFICATION_TTL_MS).toISOString(),
   };
@@ -571,9 +603,37 @@ async function maybeHandlePendingClarification(
     return { handled: false };
   }
 
+  if (pending.resolvedRuntimeClass) {
+    if (shouldReuseResolvedClarificationContext(pending, deps.message)) {
+      await deps.deletePendingClarification(deps.userId, deps.channel);
+      logRouteEvent("route.clarification.context_applied", {
+        traceId: deps.traceId,
+        channel: deps.channel,
+        kind: pending.kind,
+        runtimeClass: pending.resolvedRuntimeClass,
+      });
+      return {
+        handled: false,
+        replayMessage: deps.message,
+        replayRuntimeClass: pending.resolvedRuntimeClass,
+      };
+    }
+
+    await deps.deletePendingClarification(deps.userId, deps.channel);
+    return { handled: false };
+  }
+
   const choice = parseClarificationChoice(deps.message);
   if (choice === "gmail") {
-    await deps.deletePendingClarification(deps.userId, deps.channel);
+    await deps.putPendingClarification(
+      deps.userId,
+      buildPendingClarification(
+        deps,
+        pending.originalMessage,
+        0,
+        "tool-enabled",
+      ),
+    );
     logRouteEvent("route.clarification.resolved", {
       traceId: deps.traceId,
       channel: deps.channel,
@@ -588,7 +648,15 @@ async function maybeHandlePendingClarification(
   }
 
   if (choice === "general") {
-    await deps.deletePendingClarification(deps.userId, deps.channel);
+    await deps.putPendingClarification(
+      deps.userId,
+      buildPendingClarification(
+        deps,
+        pending.originalMessage,
+        0,
+        "chat-only",
+      ),
+    );
     logRouteEvent("route.clarification.resolved", {
       traceId: deps.traceId,
       channel: deps.channel,

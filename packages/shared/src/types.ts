@@ -40,6 +40,7 @@ export interface PendingClarificationState {
   callbackUrl: string;
   telegramChatId?: string;
   resendCount?: number;
+  resolvedRuntimeClass?: RuntimeClass;
   createdAt: string;
   expiresAt: string;
 }

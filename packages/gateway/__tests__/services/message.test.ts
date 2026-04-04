@@ -190,7 +190,13 @@ describe("message service", () => {
       const result = await routeMessage(deps);
 
       expect(result).toBe("started");
-      expect(deps.deletePendingClarification).toHaveBeenCalledWith("user-123", "web");
+      expect(deps.putPendingClarification).toHaveBeenCalledWith(
+        "user-123",
+        expect.objectContaining({
+          resolvedRuntimeClass: "tool-enabled",
+          originalMessage: "이번주 결제한 금액이 어느정도 되려나?",
+        }),
+      );
       expect(deps.startTask).toHaveBeenCalled();
       expect(deps.savePendingMessage).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -217,7 +223,12 @@ describe("message service", () => {
       const result = await routeMessage(deps);
 
       expect(result).toBe("started");
-      expect(deps.deletePendingClarification).toHaveBeenCalledWith("user-123", "web");
+      expect(deps.putPendingClarification).toHaveBeenCalledWith(
+        "user-123",
+        expect.objectContaining({
+          resolvedRuntimeClass: "tool-enabled",
+        }),
+      );
       expect(deps.startTask).toHaveBeenCalled();
       expect(deps.sendClarification).not.toHaveBeenCalled();
     });
@@ -239,7 +250,12 @@ describe("message service", () => {
       const result = await routeMessage(deps);
 
       expect(result).toBe("started");
-      expect(deps.deletePendingClarification).toHaveBeenCalledWith("user-123", "web");
+      expect(deps.putPendingClarification).toHaveBeenCalledWith(
+        "user-123",
+        expect.objectContaining({
+          resolvedRuntimeClass: "tool-enabled",
+        }),
+      );
       expect(deps.startTask).toHaveBeenCalled();
       expect(deps.sendClarification).not.toHaveBeenCalled();
     });
@@ -265,7 +281,13 @@ describe("message service", () => {
       const result = await routeMessage(deps);
 
       expect(result).toBe("lambda");
-      expect(deps.deletePendingClarification).toHaveBeenCalledWith("user-123", "web");
+      expect(deps.putPendingClarification).toHaveBeenCalledWith(
+        "user-123",
+        expect.objectContaining({
+          resolvedRuntimeClass: "chat-only",
+          originalMessage: "이번주 결제한 금액이 어느정도 되려나?",
+        }),
+      );
       expect(mockInvokeLambda).toHaveBeenCalledWith(
         expect.objectContaining({
           message: "이번주 결제한 금액이 어느정도 되려나?",
@@ -295,13 +317,51 @@ describe("message service", () => {
       const result = await routeMessage(deps);
 
       expect(result).toBe("lambda");
-      expect(deps.deletePendingClarification).toHaveBeenCalledWith("user-123", "web");
+      expect(deps.putPendingClarification).toHaveBeenCalledWith(
+        "user-123",
+        expect.objectContaining({
+          resolvedRuntimeClass: "chat-only",
+        }),
+      );
       expect(mockInvokeLambda).toHaveBeenCalledWith(
         expect.objectContaining({
           message: "이번주 결제한 금액이 어느정도 되려나?",
         }),
       );
       expect(deps.sendClarification).not.toHaveBeenCalled();
+    });
+
+    it("should reuse the resolved Gmail context for one short follow-up request", async () => {
+      const deps = makeDeps({
+        message: "얼마 썼는지 정리해줄래?",
+        getTaskState: vi.fn().mockResolvedValue({
+          PK: "USER#user-123",
+          status: "Running",
+          publicIp: "1.2.3.4",
+          taskArn: "arn:task",
+          startedAt: "2024-01-01T00:00:00Z",
+          lastActivity: "2024-01-01T00:00:00Z",
+        }),
+        getPendingClarification: vi.fn().mockResolvedValue({
+          kind: "payment_source",
+          channel: "web",
+          originalMessage: "이번주 결제한 금액이 어느정도 되려나?",
+          connectionId: "conn-1",
+          callbackUrl: "https://cb",
+          resolvedRuntimeClass: "tool-enabled",
+          createdAt: "2026-04-04T00:00:00Z",
+          expiresAt: "2099-04-04T00:05:00Z",
+        }),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("sent");
+      expect(deps.deletePendingClarification).toHaveBeenCalledWith("user-123", "web");
+      expect(mockFetch).toHaveBeenCalled();
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(body.message).toBe("얼마 썼는지 정리해줄래?");
+      expect(body.runtimeClass).toBe("tool-enabled");
     });
 
     it("should accept short general clarification replies that only name the route", async () => {
@@ -325,7 +385,12 @@ describe("message service", () => {
       const result = await routeMessage(deps);
 
       expect(result).toBe("lambda");
-      expect(deps.deletePendingClarification).toHaveBeenCalledWith("user-123", "web");
+      expect(deps.putPendingClarification).toHaveBeenCalledWith(
+        "user-123",
+        expect.objectContaining({
+          resolvedRuntimeClass: "chat-only",
+        }),
+      );
       expect(mockInvokeLambda).toHaveBeenCalledWith(
         expect.objectContaining({
           message: "이번주 결제한 금액이 어느정도 되려나?",

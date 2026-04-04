@@ -2,11 +2,15 @@ import { QueryCommand, DeleteCommand, UpdateCommand } from "@aws-sdk/lib-dynamod
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { KEY_PREFIX, TABLE_NAMES, type PendingMessageItem } from "@serverless-openclaw/shared";
 import { publishCountMetric } from "../src/metrics.js";
-import { consumePendingMessages } from "../src/pending-messages.js";
 
 vi.mock("../src/metrics.js", () => ({
   publishCountMetric: vi.fn(),
 }));
+
+async function importPendingMessagesModule() {
+  vi.resetModules();
+  return import("../src/pending-messages.js");
+}
 
 function makeMessage(sk: string): PendingMessageItem {
   return {
@@ -26,6 +30,7 @@ describe("consumePendingMessages", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
   });
 
   it("keeps processing when one pending message fails and leaves it queued with retry metadata", async () => {
@@ -44,6 +49,8 @@ describe("consumePendingMessages", () => {
       .mockResolvedValueOnce();
 
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const { consumePendingMessages } = await importPendingMessagesModule();
 
     const consumed = await consumePendingMessages({
       dynamoSend,
@@ -111,6 +118,8 @@ describe("consumePendingMessages", () => {
     processMessage.mockResolvedValueOnce();
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
+    const { consumePendingMessages } = await importPendingMessagesModule();
+
     const consumed = await consumePendingMessages({
       dynamoSend,
       userId: "user-1",
@@ -141,6 +150,8 @@ describe("consumePendingMessages", () => {
       return {};
     });
 
+    const { consumePendingMessages } = await importPendingMessagesModule();
+
     const consumed = await consumePendingMessages({
       dynamoSend,
       userId: "user-1",
@@ -167,6 +178,8 @@ describe("consumePendingMessages", () => {
 
     processMessage.mockRejectedValueOnce(new Error("still broken"));
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const { consumePendingMessages } = await importPendingMessagesModule();
 
     const consumed = await consumePendingMessages({
       dynamoSend,
@@ -199,6 +212,84 @@ describe("consumePendingMessages", () => {
       channel: msg.channel,
       runtime: "fargate",
     });
+
+    warnSpy.mockRestore();
+  });
+
+  it("uses env-configured retry budget when deciding to dead-letter", async () => {
+    vi.stubEnv("PENDING_MESSAGE_MAX_RETRIES", "2");
+
+    const msg = {
+      ...makeMessage("MSG#6"),
+      retryCount: 1,
+    };
+
+    dynamoSend.mockImplementation(async (command: unknown) => {
+      if (command instanceof QueryCommand) {
+        return { Items: [msg] };
+      }
+      return {};
+    });
+
+    processMessage.mockRejectedValueOnce(new Error("budget exhausted"));
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { consumePendingMessages } = await importPendingMessagesModule();
+
+    await consumePendingMessages({
+      dynamoSend,
+      userId: "user-1",
+      processMessage,
+    });
+
+    const updateInput = vi
+      .mocked(dynamoSend)
+      .mock.calls
+      .map(([command]) => command)
+      .find((command): command is UpdateCommand => command instanceof UpdateCommand);
+
+    expect(String(updateInput?.input.UpdateExpression)).toContain("deadLetteredAt");
+    expect(warnSpy).toHaveBeenCalledWith(
+      `[pending] dead-lettered message ${msg.SK} for user-1 after 2 attempts`,
+      expect.any(Error),
+    );
+
+    warnSpy.mockRestore();
+  });
+
+  it("uses env-configured base retry delay when scheduling the next attempt", async () => {
+    vi.stubEnv("PENDING_MESSAGE_BASE_RETRY_DELAY_MS", "1500");
+
+    const msg = makeMessage("MSG#7");
+
+    dynamoSend.mockImplementation(async (command: unknown) => {
+      if (command instanceof QueryCommand) {
+        return { Items: [msg] };
+      }
+      return {};
+    });
+
+    processMessage.mockRejectedValueOnce(new Error("retry me"));
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const before = Date.now();
+    const { consumePendingMessages } = await importPendingMessagesModule();
+
+    await consumePendingMessages({
+      dynamoSend,
+      userId: "user-1",
+      processMessage,
+    });
+
+    const updateInput = vi
+      .mocked(dynamoSend)
+      .mock.calls
+      .map(([command]) => command)
+      .find((command): command is UpdateCommand => command instanceof UpdateCommand);
+
+    const scheduledAt = Date.parse(
+      String(updateInput?.input.ExpressionAttributeValues?.[":nextAttemptAt"]),
+    );
+    expect(scheduledAt).toBeGreaterThanOrEqual(before + 1000);
+    expect(scheduledAt).toBeLessThan(before + 5000);
 
     warnSpy.mockRestore();
   });

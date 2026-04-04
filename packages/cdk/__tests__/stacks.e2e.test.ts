@@ -205,6 +205,13 @@ describe("CDK Stacks E2E — synth all stacks", () => {
       });
     });
 
+    it("Fargate task definition includes pending queue retry env vars", () => {
+      const templateJson = JSON.stringify(computeTemplate.toJSON());
+      expect(templateJson).toContain("PENDING_MESSAGE_MAX_RETRIES");
+      expect(templateJson).toContain("PENDING_MESSAGE_BASE_RETRY_DELAY_MS");
+      expect(templateJson).toContain("PENDING_MESSAGE_MAX_RETRY_DELAY_MS");
+    });
+
     it("CloudWatch Log Group", () => {
       computeTemplate.resourceCountIs("AWS::Logs::LogGroup", 1);
     });

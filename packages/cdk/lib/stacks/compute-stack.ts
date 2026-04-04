@@ -113,6 +113,14 @@ export class ComputeStack extends cdk.Stack {
         AI_PROVIDER: props.aiProvider ?? "anthropic",
         ...(props.aiModel ? { AI_MODEL: props.aiModel } : {}),
         AWS_REGION: this.region,
+        // Pending queue retry tuning stays in env vars so operations can adjust
+        // backoff/dead-letter behaviour without rebuilding the Fargate image.
+        PENDING_MESSAGE_MAX_RETRIES:
+          process.env.PENDING_MESSAGE_MAX_RETRIES ?? "3",
+        PENDING_MESSAGE_BASE_RETRY_DELAY_MS:
+          process.env.PENDING_MESSAGE_BASE_RETRY_DELAY_MS ?? "30000",
+        PENDING_MESSAGE_MAX_RETRY_DELAY_MS:
+          process.env.PENDING_MESSAGE_MAX_RETRY_DELAY_MS ?? "600000",
       },
       secrets: {
         BRIDGE_AUTH_TOKEN: ecs.Secret.fromSsmParameter(bridgeAuthToken),

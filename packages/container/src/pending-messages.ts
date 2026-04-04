@@ -12,9 +12,26 @@ interface ConsumeDeps {
   processMessage: (msg: PendingMessageItem) => Promise<void>;
 }
 
-const MAX_PENDING_RETRIES = 3;
-const BASE_PENDING_RETRY_DELAY_MS = 30_000;
-const MAX_PENDING_RETRY_DELAY_MS = 10 * 60_000;
+function parsePositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+// These defaults preserve today's behaviour, but we keep them configurable so
+// retry tuning can happen through ECS env vars without rebuilding the image.
+const MAX_PENDING_RETRIES = parsePositiveIntEnv("PENDING_MESSAGE_MAX_RETRIES", 3);
+const BASE_PENDING_RETRY_DELAY_MS = parsePositiveIntEnv(
+  "PENDING_MESSAGE_BASE_RETRY_DELAY_MS",
+  30_000,
+);
+const MAX_PENDING_RETRY_DELAY_MS = parsePositiveIntEnv(
+  "PENDING_MESSAGE_MAX_RETRY_DELAY_MS",
+  10 * 60_000,
+);
 
 function getBackoffDelayMs(retryCount: number): number {
   return Math.min(

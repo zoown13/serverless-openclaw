@@ -9,6 +9,11 @@ import { routeMessage, savePendingMessage } from "../services/message.js";
 import { startTask } from "../services/container.js";
 import { sendTelegramMessage } from "../services/telegram.js";
 import { resolveUserId, verifyOtpAndLink } from "../services/identity.js";
+import {
+  deletePendingClarification,
+  getPendingClarification,
+  putPendingClarification,
+} from "../services/clarification.js";
 import { resolveSecrets } from "../services/secrets.js";
 import { invokeLambdaAgent } from "../services/lambda-agent.js";
 
@@ -122,22 +127,15 @@ export async function handler(event: {
   const userId = await resolveUserId(dynamoSend, rawUserId);
   console.log("[telegram] resolved userId", { rawUserId, userId, linked: userId !== rawUserId });
 
-  // Cold start reply — only relevant for Fargate (Lambda has no persistent task state)
   const agentRuntime = (process.env.AGENT_RUNTIME as "lambda" | "fargate" | "both") ?? "fargate";
-  if (agentRuntime !== "lambda") {
-    const taskState = await getTaskState(dynamoSend, userId);
-    const needsColdStart = !taskState || taskState.status === "Starting";
-    console.log("[telegram] fargate task state", { userId, taskStatus: taskState?.status ?? "none", needsColdStart });
-
-    if (needsColdStart && botToken) {
-      await sendTelegramMessage(
-        fetch as never,
-        botToken,
-        connectionId,
-        "🔄 Waking up the agent... please wait.",
-      );
-    }
-  }
+  const taskState = agentRuntime !== "lambda"
+    ? await getTaskState(dynamoSend, userId)
+    : null;
+  console.log("[telegram] fargate task state", {
+    userId,
+    taskStatus: taskState?.status ?? "none",
+    needsColdStart: !taskState || taskState.status === "Starting",
+  });
 
   // Build environment for RunTask — include TELEGRAM_CHAT_ID when using resolved userId
   const taskEnv = [
@@ -150,7 +148,7 @@ export async function handler(event: {
   }
 
   console.log("[telegram] routing message", { userId, channel: "telegram", agentRuntime });
-  await routeMessage({
+  const routeResult = await routeMessage({
     userId,
     message: text,
     traceId: context?.awsRequestId ?? `telegram-${chatId}`,
@@ -165,6 +163,15 @@ export async function handler(event: {
     putTaskState: (item) => putTaskState(dynamoSend, item),
     savePendingMessage: (item) => savePendingMessage(dynamoSend, item),
     deleteTaskState: (uid) => deleteTaskState(dynamoSend, uid),
+    getPendingClarification: (uid, channel) => getPendingClarification(dynamoSend, uid, channel),
+    putPendingClarification: (uid, state) => putPendingClarification(dynamoSend, uid, state),
+    deletePendingClarification: (uid, channel) => deletePendingClarification(dynamoSend, uid, channel),
+    sendClarification: (clarification) => sendTelegramMessage(
+      fetch as never,
+      botToken,
+      connectionId,
+      clarification,
+    ),
     startTaskParams: {
       cluster: process.env.ECS_CLUSTER_ARN ?? "",
       taskDefinition: process.env.TASK_DEFINITION_ARN ?? "",
@@ -177,6 +184,15 @@ export async function handler(event: {
     invokeLambdaAgent,
     lambdaAgentFunctionArn: process.env.LAMBDA_AGENT_FUNCTION_ARN ?? "",
   });
+
+  if ((routeResult === "started" || routeResult === "queued") && botToken) {
+    await sendTelegramMessage(
+      fetch as never,
+      botToken,
+      connectionId,
+      "🔄 Waking up the agent... please wait.",
+    );
+  }
 
   console.log("[telegram] message routed successfully", { userId });
   return { statusCode: 200, body: "OK" };

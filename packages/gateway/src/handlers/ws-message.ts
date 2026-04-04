@@ -9,6 +9,11 @@ import {
 
 import type { ClientMessage, ServerMessage } from "@serverless-openclaw/shared";
 import { getConnection } from "../services/connections.js";
+import {
+  deletePendingClarification,
+  getPendingClarification,
+  putPendingClarification,
+} from "../services/clarification.js";
 import { getTaskState, putTaskState, deleteTaskState } from "../services/task-state.js";
 import { routeMessage, savePendingMessage } from "../services/message.js";
 import { startTask } from "../services/container.js";
@@ -76,10 +81,6 @@ export async function handler(event: {
     const agentRuntime = (process.env.AGENT_RUNTIME as "lambda" | "fargate" | "both") ?? "fargate";
     const secrets = await resolveSecrets([process.env.SSM_BRIDGE_AUTH_TOKEN!]);
 
-    if (agentRuntime === "lambda" || agentRuntime === "both") {
-      await pushToConnection(connectionId, { type: "status", status: "running" });
-    }
-
     const result = await routeMessage({
       userId,
       message: msg.message ?? "",
@@ -94,6 +95,13 @@ export async function handler(event: {
       putTaskState: (item) => putTaskState(dynamoSend, item),
       savePendingMessage: (item) => savePendingMessage(dynamoSend, item),
       deleteTaskState: (uid) => deleteTaskState(dynamoSend, uid),
+      getPendingClarification: (uid, channel) => getPendingClarification(dynamoSend, uid, channel),
+      putPendingClarification: (uid, state) => putPendingClarification(dynamoSend, uid, state),
+      deletePendingClarification: (uid, channel) => deletePendingClarification(dynamoSend, uid, channel),
+      sendClarification: (clarification) => pushToConnection(connectionId, {
+        type: "message",
+        content: clarification,
+      }),
       startTaskParams: {
         cluster: process.env.ECS_CLUSTER_ARN ?? "",
         taskDefinition: process.env.TASK_DEFINITION_ARN ?? "",
@@ -110,6 +118,9 @@ export async function handler(event: {
       lambdaAgentFunctionArn: process.env.LAMBDA_AGENT_FUNCTION_ARN ?? "",
     });
 
+    if (result === "lambda") {
+      await pushToConnection(connectionId, { type: "status", status: "running" });
+    }
     if (result === "started" || result === "queued") {
       await pushToConnection(connectionId, { type: "status", status: "Starting" });
     }

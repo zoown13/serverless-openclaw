@@ -124,13 +124,13 @@ describe("classifyRouteRuntimeClass", () => {
 });
 
 describe("classifyRoute payment routing", () => {
-  it("routes Korean payment summary questions to a running Fargate task", () => {
+  it("routes Korean payment summary questions to clarification first", () => {
     const result = classifyRoute({
       message: "이번주 결제한 금액이 어느정도 되려나?",
       taskState: runningTask,
     });
 
-    expect(result).toBe("fargate-reuse");
+    expect(result).toBe("clarify");
   });
 });
 

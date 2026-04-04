@@ -21,7 +21,8 @@ export interface ServerMessage {
 // === Channel ===
 export type Channel = "web" | "telegram";
 export type RuntimeClass = "chat-only" | "tool-enabled";
-export type RouteDecision = "lambda" | "fargate-reuse" | "fargate-new";
+export type RouteDecision = "lambda" | "fargate-reuse" | "fargate-new" | "clarify";
+export type ClarificationKind = "payment_source";
 
 export interface EmailTokenBudgetPolicy {
   mode: "headers-first";
@@ -29,6 +30,18 @@ export interface EmailTokenBudgetPolicy {
   maxSnippetChars: number;
   maxBodyChars: number;
   requireExplicitBodyAccess: boolean;
+}
+
+export interface PendingClarificationState {
+  kind: ClarificationKind;
+  channel: Channel;
+  originalMessage: string;
+  connectionId: string;
+  callbackUrl: string;
+  telegramChatId?: string;
+  resendCount?: number;
+  createdAt: string;
+  expiresAt: string;
 }
 
 // === DynamoDB Items (architecture.md §5) ===

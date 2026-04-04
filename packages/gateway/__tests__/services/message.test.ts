@@ -142,9 +142,123 @@ describe("message service", () => {
         putTaskState: vi.fn(),
         savePendingMessage: vi.fn(),
         deleteTaskState: vi.fn(),
+        getPendingClarification: vi.fn().mockResolvedValue(null),
+        putPendingClarification: vi.fn(),
+        deletePendingClarification: vi.fn(),
+        sendClarification: vi.fn().mockResolvedValue(undefined),
         ...overrides,
       };
     }
+
+    it("should send a clarification instead of routing ambiguous payment questions", async () => {
+      const deps = makeDeps({
+        message: "이번주 결제한 금액이 어느정도 되려나?",
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("clarify");
+      expect(deps.putPendingClarification).toHaveBeenCalledWith(
+        "user-123",
+        expect.objectContaining({
+          kind: "payment_source",
+          originalMessage: "이번주 결제한 금액이 어느정도 되려나?",
+          channel: "web",
+        }),
+      );
+      expect(deps.sendClarification).toHaveBeenCalledWith(
+        "지메일에서 확인할까요, 아니면 일반 답변으로 도와드릴까요?",
+      );
+      expect(deps.startTask).not.toHaveBeenCalled();
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it("should replay the original message through Fargate after a Gmail clarification reply", async () => {
+      const deps = makeDeps({
+        message: "지메일에서 확인해줘",
+        getPendingClarification: vi.fn().mockResolvedValue({
+          kind: "payment_source",
+          channel: "web",
+          originalMessage: "이번주 결제한 금액이 어느정도 되려나?",
+          connectionId: "conn-1",
+          callbackUrl: "https://cb",
+          createdAt: "2026-04-04T00:00:00Z",
+          expiresAt: "2099-04-04T00:05:00Z",
+        }),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("started");
+      expect(deps.deletePendingClarification).toHaveBeenCalledWith("user-123", "web");
+      expect(deps.startTask).toHaveBeenCalled();
+      expect(deps.savePendingMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: "이번주 결제한 금액이 어느정도 되려나?",
+          runtimeClass: "tool-enabled",
+        }),
+      );
+    });
+
+    it("should replay the original message through Lambda after a general clarification reply", async () => {
+      const mockInvokeLambda = vi.fn().mockResolvedValue({ accepted: true });
+      const deps = makeDeps({
+        message: "일반 답변으로 해줘",
+        agentRuntime: "both",
+        invokeLambdaAgent: mockInvokeLambda,
+        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+        getPendingClarification: vi.fn().mockResolvedValue({
+          kind: "payment_source",
+          channel: "web",
+          originalMessage: "이번주 결제한 금액이 어느정도 되려나?",
+          connectionId: "conn-1",
+          callbackUrl: "https://cb",
+          createdAt: "2026-04-04T00:00:00Z",
+          expiresAt: "2099-04-04T00:05:00Z",
+        }),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("lambda");
+      expect(deps.deletePendingClarification).toHaveBeenCalledWith("user-123", "web");
+      expect(mockInvokeLambda).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: "이번주 결제한 금액이 어느정도 되려나?",
+        }),
+      );
+      expect(deps.startTask).not.toHaveBeenCalled();
+    });
+
+    it("should resend the same clarification once for a short ambiguous follow-up", async () => {
+      const deps = makeDeps({
+        message: "그걸로?",
+        getPendingClarification: vi.fn().mockResolvedValue({
+          kind: "payment_source",
+          channel: "web",
+          originalMessage: "이번주 결제한 금액이 어느정도 되려나?",
+          connectionId: "conn-1",
+          callbackUrl: "https://cb",
+          resendCount: 0,
+          createdAt: "2026-04-04T00:00:00Z",
+          expiresAt: "2099-04-04T00:05:00Z",
+        }),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("clarify");
+      expect(deps.putPendingClarification).toHaveBeenCalledWith(
+        "user-123",
+        expect.objectContaining({
+          resendCount: 1,
+          originalMessage: "이번주 결제한 금액이 어느정도 되려나?",
+        }),
+      );
+      expect(deps.sendClarification).toHaveBeenCalledWith(
+        "지메일에서 확인할까요, 아니면 일반 답변으로 도와드릴까요?",
+      );
+    });
 
     it("should send to bridge when task is Running with publicIp", async () => {
       const deps = makeDeps({
@@ -526,8 +640,7 @@ describe("message service", () => {
 
     it("should use Lambda when AGENT_RUNTIME=both and no Fargate running", async () => {
       const mockInvokeLambda = vi.fn().mockResolvedValue({
-        success: true,
-        payloads: [{ text: "Lambda response" }],
+        accepted: true,
       });
       const deps = makeDeps({
         agentRuntime: "both",
@@ -546,8 +659,7 @@ describe("message service", () => {
 
     it("should keep normal chat on Lambda when AGENT_RUNTIME=both and Fargate is already Running", async () => {
       const mockInvokeLambda = vi.fn().mockResolvedValue({
-        success: true,
-        payloads: [{ text: "Lambda response" }],
+        accepted: true,
       });
       const deps = makeDeps({
         agentRuntime: "both",

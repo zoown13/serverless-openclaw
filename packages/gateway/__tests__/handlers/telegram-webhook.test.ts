@@ -7,6 +7,9 @@ const mockSendTelegramMessage = vi.fn();
 const mockGetTaskState = vi.fn();
 const mockResolveUserId = vi.fn();
 const mockVerifyOtpAndLink = vi.fn();
+const mockGetPendingClarification = vi.fn();
+const mockPutPendingClarification = vi.fn();
+const mockDeletePendingClarification = vi.fn();
 
 vi.mock("../../src/services/message.js", () => ({
   routeMessage: (...args: unknown[]) => mockRouteMessage(...args),
@@ -30,6 +33,12 @@ vi.mock("../../src/services/container.js", () => ({
 vi.mock("../../src/services/identity.js", () => ({
   resolveUserId: (...args: unknown[]) => mockResolveUserId(...args),
   verifyOtpAndLink: (...args: unknown[]) => mockVerifyOtpAndLink(...args),
+}));
+
+vi.mock("../../src/services/clarification.js", () => ({
+  getPendingClarification: (...args: unknown[]) => mockGetPendingClarification(...args),
+  putPendingClarification: (...args: unknown[]) => mockPutPendingClarification(...args),
+  deletePendingClarification: (...args: unknown[]) => mockDeletePendingClarification(...args),
 }));
 
 vi.mock("../../src/services/secrets.js", () => ({
@@ -89,6 +98,9 @@ describe("telegram-webhook handler", () => {
     mockGetTaskState.mockResolvedValue(null);
     mockResolveUserId.mockImplementation((_send: unknown, uid: string) => Promise.resolve(uid));
     mockVerifyOtpAndLink.mockResolvedValue({ error: "not set" });
+    mockGetPendingClarification.mockResolvedValue(null);
+    mockPutPendingClarification.mockResolvedValue(undefined);
+    mockDeletePendingClarification.mockResolvedValue(undefined);
   });
 
   it("should return 403 for invalid secret token", async () => {
@@ -136,6 +148,7 @@ describe("telegram-webhook handler", () => {
 
   it("should send cold start reply when no task exists", async () => {
     mockGetTaskState.mockResolvedValue(null);
+    mockRouteMessage.mockResolvedValueOnce("started");
 
     const event = makeEvent(
       {
@@ -161,6 +174,7 @@ describe("telegram-webhook handler", () => {
 
   it("should send cold start reply when task is Starting", async () => {
     mockGetTaskState.mockResolvedValue({ status: "Starting" });
+    mockRouteMessage.mockResolvedValueOnce("queued");
 
     const event = makeEvent(
       {
@@ -188,6 +202,7 @@ describe("telegram-webhook handler", () => {
       status: "Running",
       publicIp: "1.2.3.4",
     });
+    mockRouteMessage.mockResolvedValueOnce("sent");
 
     const event = makeEvent(
       {
@@ -379,5 +394,25 @@ describe("telegram-webhook handler", () => {
         expect.objectContaining({ name: "TELEGRAM_CHAT_ID", value: "12345" }),
       ]),
     );
+  });
+
+  it("should not send wake-up text when routeMessage returns clarify", async () => {
+    mockRouteMessage.mockResolvedValueOnce("clarify");
+
+    const event = makeEvent(
+      {
+        message: {
+          chat: { id: 12345 },
+          from: { id: 67890 },
+          text: "이번주 결제한 금액이 어느정도 되려나?",
+        },
+      },
+      "my-secret",
+    );
+
+    await handler(event);
+
+    expect(mockSendTelegramMessage).not.toHaveBeenCalled();
+    expect(mockRouteMessage).toHaveBeenCalled();
   });
 });

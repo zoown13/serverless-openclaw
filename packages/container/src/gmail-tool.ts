@@ -674,6 +674,17 @@ function formatSummary(
   return lines.join("\n");
 }
 
+function formatNoResults(
+  query: string,
+  options?: { paymentSummary?: boolean },
+): string {
+  if (options?.paymentSummary) {
+    return `I checked Gmail headers-first with query "${query}" and found no payment emails I could use safely. Try narrowing by period, sender, or card company.`;
+  }
+
+  return `I checked Gmail headers-first with query "${query}" and found no matching messages.`;
+}
+
 function encodeContextItems(items: GmailMessageSummaryItem[]): GmailSearchContextItem[] {
   return items.map((item, index) => ({
     ordinal: index + 1,
@@ -1121,6 +1132,7 @@ export async function maybeHandleCustomGmailRequest(
         matchedCount: listResponse.resultSizeEstimate ?? 0,
         inspectedCount: 0,
       });
+      return formatNoResults(query, { paymentSummary: isPaymentSummary });
     }
 
     const items = await loadMessageSummaries(accessToken, messageIds, maxSnippetChars);

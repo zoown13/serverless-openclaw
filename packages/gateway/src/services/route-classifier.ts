@@ -66,11 +66,24 @@ export function classifyRouteRuntimeClass(message: string): RuntimeClass {
     : "chat-only";
 }
 
+export function isAmbiguousPaymentSourceQuestion(message: string): boolean {
+  return (
+    PAYMENT_DATA_PATTERN.test(message) &&
+    PAYMENT_SUMMARY_PATTERN.test(message) &&
+    !EMAIL_HINT_PATTERN.test(message) &&
+    !hasFargateHint(message)
+  );
+}
+
 /**
  * Classify which runtime to use for a message when AGENT_RUNTIME=both.
  * Tool-heavy requests prefer Fargate, while normal chat stays on Lambda.
  */
 export function classifyRoute(params: ClassifyRouteParams): RouteDecision {
+  if (isAmbiguousPaymentSourceQuestion(params.message)) {
+    return "clarify";
+  }
+
   const runtimeClass = classifyRouteRuntimeClass(params.message);
 
   if (runtimeClass === "tool-enabled") {

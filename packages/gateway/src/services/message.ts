@@ -9,6 +9,8 @@ import {
 } from "@serverless-openclaw/shared";
 import type {
   BridgeMessageRequest,
+  Channel,
+  PendingClarificationState,
   EmailTokenBudgetPolicy,
   PendingMessageItem,
   RouteDecision,
@@ -20,6 +22,7 @@ import type { InvokeLambdaAgentParams } from "./lambda-agent.js";
 import {
   classifyRoute,
   classifyRouteRuntimeClass,
+  isAmbiguousPaymentSourceQuestion,
   stripRouteHint,
 } from "./route-classifier.js";
 import { publishGatewayCountMetric } from "./metrics.js";
@@ -83,7 +86,7 @@ export interface RouteDeps {
   userId: string;
   message: string;
   traceId: string;
-  channel: "web" | "telegram";
+  channel: Channel;
   connectionId: string;
   telegramChatId?: string;
   callbackUrl: string;
@@ -94,6 +97,16 @@ export interface RouteDeps {
   putTaskState: (item: TaskStateItem) => Promise<void>;
   savePendingMessage: (item: PendingMessageItem) => Promise<void>;
   deleteTaskState: (userId: string) => Promise<void>;
+  getPendingClarification: (
+    userId: string,
+    channel: Channel,
+  ) => Promise<PendingClarificationState | null>;
+  putPendingClarification: (
+    userId: string,
+    state: PendingClarificationState,
+  ) => Promise<void>;
+  deletePendingClarification: (userId: string, channel: Channel) => Promise<void>;
+  sendClarification: (text: string) => Promise<void>;
   startTaskParams: StartTaskParams;
   /** Lambda agent runtime support (Phase 2) */
   agentRuntime?: "lambda" | "fargate" | "both";
@@ -102,7 +115,24 @@ export interface RouteDeps {
   sessionId?: string;
 }
 
-export type RouteResult = "sent" | "queued" | "started" | "lambda";
+export type RouteResult = "sent" | "queued" | "started" | "lambda" | "clarify";
+
+const CLARIFICATION_TTL_MS = 5 * 60 * 1000;
+const PAYMENT_SOURCE_CLARIFICATION =
+  "지메일에서 확인할까요, 아니면 일반 답변으로 도와드릴까요?";
+const GMAIL_CONFIRMATION_PATTERNS = [
+  /^(?:지메일|지메일에서|gmail|gmail에서)$/i,
+  /^(?:메일에서|이메일에서|메일로|이메일로)$/i,
+  /^(?:지메일에서|gmail에서)\s*확인해줘$/i,
+];
+const GENERAL_CONFIRMATION_PATTERNS = [
+  /^(?:일반|일반으로)$/i,
+  /^(?:그냥 답변|일반 답변)$/i,
+  /^(?:채팅으로|추론으로)$/i,
+  /^(?:일반 답변으로 해줘|그냥 답변해줘)$/i,
+];
+
+type ClarificationChoice = "gmail" | "general";
 
 function assertLambdaInvokeAccepted(result: unknown): void {
   if (typeof result !== "object" || result === null) return;
@@ -114,6 +144,10 @@ function assertLambdaInvokeAccepted(result: unknown): void {
 
 function hasValue(value?: string): boolean {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function normalizeMessage(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
 }
 
 function parsePositiveInteger(value: string | undefined, fallback: number): number {
@@ -201,6 +235,47 @@ function buildRouteLogPayload(
     pendingQueued,
     sessionId: deps.sessionId ?? `session-${deps.userId}`,
     messageLength: deps.message.length,
+  };
+}
+
+function parseClarificationChoice(message: string): ClarificationChoice | null {
+  const normalized = normalizeMessage(message);
+
+  if (GMAIL_CONFIRMATION_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return "gmail";
+  }
+
+  if (GENERAL_CONFIRMATION_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return "general";
+  }
+
+  return null;
+}
+
+function isExpiredClarification(state: PendingClarificationState): boolean {
+  return Date.parse(state.expiresAt) <= Date.now();
+}
+
+function isShortAmbiguousReply(message: string): boolean {
+  return normalizeMessage(message).length <= 20;
+}
+
+function buildPendingClarification(
+  deps: RouteDeps,
+  originalMessage: string,
+  resendCount = 0,
+): PendingClarificationState {
+  const createdAt = new Date().toISOString();
+  return {
+    kind: "payment_source",
+    channel: deps.channel,
+    originalMessage,
+    connectionId: deps.connectionId,
+    callbackUrl: deps.callbackUrl,
+    telegramChatId: deps.telegramChatId,
+    resendCount,
+    createdAt,
+    expiresAt: new Date(Date.now() + CLARIFICATION_TTL_MS).toISOString(),
   };
 }
 
@@ -347,7 +422,183 @@ async function routeFargate(
   return "queued";
 }
 
+async function invokeLambdaRoute(
+  deps: RouteDeps,
+  message: string,
+  runtimeClass: RuntimeClass,
+  routeDecision: RouteDecision,
+  taskState: TaskStateItem | null,
+): Promise<RouteResult> {
+  if (!deps.invokeLambdaAgent || !deps.lambdaAgentFunctionArn) {
+    throw new Error("Lambda agent runtime is not configured");
+  }
+
+  validateLambdaDeliveryTarget(deps);
+  const invokeResult = await deps.invokeLambdaAgent({
+    functionArn: deps.lambdaAgentFunctionArn,
+    userId: deps.userId,
+    sessionId: deps.sessionId ?? `session-${deps.userId}`,
+    traceId: deps.traceId,
+    message,
+    channel: deps.channel,
+    connectionId: deps.connectionId,
+    telegramChatId: deps.telegramChatId,
+    callbackUrl: deps.callbackUrl,
+  });
+  assertLambdaInvokeAccepted(invokeResult);
+  logRouteEvent(
+    "route.lambda.invoked",
+    buildRouteLogPayload(deps, runtimeClass, routeDecision, taskState, false),
+  );
+  void publishGatewayCountMetric("RouteToLambda", {
+    channel: deps.channel,
+    runtime: "lambda",
+  });
+  return "lambda";
+}
+
+async function routeForcedRuntimeClass(
+  deps: RouteDeps,
+  message: string,
+  runtimeClass: RuntimeClass,
+): Promise<RouteResult> {
+  const taskState = await deps.getTaskState(deps.userId);
+
+  if (runtimeClass === "tool-enabled") {
+    const routeDecision: RouteDecision =
+      taskState?.status === "Running" && taskState.publicIp
+        ? "fargate-reuse"
+        : "fargate-new";
+    logRouteEvent(
+      "route.classified",
+      buildRouteLogPayload(deps, runtimeClass, routeDecision, taskState, false),
+    );
+    return routeFargate({ ...deps, message }, taskState, runtimeClass, routeDecision);
+  }
+
+  if (
+    deps.agentRuntime !== "fargate" &&
+    deps.invokeLambdaAgent &&
+    deps.lambdaAgentFunctionArn
+  ) {
+    logRouteEvent(
+      "route.classified",
+      buildRouteLogPayload(deps, runtimeClass, "lambda", taskState, false),
+    );
+    return invokeLambdaRoute(deps, message, runtimeClass, "lambda", taskState);
+  }
+
+  const routeDecision: RouteDecision =
+    taskState?.status === "Running" && taskState.publicIp
+      ? "fargate-reuse"
+      : "fargate-new";
+  logRouteEvent(
+    "route.classified",
+    buildRouteLogPayload(deps, runtimeClass, routeDecision, taskState, false),
+  );
+  return routeFargate({ ...deps, message }, taskState, runtimeClass, routeDecision);
+}
+
+async function maybeHandlePendingClarification(
+  deps: RouteDeps,
+): Promise<{
+  handled: boolean;
+  result?: RouteResult;
+  replayMessage?: string;
+  replayRuntimeClass?: RuntimeClass;
+}> {
+  const pending = await deps.getPendingClarification(deps.userId, deps.channel);
+  if (!pending) {
+    return { handled: false };
+  }
+
+  if (isExpiredClarification(pending)) {
+    await deps.deletePendingClarification(deps.userId, deps.channel);
+    return { handled: false };
+  }
+
+  const choice = parseClarificationChoice(deps.message);
+  if (choice === "gmail") {
+    await deps.deletePendingClarification(deps.userId, deps.channel);
+    logRouteEvent("route.clarification.resolved", {
+      traceId: deps.traceId,
+      channel: deps.channel,
+      choice,
+      kind: pending.kind,
+    });
+    return {
+      handled: false,
+      replayMessage: pending.originalMessage,
+      replayRuntimeClass: "tool-enabled",
+    };
+  }
+
+  if (choice === "general") {
+    await deps.deletePendingClarification(deps.userId, deps.channel);
+    logRouteEvent("route.clarification.resolved", {
+      traceId: deps.traceId,
+      channel: deps.channel,
+      choice,
+      kind: pending.kind,
+    });
+    return {
+      handled: false,
+      replayMessage: pending.originalMessage,
+      replayRuntimeClass: "chat-only",
+    };
+  }
+
+  if (isShortAmbiguousReply(deps.message)) {
+    const resendCount = pending.resendCount ?? 0;
+    if (resendCount >= 1) {
+      await deps.deletePendingClarification(deps.userId, deps.channel);
+      return { handled: false };
+    }
+    await deps.putPendingClarification(
+      deps.userId,
+      buildPendingClarification(deps, pending.originalMessage, resendCount + 1),
+    );
+    await deps.sendClarification(PAYMENT_SOURCE_CLARIFICATION);
+    logRouteEvent("route.clarification.sent", {
+      traceId: deps.traceId,
+      channel: deps.channel,
+      kind: pending.kind,
+      resendCount: resendCount + 1,
+    });
+    return { handled: true, result: "clarify" };
+  }
+
+  await deps.deletePendingClarification(deps.userId, deps.channel);
+  return { handled: false };
+}
+
 export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
+  const pendingResolution = await maybeHandlePendingClarification(deps);
+  if (pendingResolution.handled) {
+    return pendingResolution.result ?? "clarify";
+  }
+  if (pendingResolution.replayMessage && pendingResolution.replayRuntimeClass) {
+    return routeForcedRuntimeClass(
+      deps,
+      pendingResolution.replayMessage,
+      pendingResolution.replayRuntimeClass,
+    );
+  }
+
+  if (isAmbiguousPaymentSourceQuestion(deps.message)) {
+    await deps.putPendingClarification(
+      deps.userId,
+      buildPendingClarification(deps, deps.message),
+    );
+    await deps.sendClarification(PAYMENT_SOURCE_CLARIFICATION);
+    logRouteEvent("route.clarification.sent", {
+      traceId: deps.traceId,
+      channel: deps.channel,
+      kind: "payment_source",
+    });
+    return "clarify";
+  }
+
   // Phase 2: Lambda agent path
   if (
     deps.agentRuntime === "lambda" &&
@@ -359,28 +610,7 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
       "route.classified",
       buildRouteLogPayload(deps, runtimeClass, "lambda", null, false),
     );
-    validateLambdaDeliveryTarget(deps);
-    const invokeResult = await deps.invokeLambdaAgent({
-      functionArn: deps.lambdaAgentFunctionArn,
-      userId: deps.userId,
-      sessionId: deps.sessionId ?? `session-${deps.userId}`,
-      traceId: deps.traceId,
-      message: deps.message,
-      channel: deps.channel,
-      connectionId: deps.connectionId,
-      telegramChatId: deps.telegramChatId,
-      callbackUrl: deps.callbackUrl,
-    });
-    assertLambdaInvokeAccepted(invokeResult);
-    logRouteEvent(
-      "route.lambda.invoked",
-      buildRouteLogPayload(deps, runtimeClass, "lambda", null, false),
-    );
-    void publishGatewayCountMetric("RouteToLambda", {
-      channel: deps.channel,
-      runtime: "lambda",
-    });
-    return "lambda";
+    return invokeLambdaRoute(deps, deps.message, runtimeClass, "lambda", null);
   }
 
   // Smart routing: when agentRuntime=both, classify based on task state and message hints
@@ -398,6 +628,20 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
       buildRouteLogPayload(deps, runtimeClass, decision, taskState, false),
     );
 
+    if (decision === "clarify") {
+      await deps.putPendingClarification(
+        deps.userId,
+        buildPendingClarification(deps, routedMessage),
+      );
+      await deps.sendClarification(PAYMENT_SOURCE_CLARIFICATION);
+      logRouteEvent("route.clarification.sent", {
+        traceId: deps.traceId,
+        channel: deps.channel,
+        kind: "payment_source",
+      });
+      return "clarify";
+    }
+
     if (decision === "fargate-reuse" || decision === "fargate-new") {
       return routeFargate(
         { ...deps, message: routedMessage },
@@ -408,28 +652,7 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
     }
 
     try {
-      validateLambdaDeliveryTarget(deps);
-      const invokeResult = await deps.invokeLambdaAgent({
-        functionArn: deps.lambdaAgentFunctionArn,
-        userId: deps.userId,
-        sessionId: deps.sessionId ?? `session-${deps.userId}`,
-        traceId: deps.traceId,
-        message: deps.message,
-        channel: deps.channel,
-        connectionId: deps.connectionId,
-        telegramChatId: deps.telegramChatId,
-        callbackUrl: deps.callbackUrl,
-      });
-      assertLambdaInvokeAccepted(invokeResult);
-      logRouteEvent(
-        "route.lambda.invoked",
-        buildRouteLogPayload(deps, runtimeClass, decision, taskState, false),
-      );
-      void publishGatewayCountMetric("RouteToLambda", {
-        channel: deps.channel,
-        runtime: "lambda",
-      });
-      return "lambda";
+      return await invokeLambdaRoute(deps, deps.message, runtimeClass, decision, taskState);
     } catch (err) {
       // Lambda failed — fall back to Fargate
       const fallbackDecision: RouteDecision =

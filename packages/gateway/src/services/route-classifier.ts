@@ -22,6 +22,63 @@ const PAYMENT_SUMMARY_PATTERN =
   /(?:얼마|총액|합계|총합|어느 정도|어느정도|얼마나|계산|정리|요약|찾|알려|보여|확인|\bhow much\b|\btotal\b|\bsum\b|\bcalculate\b|\bshow\b|\bcheck\b|\bfind\b)/i;
 const PAYMENT_LOOKUP_PATTERN =
   /(?:결제(?:한)?|지출|카드(?:값|사용|결제)?|사용금액|사용 금액).*(?:금액|얼마|얼마나|총액|합계|총합|어느 정도|어느정도|정도|나왔|썼|쓴|되려나)|(?:금액|얼마|얼마나|총액|합계|총합|어느 정도|어느정도|정도|나왔|썼|쓴|되려나).*(?:결제(?:한)?|지출|카드(?:값|사용|결제)?|사용금액|사용 금액)/i;
+const PAYMENT_DATA_TOKENS = [
+  "결제",
+  "지출",
+  "사용금액",
+  "사용 금액",
+  "승인내역",
+  "카드값",
+  "카드사용",
+  "카드 사용",
+  "카드결제",
+  "카드 결제",
+  "청구서",
+  "영수증",
+  "명세서",
+  "payment",
+  "payments",
+  "charge",
+  "charges",
+  "charged",
+  "transaction",
+  "transactions",
+  "spent",
+  "spend",
+  "billing",
+  "invoice",
+  "receipt",
+  "statement",
+];
+const PAYMENT_SUMMARY_TOKENS = [
+  "금액",
+  "얼마",
+  "총액",
+  "합계",
+  "총합",
+  "어느정도",
+  "어느 정도",
+  "얼마나",
+  "계산",
+  "정리",
+  "요약",
+  "찾",
+  "알려",
+  "보여",
+  "확인",
+  "나왔",
+  "썼",
+  "쓴",
+  "되려나",
+  "howmuch",
+  "how much",
+  "total",
+  "sum",
+  "calculate",
+  "show",
+  "check",
+  "find",
+];
 const TOOL_HEAVY_PATTERNS = [
   /(?:check|read|open|search|send|summari[sz]e|analy[sz]e|show|body|content|details?).*(?:gmail|email|mailbox|inbox|attachment|message)/i,
   /(?:gmail|email|mailbox|inbox|attachment|message).*(?:check|read|open|search|send|summari[sz]e|analy[sz]e|show|body|content|details?)/i,
@@ -48,8 +105,15 @@ function compactIntentMessage(message: string): string {
 function looksLikePaymentDataLookup(message: string): boolean {
   const normalized = normalizeIntentMessage(message);
   const compact = compactIntentMessage(message);
+  const hasPaymentToken = PAYMENT_DATA_TOKENS.some(
+    (token) => normalized.includes(token) || compact.includes(token.replace(/\s+/gu, "")),
+  );
+  const hasSummaryToken = PAYMENT_SUMMARY_TOKENS.some(
+    (token) => normalized.includes(token) || compact.includes(token.replace(/\s+/gu, "")),
+  );
 
   return (
+    (hasPaymentToken && hasSummaryToken) ||
     (PAYMENT_DATA_PATTERN.test(normalized) && PAYMENT_SUMMARY_PATTERN.test(normalized)) ||
     (PAYMENT_DATA_PATTERN.test(compact) && PAYMENT_SUMMARY_PATTERN.test(compact)) ||
     PAYMENT_LOOKUP_PATTERN.test(normalized) ||

@@ -109,6 +109,14 @@ describe("classifyRouteRuntimeClass", () => {
   it("classifies Korean Gmail body selection requests as tool-enabled", () => {
     expect(classifyRouteRuntimeClass("1번 메일 자세히 보여줘")).toBe("tool-enabled");
   });
+
+  it("classifies explicit Korean Gmail search requests as tool-enabled", () => {
+    expect(classifyRouteRuntimeClass("지메일에 접근해서 3월 카드 명세서 이메일 찾아줘")).toBe("tool-enabled");
+  });
+
+  it("classifies Korean email statement searches as tool-enabled", () => {
+    expect(classifyRouteRuntimeClass("3월 카드 명세서 이메일 찾아줘")).toBe("tool-enabled");
+  });
 });
 
 describe("stripRouteHint", () => {

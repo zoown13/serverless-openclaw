@@ -223,6 +223,54 @@ describe("gmail-tool", () => {
     expect(fetchMock.mock.calls[1]?.[0]).toContain("subject%3Ainvoice");
   });
 
+  it("routes weekly payment amount questions to Gmail search and estimates totals from headers", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-04T09:00:00Z"));
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          body: {
+            messages: [{ id: "m1" }, { id: "m2" }],
+            resultSizeEstimate: 2,
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "카드 결제 알림 12,300원",
+          "Card Co <billing@example.com>",
+          "Fri, 03 Apr 2026 09:00:00 +0000",
+          "이번주 사용금액 12,300원 승인",
+        ),
+      )
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "카드 결제 알림 45,000원",
+          "Card Co <billing@example.com>",
+          "Thu, 02 Apr 2026 09:00:00 +0000",
+          "이번주 사용금액 45,000원 승인",
+        ),
+      );
+
+    const response = await maybeHandleCustomGmailRequest({
+      userId: "user-payment-summary",
+      sessionKey: "session-payment-summary",
+      message: "이번주 결제한 금액이 어느정도 되려나?",
+      runtimeClass: "tool-enabled",
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    expect(fetchMock.mock.calls[1]?.[0]).toContain(
+      "after%3A2026%2F03%2F30%20before%3A2026%2F04%2F06%20%EA%B2%B0%EC%A0%9C",
+    );
+    expect(response).toContain(
+      "Estimated total from visible headers/snippets: KRW 57,300 across 2 matched message(s).",
+    );
+    expect(response).toContain("I did not open full bodies or attachments.");
+  });
+
   it("opens one selected body from the last search context and respects the body budget", async () => {
     const longBody = "A".repeat(200);
 

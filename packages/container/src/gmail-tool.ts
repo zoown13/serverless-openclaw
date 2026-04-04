@@ -100,6 +100,10 @@ const GMAIL_HINT_RE =
   /(?:\bgmail\b|\bemail\b|\be-mail\b|\binbox\b|\bunread\b|지메일|이메일|메일(?:함)?|수신함|받은편지함|편지함|안 읽은|읽지 않은)/i;
 const GMAIL_SUMMARY_RE =
   /(?:\baccess\b|\bconnect\b|\bintegrat(?:e|ion)?\b|\bfetch\b|\bload\b|\bget\b|\bcheck\b|\bshow\b|\blist\b|\bread\b|\bopen\b|\bsearch\b|\bfind\b|\blook for\b|\bfilter\b|\bsummar(?:ize|ise)\b|\banaly[sz]e\b|\breview\b|\btriage\b|\blatest\b|\brecent\b|\bunread\b|\binbox\b|접근|연동|연결|가져오|불러오|조회|확인|보여|봐|읽|열|검색|요약|분석|정리|최신|최근|수신함|받은편지함|찾)/i;
+const PAYMENT_DATA_RE =
+  /(?:결제|지출|사용금액|사용 금액|승인내역|카드값|카드\s*(?:사용|결제)|청구서|영수증|명세서|\bpayment(?:s)?\b|\bcharge(?:s|d)?\b|\btransaction(?:s)?\b|\bspent\b|\bspend\b|\bbilling\b|\binvoice\b|\breceipt\b|\bstatement\b)/i;
+const PAYMENT_SUMMARY_RE =
+  /(?:얼마|총액|합계|총합|어느 정도|어느정도|얼마나|계산|정리|요약|찾|알려|보여|확인|\bhow much\b|\btotal\b|\bsum\b|\bcalculate\b|\bshow\b|\bcheck\b|\bfind\b)/i;
 const GMAIL_UNSUPPORTED_ACTION_RE =
   /(?:\bsend\b|\bcompose\b|\bdraft\b|\breply\b|\bforward\b|\bdelete\b|\barchive\b|\bwrite\b|보내|작성|답장|전달|삭제|보관)/i;
 const ATTACHMENT_REQUEST_RE =
@@ -145,7 +149,12 @@ function isSupportedGmailSummaryRequest(message: string, runtimeClass?: RuntimeC
     return false;
   }
 
-  if (!GMAIL_HINT_RE.test(message) || !GMAIL_SUMMARY_RE.test(message)) {
+  const looksLikeGmailSummary =
+    GMAIL_HINT_RE.test(message) && GMAIL_SUMMARY_RE.test(message);
+  const looksLikePaymentSummary =
+    PAYMENT_DATA_RE.test(message) && PAYMENT_SUMMARY_RE.test(message);
+
+  if (!looksLikeGmailSummary && !looksLikePaymentSummary) {
     return false;
   }
 
@@ -420,6 +429,12 @@ function extractSemanticTerms(message: string): string[] {
   if (/\breceipt\b/i.test(message)) {
     terms.push("receipt");
   }
+  if (/결제|승인내역|사용금액|사용 금액/.test(message)) {
+    terms.push("결제");
+  }
+  if (/\bpayment(?:s)?\b|\bcharge(?:s|d)?\b|\btransaction(?:s)?\b/i.test(message)) {
+    terms.push("payment");
+  }
 
   return dedupeTerms(terms);
 }
@@ -586,20 +601,65 @@ function sanitizePreview(text: string | undefined, maxChars: number): string {
   return `${compact.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
 }
 
+function extractPaymentAmount(text: string): number | undefined {
+  const patterns = [
+    /₩\s*(\d{1,3}(?:,\d{3})+|\d+)/g,
+    /\bKRW\s*(\d{1,3}(?:,\d{3})+|\d+)\b/gi,
+    /(\d{1,3}(?:,\d{3})+|\d+)\s*원/g,
+  ];
+
+  for (const pattern of patterns) {
+    const match = pattern.exec(text);
+    if (!match?.[1]) {
+      continue;
+    }
+
+    const numeric = Number.parseInt(match[1].replace(/,/g, ""), 10);
+    if (Number.isFinite(numeric)) {
+      return numeric;
+    }
+  }
+
+  return undefined;
+}
+
+function formatPaymentEstimate(items: GmailMessageSummaryItem[]): string | undefined {
+  const amounts = items
+    .map((item) => extractPaymentAmount(`${item.subject} ${item.snippet}`))
+    .filter((value): value is number => value !== undefined);
+
+  if (amounts.length === 0) {
+    return undefined;
+  }
+
+  const total = amounts.reduce((sum, amount) => sum + amount, 0);
+  const formatted = new Intl.NumberFormat("en-US").format(total);
+  return `Estimated total from visible headers/snippets: KRW ${formatted} across ${amounts.length} matched message(s). This is a rough headers-first estimate only.`;
+}
+
 function formatSummary(
   query: string,
   inspected: number,
   items: GmailMessageSummaryItem[],
+  options?: {
+    includePaymentEstimate?: boolean;
+  },
 ): string {
   if (items.length === 0) {
     return `I checked Gmail headers-first with query "${query}" and found no matching messages.`;
   }
 
+  const paymentEstimate = options?.includePaymentEstimate
+    ? formatPaymentEstimate(items)
+    : undefined;
   const lines = [
     `I checked Gmail headers-first with query "${query}" and inspected ${inspected} message(s).`,
     "I did not open full bodies or attachments.",
-    "",
   ];
+  if (paymentEstimate) {
+    lines.push(paymentEstimate);
+  }
+  lines.push("");
 
   items.forEach((item, index) => {
     lines.push(`${index + 1}. ${item.subject}`);
@@ -979,6 +1039,8 @@ export async function maybeHandleCustomGmailRequest(
   const isSummaryRequest = isSupportedGmailSummaryRequest(options.message, options.runtimeClass);
   const isAttachmentOnlyRequest =
     isAttachmentRequest(options.message) && (GMAIL_HINT_RE.test(options.message) || hasContext);
+  const isPaymentSummary =
+    PAYMENT_DATA_RE.test(options.message) && PAYMENT_SUMMARY_RE.test(options.message);
 
   if (!isBodyRequest && !isSummaryRequest && !isAttachmentOnlyRequest) {
     return undefined;
@@ -1081,6 +1143,7 @@ export async function maybeHandleCustomGmailRequest(
       query,
       messageIds.length,
       items,
+      { includePaymentEstimate: isPaymentSummary },
     );
   } catch (err) {
     options.onTelemetry?.({

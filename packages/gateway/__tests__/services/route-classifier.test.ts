@@ -117,6 +117,21 @@ describe("classifyRouteRuntimeClass", () => {
   it("classifies Korean email statement searches as tool-enabled", () => {
     expect(classifyRouteRuntimeClass("3월 카드 명세서 이메일 찾아줘")).toBe("tool-enabled");
   });
+
+  it("classifies Korean payment summary questions as tool-enabled", () => {
+    expect(classifyRouteRuntimeClass("이번주 결제한 금액이 어느정도 되려나?")).toBe("tool-enabled");
+  });
+});
+
+describe("classifyRoute payment routing", () => {
+  it("routes Korean payment summary questions to a running Fargate task", () => {
+    const result = classifyRoute({
+      message: "이번주 결제한 금액이 어느정도 되려나?",
+      taskState: runningTask,
+    });
+
+    expect(result).toBe("fargate-reuse");
+  });
 });
 
 describe("stripRouteHint", () => {

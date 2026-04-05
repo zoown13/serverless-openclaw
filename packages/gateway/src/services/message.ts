@@ -8,6 +8,7 @@ import {
   PREWARM_USER_ID,
 } from "@serverless-openclaw/shared";
 import type {
+  BridgeRoutingContext,
   BridgeMessageRequest,
   Channel,
   EmailTokenBudgetPolicy,
@@ -240,6 +241,7 @@ function buildBridgeMessageRequest(
   message: string,
   runtimeClass: RuntimeClass,
   routeDecision: RouteDecision,
+  routingContext?: BridgeRoutingContext,
 ): BridgeMessageRequest {
   return {
     userId: deps.userId,
@@ -250,10 +252,27 @@ function buildBridgeMessageRequest(
     traceId: deps.traceId,
     runtimeClass,
     routeDecision,
+    routingContext,
     emailTokenBudget:
       runtimeClass === "tool-enabled"
         ? resolveEmailTokenBudgetPolicy()
         : undefined,
+  };
+}
+
+function toBridgeRoutingContext(
+  state: RoutingContextState,
+): BridgeRoutingContext {
+  return {
+    status: state.status,
+    intentKind: state.intentKind,
+    canonicalGoal: state.canonicalGoal,
+    ...(state.sourceChoice
+      ? { sourceChoice: state.sourceChoice }
+      : {}),
+    ...(state.runtimeClass
+      ? { runtimeClass: state.runtimeClass }
+      : {}),
   };
 }
 
@@ -403,12 +422,14 @@ async function routeFargate(
   taskState: TaskStateItem | null,
   runtimeClass: RuntimeClass,
   routeDecision: RouteDecision,
+  routingContext?: BridgeRoutingContext,
 ): Promise<RouteResult> {
   const bridgeMessage = buildBridgeMessageRequest(
     deps,
     deps.message,
     runtimeClass,
     routeDecision,
+    routingContext,
   );
 
   if (taskState?.status === "Running" && taskState.publicIp) {
@@ -488,6 +509,7 @@ async function routeFargate(
     traceId: deps.traceId,
     runtimeClass: bridgeMessage.runtimeClass,
     routeDecision: bridgeMessage.routeDecision,
+    routingContext: bridgeMessage.routingContext,
     emailTokenBudget: bridgeMessage.emailTokenBudget,
     createdAt: new Date(now).toISOString(),
     ttl: Math.floor(now / 1000) + PENDING_MESSAGE_TTL_SEC,
@@ -567,6 +589,7 @@ async function routeForcedRuntimeClass(
   deps: RouteDeps,
   message: string,
   runtimeClass: RuntimeClass,
+  routingContext?: BridgeRoutingContext,
 ): Promise<RouteResult> {
   const taskState = await deps.getTaskState(deps.userId);
 
@@ -579,7 +602,13 @@ async function routeForcedRuntimeClass(
       "route.classified",
       buildRouteLogPayload(deps, runtimeClass, routeDecision, taskState, false),
     );
-    return routeFargate({ ...deps, message }, taskState, runtimeClass, routeDecision);
+    return routeFargate(
+      { ...deps, message },
+      taskState,
+      runtimeClass,
+      routeDecision,
+      routingContext,
+    );
   }
 
   if (
@@ -602,7 +631,13 @@ async function routeForcedRuntimeClass(
     "route.classified",
     buildRouteLogPayload(deps, runtimeClass, routeDecision, taskState, false),
   );
-  return routeFargate({ ...deps, message }, taskState, runtimeClass, routeDecision);
+  return routeFargate(
+    { ...deps, message },
+    taskState,
+    runtimeClass,
+    routeDecision,
+    routingContext,
+  );
 }
 
 async function maybeHandleRoutingContext(
@@ -612,6 +647,7 @@ async function maybeHandleRoutingContext(
   result?: RouteResult;
   replayMessage?: string;
   replayRuntimeClass?: RuntimeClass;
+  replayRoutingContext?: BridgeRoutingContext;
 }> {
   const context = await deps.getRoutingContext(deps.userId, deps.channel);
   if (!context) {
@@ -681,6 +717,7 @@ async function maybeHandleRoutingContext(
         handled: false,
         replayMessage: deps.message,
         replayRuntimeClass: activeRuntimeClass,
+        replayRoutingContext: toBridgeRoutingContext(context),
       };
     }
 
@@ -726,6 +763,18 @@ async function maybeHandleRoutingContext(
       handled: false,
       replayMessage: context.canonicalGoal,
       replayRuntimeClass: runtimeClass,
+      replayRoutingContext: toBridgeRoutingContext(
+        buildRoutingContext(
+          deps,
+          "active_task",
+          context.canonicalGoal,
+          {
+            createdAt: context.createdAt,
+            sourceChoice,
+            runtimeClass,
+          },
+        ),
+      ),
     };
   }
 
@@ -789,6 +838,7 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
       deps,
       routingContextResolution.replayMessage,
       routingContextResolution.replayRuntimeClass,
+      routingContextResolution.replayRoutingContext,
     );
   }
 
@@ -857,6 +907,7 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
         taskState,
         runtimeClass,
         decision,
+        undefined,
       );
     }
 
@@ -891,6 +942,7 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
         taskState,
         runtimeClass,
         fallbackDecision,
+        undefined,
       );
     }
   }

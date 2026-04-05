@@ -215,6 +215,13 @@ describe("message service", () => {
         expect.objectContaining({
           message: "이번주 결제한 금액이 어느정도 되려나?",
           runtimeClass: "tool-enabled",
+          routingContext: expect.objectContaining({
+            status: "active_task",
+            intentKind: "payment_summary",
+            canonicalGoal: "이번주 결제한 금액이 어느정도 되려나?",
+            sourceChoice: "gmail",
+            runtimeClass: "tool-enabled",
+          }),
         }),
       );
     });
@@ -394,6 +401,15 @@ describe("message service", () => {
       const body = JSON.parse(mockFetch.mock.calls[0][1].body);
       expect(body.message).toBe("얼마 썼는지 정리해줄래?");
       expect(body.runtimeClass).toBe("tool-enabled");
+      expect(body.routingContext).toEqual(
+        expect.objectContaining({
+          status: "active_task",
+          intentKind: "payment_summary",
+          canonicalGoal: "이번주 결제한 금액이 어느정도 되려나?",
+          sourceChoice: "gmail",
+          runtimeClass: "tool-enabled",
+        }),
+      );
     });
 
     it("should clear an active task context on explicit cancel", async () => {

@@ -232,8 +232,11 @@ export async function startContainer(opts: StartContainerOptions): Promise<void>
       logBridgeEvent("bridge.message.accepted", logContext);
       try {
         const gmailResponse = await maybeHandleCustomGmailRequest({
+          userId,
+          sessionKey: msg.connectionId,
           message: msg.message,
           runtimeClass: msg.runtimeClass,
+          routingContext: msg.routingContext,
           emailTokenBudget: msg.emailTokenBudget,
           onTelemetry: gmailTelemetry,
         });

@@ -1,12 +1,17 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { EmailTokenBudgetPolicy, RuntimeClass } from "@serverless-openclaw/shared";
+import type {
+  BridgeRoutingContext,
+  EmailTokenBudgetPolicy,
+  RuntimeClass,
+} from "@serverless-openclaw/shared";
 
 interface GmailToolOptions {
   userId?: string;
   sessionKey?: string;
   message: string;
   runtimeClass?: RuntimeClass;
+  routingContext?: BridgeRoutingContext;
   emailTokenBudget?: EmailTokenBudgetPolicy;
   onTelemetry?: (event: GmailTelemetryEvent) => void;
 }
@@ -83,11 +88,19 @@ interface GmailSearchContextItem {
   from: string;
   subject: string;
   date: string;
+  snippet: string;
 }
 
 interface GmailSearchContext {
   query: string;
   items: GmailSearchContextItem[];
+  updatedAt: string;
+}
+
+interface GmailTaskContext {
+  intentKind: "payment_summary";
+  canonicalGoal: string;
+  sourceChoice: "gmail";
   updatedAt: string;
 }
 
@@ -104,6 +117,8 @@ const PAYMENT_DATA_RE =
   /(?:결제|지출|사용금액|사용 금액|승인내역|카드값|카드\s*(?:사용|결제)|청구서|영수증|명세서|\bpayment(?:s)?\b|\bcharge(?:s|d)?\b|\btransaction(?:s)?\b|\bspent\b|\bspend\b|\bbilling\b|\binvoice\b|\breceipt\b|\bstatement\b)/i;
 const PAYMENT_SUMMARY_RE =
   /(?:얼마|총액|합계|총합|어느 정도|어느정도|얼마나|계산|정리|요약|찾|알려|보여|확인|\bhow much\b|\btotal\b|\bsum\b|\bcalculate\b|\bshow\b|\bcheck\b|\bfind\b)/i;
+const PAYMENT_FOLLOWUP_RE =
+  /(?:얼마|얼마나|합계|총액|총합|정리|요약|분석|다시|이번주|이번 주|이번달|이번 달|카드사별|결제|지출|사용금액|사용 금액|썼|쓴|사용|승인내역)/i;
 const GMAIL_UNSUPPORTED_ACTION_RE =
   /(?:\bsend\b|\bcompose\b|\bdraft\b|\breply\b|\bforward\b|\bdelete\b|\barchive\b|\bwrite\b|보내|작성|답장|전달|삭제|보관)/i;
 const ATTACHMENT_REQUEST_RE =
@@ -130,6 +145,8 @@ const ENGLISH_MONTH_NAMES = [
 ] as const;
 
 const lastSearchContextByUser = new Map<string, GmailSearchContext>();
+const activeTaskContextByUser = new Map<string, GmailTaskContext>();
+const GMAIL_CONTEXT_TTL_MS = 5 * 60 * 1000;
 
 function buildContextKey(
   userId: string | undefined,
@@ -142,6 +159,98 @@ function buildContextKey(
   return sessionKey
     ? `${userId}:${sessionKey}`
     : userId;
+}
+
+function isExpiredTimestamp(value: string | undefined): boolean {
+  if (!value) {
+    return true;
+  }
+
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) {
+    return true;
+  }
+
+  return parsed + GMAIL_CONTEXT_TTL_MS <= Date.now();
+}
+
+function getSearchContext(
+  userId: string | undefined,
+  sessionKey: string | undefined,
+): GmailSearchContext | undefined {
+  const contextKey = buildContextKey(userId, sessionKey);
+  if (!contextKey) {
+    return undefined;
+  }
+
+  const context = lastSearchContextByUser.get(contextKey);
+  if (!context) {
+    return undefined;
+  }
+
+  if (isExpiredTimestamp(context.updatedAt)) {
+    lastSearchContextByUser.delete(contextKey);
+    return undefined;
+  }
+
+  return context;
+}
+
+function getActiveTaskContext(
+  userId: string | undefined,
+  sessionKey: string | undefined,
+): GmailTaskContext | undefined {
+  const contextKey = buildContextKey(userId, sessionKey);
+  if (!contextKey) {
+    return undefined;
+  }
+
+  const context = activeTaskContextByUser.get(contextKey);
+  if (!context) {
+    return undefined;
+  }
+
+  if (isExpiredTimestamp(context.updatedAt)) {
+    activeTaskContextByUser.delete(contextKey);
+    return undefined;
+  }
+
+  return context;
+}
+
+function saveActiveTaskContext(
+  userId: string | undefined,
+  sessionKey: string | undefined,
+  context: Omit<GmailTaskContext, "updatedAt">,
+): void {
+  const contextKey = buildContextKey(userId, sessionKey);
+  if (!contextKey) {
+    return;
+  }
+
+  activeTaskContextByUser.set(contextKey, {
+    ...context,
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+function syncTaskContextFromRoutingContext(
+  options: GmailToolOptions,
+): GmailTaskContext | undefined {
+  const incoming = options.routingContext;
+  if (
+    incoming?.status === "active_task" &&
+    incoming.intentKind === "payment_summary" &&
+    incoming.sourceChoice === "gmail"
+  ) {
+    saveActiveTaskContext(options.userId, options.sessionKey, {
+      intentKind: "payment_summary",
+      canonicalGoal: incoming.canonicalGoal,
+      sourceChoice: "gmail",
+    });
+  }
+
+  return getActiveTaskContext(options.userId, options.sessionKey);
 }
 
 function isSupportedGmailSummaryRequest(message: string, runtimeClass?: RuntimeClass): boolean {
@@ -692,6 +801,7 @@ function encodeContextItems(items: GmailMessageSummaryItem[]): GmailSearchContex
     from: item.from,
     subject: item.subject,
     date: item.date,
+    snippet: item.snippet,
   }));
 }
 
@@ -711,6 +821,16 @@ function saveSearchContext(
     items: encodeContextItems(items),
     updatedAt: new Date().toISOString(),
   });
+}
+
+function toSummaryItems(items: GmailSearchContextItem[]): GmailMessageSummaryItem[] {
+  return items.map((item) => ({
+    messageId: item.messageId,
+    from: item.from,
+    subject: item.subject,
+    date: item.date,
+    snippet: item.snippet,
+  }));
 }
 
 function saveNarrowedContext(
@@ -942,8 +1062,7 @@ async function readExplicitBodyFromSelection(
   accessToken: string,
   maxBodyChars: number,
 ): Promise<string | undefined> {
-  const contextKey = buildContextKey(options.userId, options.sessionKey);
-  const context = contextKey ? lastSearchContextByUser.get(contextKey) : undefined;
+  const context = getSearchContext(options.userId, options.sessionKey);
   if (!context) {
     return undefined;
   }
@@ -1042,18 +1161,27 @@ export async function maybeHandleCustomGmailRequest(
     return undefined;
   }
 
-  const contextKey = buildContextKey(options.userId, options.sessionKey);
-  const hasContext = contextKey
-    ? lastSearchContextByUser.has(contextKey)
-    : false;
+  const activeTaskContext = syncTaskContextFromRoutingContext(options);
+  const hasContext = Boolean(
+    getSearchContext(options.userId, options.sessionKey),
+  );
   const isBodyRequest = isExplicitBodyRequest(options.message) && (GMAIL_HINT_RE.test(options.message) || hasContext);
   const isSummaryRequest = isSupportedGmailSummaryRequest(options.message, options.runtimeClass);
   const isAttachmentOnlyRequest =
     isAttachmentRequest(options.message) && (GMAIL_HINT_RE.test(options.message) || hasContext);
   const isPaymentSummary =
     PAYMENT_DATA_RE.test(options.message) && PAYMENT_SUMMARY_RE.test(options.message);
+  const isPaymentTaskFollowup =
+    activeTaskContext?.intentKind === "payment_summary" &&
+    activeTaskContext.sourceChoice === "gmail" &&
+    PAYMENT_FOLLOWUP_RE.test(options.message);
 
-  if (!isBodyRequest && !isSummaryRequest && !isAttachmentOnlyRequest) {
+  if (
+    !isBodyRequest &&
+    !isSummaryRequest &&
+    !isAttachmentOnlyRequest &&
+    !isPaymentTaskFollowup
+  ) {
     return undefined;
   }
 
@@ -1097,6 +1225,18 @@ export async function maybeHandleCustomGmailRequest(
   const maxBodyChars = options.emailTokenBudget?.maxBodyChars ?? 1600;
 
   try {
+    if (isPaymentTaskFollowup) {
+      const cachedSearchContext = getSearchContext(options.userId, options.sessionKey);
+      if (cachedSearchContext) {
+        return formatSummary(
+          cachedSearchContext.query,
+          cachedSearchContext.items.length,
+          toSummaryItems(cachedSearchContext.items),
+          { includePaymentEstimate: true },
+        );
+      }
+    }
+
     const accessToken = await exchangeRefreshToken(refreshToken, credentials);
 
     if (isBodyRequest) {
@@ -1109,7 +1249,10 @@ export async function maybeHandleCustomGmailRequest(
       );
     }
 
-    const query = deriveQuery(options.message);
+    const querySourceMessage = isPaymentTaskFollowup && activeTaskContext
+      ? activeTaskContext.canonicalGoal
+      : options.message;
+    const query = deriveQuery(querySourceMessage);
     const querySummary = summarizeQuery(query);
     options.onTelemetry?.({
       event: "queryBuilt",
@@ -1132,11 +1275,20 @@ export async function maybeHandleCustomGmailRequest(
         matchedCount: listResponse.resultSizeEstimate ?? 0,
         inspectedCount: 0,
       });
-      return formatNoResults(query, { paymentSummary: isPaymentSummary });
+      return formatNoResults(query, {
+        paymentSummary: isPaymentSummary || isPaymentTaskFollowup,
+      });
     }
 
     const items = await loadMessageSummaries(accessToken, messageIds, maxSnippetChars);
     saveSearchContext(options.userId, options.sessionKey, query, items);
+    if (isPaymentSummary || isPaymentTaskFollowup) {
+      saveActiveTaskContext(options.userId, options.sessionKey, {
+        intentKind: "payment_summary",
+        canonicalGoal: activeTaskContext?.canonicalGoal ?? querySourceMessage,
+        sourceChoice: "gmail",
+      });
+    }
 
     if (messageIds.length > 0) {
       options.onTelemetry?.({
@@ -1155,7 +1307,7 @@ export async function maybeHandleCustomGmailRequest(
       query,
       messageIds.length,
       items,
-      { includePaymentEstimate: isPaymentSummary },
+      { includePaymentEstimate: isPaymentSummary || isPaymentTaskFollowup },
     );
   } catch (err) {
     options.onTelemetry?.({

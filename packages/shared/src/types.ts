@@ -54,6 +54,14 @@ export interface RoutingContextState {
 /** @deprecated Use RoutingContextState for new code. */
 export type PendingClarificationState = RoutingContextState;
 
+export interface BridgeRoutingContext {
+  status: RoutingContextStatus;
+  intentKind: RoutingIntentKind;
+  canonicalGoal: string;
+  sourceChoice?: RoutingSourceChoice;
+  runtimeClass?: RuntimeClass;
+}
+
 // === DynamoDB Items (architecture.md §5) ===
 export interface ConversationItem {
   PK: string; // USER#{userId}
@@ -99,6 +107,7 @@ export interface PendingMessageItem {
   traceId?: string;
   runtimeClass?: RuntimeClass;
   routeDecision?: RouteDecision;
+  routingContext?: BridgeRoutingContext;
   emailTokenBudget?: EmailTokenBudgetPolicy;
   retryCount?: number;
   nextAttemptAt?: string;
@@ -118,6 +127,7 @@ export interface BridgeMessageRequest {
   traceId?: string;
   runtimeClass?: RuntimeClass;
   routeDecision?: RouteDecision;
+  routingContext?: BridgeRoutingContext;
   emailTokenBudget?: EmailTokenBudgetPolicy;
 }
 

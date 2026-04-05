@@ -189,6 +189,7 @@ export function createApp(deps: BridgeDeps): express.Express {
           sessionKey: body.connectionId!,
           message: body.message!,
           runtimeClass: body.runtimeClass,
+          routingContext: body.routingContext,
           emailTokenBudget: body.emailTokenBudget,
           onTelemetry: gmailTelemetry,
         });

@@ -271,6 +271,76 @@ describe("gmail-tool", () => {
     expect(response).toContain("I did not open full bodies or attachments.");
   });
 
+  it("reuses the active Gmail payment task context for follow-up summaries without another Gmail API call", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-04T09:00:00Z"));
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          body: {
+            messages: [{ id: "m1" }, { id: "m2" }],
+            resultSizeEstimate: 2,
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "카드 결제 알림 12,300원",
+          "Card Co <billing@example.com>",
+          "Fri, 03 Apr 2026 09:00:00 +0000",
+          "이번주 사용금액 12,300원 승인",
+        ),
+      )
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "카드 결제 알림 45,000원",
+          "Card Co <billing@example.com>",
+          "Thu, 02 Apr 2026 09:00:00 +0000",
+          "이번주 사용금액 45,000원 승인",
+        ),
+      );
+
+    await maybeHandleCustomGmailRequest({
+      userId: "user-payment-followup",
+      sessionKey: "session-payment-followup",
+      message: "이번주 결제한 금액이 어느정도 되려나?",
+      runtimeClass: "tool-enabled",
+      routingContext: {
+        status: "active_task",
+        intentKind: "payment_summary",
+        canonicalGoal: "이번주 결제한 금액이 어느정도 되려나?",
+        sourceChoice: "gmail",
+        runtimeClass: "tool-enabled",
+      },
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    fetchMock.mockReset();
+
+    const response = await maybeHandleCustomGmailRequest({
+      userId: "user-payment-followup",
+      sessionKey: "session-payment-followup",
+      message: "얼마 썼는지 정리해줄래?",
+      runtimeClass: "tool-enabled",
+      routingContext: {
+        status: "active_task",
+        intentKind: "payment_summary",
+        canonicalGoal: "이번주 결제한 금액이 어느정도 되려나?",
+        sourceChoice: "gmail",
+        runtimeClass: "tool-enabled",
+      },
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(response).toContain(
+      "Estimated total from visible headers/snippets: KRW 57,300 across 2 matched message(s).",
+    );
+    expect(response).toContain('query "after:2026/03/30 before:2026/04/06 결제"');
+  });
+
   it("opens one selected body from the last search context and respects the body budget", async () => {
     const longBody = "A".repeat(200);
 

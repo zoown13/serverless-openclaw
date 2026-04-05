@@ -202,6 +202,13 @@ describe("Bridge HTTP Server", () => {
           runtimeClass: "tool-enabled",
           traceId: "trace-123",
           routeDecision: "fargate-new",
+          routingContext: {
+            status: "active_task",
+            intentKind: "payment_summary",
+            canonicalGoal: "이번주 결제한 금액이 어느정도 되려나?",
+            sourceChoice: "gmail",
+            runtimeClass: "tool-enabled",
+          },
         });
 
       expect(res.status).toBe(202);
@@ -215,6 +222,17 @@ describe("Bridge HTTP Server", () => {
           }),
         );
       });
+      expect(gmailToolMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          routingContext: expect.objectContaining({
+            status: "active_task",
+            intentKind: "payment_summary",
+            canonicalGoal: "이번주 결제한 금액이 어느정도 되려나?",
+            sourceChoice: "gmail",
+            runtimeClass: "tool-enabled",
+          }),
+        }),
+      );
       expect(deps.openclawClient.sendMessage).not.toHaveBeenCalled();
       expect(infoSpy).toHaveBeenCalledWith(
         expect.stringContaining("\"event\":\"bridge.delivery.success\""),

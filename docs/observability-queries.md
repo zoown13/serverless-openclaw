@@ -74,6 +74,42 @@ What redrive does:
 
 Redriven messages become eligible the next time the user-specific Fargate task starts and drains the pending queue.
 
+## Run a synthetic Telegram smoke
+
+Use the helper script when you want a repeatable Telegram webhook smoke on Windows without BOM or `Invoke-WebRequest` JSON issues.
+
+Example:
+
+```powershell
+powershell -File .\scripts\synthetic-telegram-smoke.ps1 -ChatId 8585874705 -TailLogs
+```
+
+Defaults:
+
+- resolves `ApiStack.HttpApiEndpoint` from CloudFormation
+- resolves `/serverless-openclaw/secrets/telegram-webhook-secret` from SSM
+- uses `TelegramId = ChatId` unless you override it
+- runs the `PaymentFollowUp` scenario:
+  - `이번주 결제한 금액이 어느정도 되려나?`
+  - `지메일에서 확인해줘`
+  - `그거 표로 보여줘`
+
+Useful variants:
+
+```powershell
+powershell -File .\scripts\synthetic-telegram-smoke.ps1 -ChatId 8585874705 -TelegramId 8585874705 -PauseSeconds 12
+```
+
+```powershell
+powershell -File .\scripts\synthetic-telegram-smoke.ps1 -ChatId 8585874705 -ApiEndpoint https://re4wh3c3j1.execute-api.ap-northeast-2.amazonaws.com -WebhookSecret <SECRET>
+```
+
+What to expect:
+
+- HTTP `200` from the webhook for each synthetic update
+- Gateway log events such as `route.classified`, `route.affinity.created|reused`
+- ECS Bridge log events such as `bridge.tool.intent.decided`, `bridge.tool.context.created|reused`, `bridge.delivery.success`
+
 ## Trace a single request by `traceId`
 
 ### Gateway Lambda

@@ -118,8 +118,10 @@ export type RouteResult = "sent" | "queued" | "started" | "lambda" | "clarify";
 
 const TOOL_AFFINITY_TTL_MS = 5 * 60 * 1000;
 const TOOL_AFFINITY_CANCEL_PATTERN = /^(?:취소|그만|끝|됐어|done|cancel|stop)$/i;
-const TOOL_AFFINITY_CONTINUATION_PATTERN =
-  /(?:얼마|얼마나|합계|총액|총합|정리|요약|분석|설명|자세히|상세|본문|내용|열어|읽어|보여|알려|다시|더|계속|그거|그걸|그건|그럼|이번주|이번 주|이번달|이번 달|카드사별|결제처별|메일|이메일|지메일|결제|지출|카드값|사용금액|사용 금액|영수증|명세서|청구서)/i;
+const TOOL_AFFINITY_CONTEXTUAL_PATTERN =
+  /(?:그거|이거|저거|그럼|그건|이건|더|다시|계속|표|테이블|요약|정리|분석|설명|자세히|상세|본문|내용|열어|읽어|보여|알려|합계|총액|총합|카드사별|결제처별|몇\s*개|개수|건수|limit|that|those|it|them|more|again|continue|summary|breakdown|details?|show|explain)/i;
+const TOOL_AFFINITY_OBVIOUS_TOPIC_SWITCH_PATTERN =
+  /^(?:안녕|안녕하세요|hello|hi|hey|고마워|감사|thanks?|thank you|잘가|bye|날씨|weather|번역|translate|농담|joke)(?:$|[!?.,\s])/i;
 const TOOL_AFFINITY_END_MESSAGE = "알겠습니다. 현재 도구 작업 문맥을 종료할게요.";
 
 function assertLambdaInvokeAccepted(result: unknown): void {
@@ -258,10 +260,15 @@ function shouldKeepToolAffinity(message: string): boolean {
     return true;
   }
 
-  // Keep the existing tool runtime affinity for short continuation turns unless
-  // the user clearly switched topics. This keeps follow-up analysis on Fargate
-  // without rebuilding the old semantic state machine in Gateway.
-  return normalized.length <= 40 && TOOL_AFFINITY_CONTINUATION_PATTERN.test(normalized);
+  if (TOOL_AFFINITY_OBVIOUS_TOPIC_SWITCH_PATTERN.test(normalized)) {
+    return false;
+  }
+
+  if (TOOL_AFFINITY_CONTEXTUAL_PATTERN.test(normalized)) {
+    return true;
+  }
+
+  return normalized.length <= 16;
 }
 
 function validateLambdaDeliveryTarget(deps: RouteDeps): void {

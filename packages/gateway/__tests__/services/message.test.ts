@@ -221,6 +221,37 @@ describe("message service", () => {
       expect(body.routingContext).toBeUndefined();
     });
 
+    it("should reuse an active tool affinity for a short contextual follow-up without explicit Gmail terms", async () => {
+      const deps = makeDeps({
+        message: "그거 표로 보여줘",
+        getTaskState: vi.fn().mockResolvedValue({
+          PK: "USER#user-123",
+          status: "Running",
+          publicIp: "1.2.3.4",
+          taskArn: "arn:task",
+          startedAt: "2024-01-01T00:00:00Z",
+          lastActivity: "2024-01-01T00:00:00Z",
+        }),
+        getRoutingContext: vi.fn().mockResolvedValue({
+          channel: "web",
+          connectionId: "conn-1",
+          callbackUrl: "https://cb",
+          createdAt: "2026-04-04T00:00:00Z",
+          lastActivityAt: "2026-04-04T00:00:00Z",
+          expiresAt: "2099-04-04T00:05:00Z",
+          runtimeClass: "tool-enabled",
+        }),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("sent");
+      expect(mockFetch).toHaveBeenCalled();
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(body.message).toBe("그거 표로 보여줘");
+      expect(body.runtimeClass).toBe("tool-enabled");
+    });
+
     it("should clear an active tool affinity on explicit cancel", async () => {
       const deps = makeDeps({
         message: "취소",
@@ -281,13 +312,9 @@ describe("message service", () => {
         invokeLambdaAgent: mockInvokeLambda,
         lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
         getRoutingContext: vi.fn().mockResolvedValue({
-          status: "active_task",
-          intentKind: "payment_summary",
           channel: "web",
-          canonicalGoal: "이번주 결제한 금액이 어느정도 되려나?",
           connectionId: "conn-1",
           callbackUrl: "https://cb",
-          sourceChoice: "gmail",
           runtimeClass: "tool-enabled",
           createdAt: "2026-04-04T00:00:00Z",
           lastActivityAt: "2026-04-04T00:00:00Z",

@@ -16,7 +16,7 @@ import {
 
 const DEFAULT_CONTEXT_TTL_MS = 5 * 60 * 1000;
 const SUMMARY_FOLLOW_UP_PATTERN =
-  /(얼마|합계|총액|정리|요약|카드사|결제처|가맹점|merchant|issuer|sum|summary|breakdown|이번주 것만 다시|이번 주 것만 다시|더\s*있|더\s*찾|더\s*보|밖에\s*없|몇\s*개|개수|건수|limit)/i;
+  /(얼마|합계|총액|정리|요약|카드사|결제처|가맹점|merchant|issuer|sum|summary|breakdown|table|표|테이블|이번주 것만 다시|이번 주 것만 다시|다시|계속|그거|이거|그럼|더\s*있|더\s*찾|더\s*보|밖에\s*없|몇\s*개|개수|건수|limit)/i;
 const PAYMENT_HINT_PATTERN =
   /(결제|카드값|카드 값|명세서|청구서|영수증|receipt|statement|invoice|spent|spend|payment|total|amount|얼마 썼|얼마 쓴)/i;
 const EXPLICIT_GMAIL_PATTERN =
@@ -1044,16 +1044,17 @@ async function runGmailTask(
 
 function buildDeterministicDecision(
   message: string,
-  gmailReady: boolean,
+  _gmailReady: boolean,
   activeContext?: ToolTaskContext,
 ): ToolIntentAdvisorAction {
-  if (activeContext?.status === "active" && isPaymentFollowUp(message)) {
+  if (activeContext?.status === "active" && !isClearlyUnrelated(message)) {
     return "continue_active_task";
   }
-  if (looksLikePaymentQuestion(message) && !isExplicitGmailMessage(message)) {
-    return "clarify_source";
-  }
-  if (gmailReady && (isExplicitGmailMessage(message) || looksLikePaymentQuestion(message) || isBodyRequest(message))) {
+  if (
+    isExplicitGmailMessage(message) ||
+    looksLikePaymentQuestion(message) ||
+    isBodyRequest(message)
+  ) {
     return "gmail";
   }
   return "generic_openclaw";
@@ -1199,25 +1200,6 @@ async function handleActiveTaskContext(
   }
 
   if (context.taskFamily === "gmail_payment_summary" && context.sourceChoice === "gmail") {
-    if (isPaymentFollowUp(trimmed)) {
-      const nextContext: ToolTaskContext = {
-        ...context,
-        lastActivityAt: nowIso(),
-        expiresAt: futureIso(DEFAULT_CONTEXT_TTL_MS),
-      };
-      setTaskContext(contextKey, nextContext);
-      emitToolEvent(options.onToolEvent, {
-        type: "contextReused",
-        taskFamily: context.taskFamily,
-        sourceChoice: context.sourceChoice,
-      });
-      return formatPaymentFollowUp(
-        nextContext,
-        trimmed,
-        options.emailTokenBudget.maxMessages,
-      );
-    }
-
     if (isBodyRequest(trimmed) || isAttachmentRequest(trimmed)) {
       const credentials = await loadGmailCredentials();
       if (!credentials) {
@@ -1257,12 +1239,22 @@ async function handleActiveTaskContext(
       return undefined;
     }
 
-    return {
-      kind: "direct",
-      message:
-        "I still have the current Gmail payment context, but I could not map that follow-up safely. Please ask for `합계`, `카드사별`, `결제처별`, or point to one email body by number.",
-      source: "gmail-context",
+    const nextContext: ToolTaskContext = {
+      ...context,
+      lastActivityAt: nowIso(),
+      expiresAt: futureIso(DEFAULT_CONTEXT_TTL_MS),
     };
+    setTaskContext(contextKey, nextContext);
+    emitToolEvent(options.onToolEvent, {
+      type: "contextReused",
+      taskFamily: context.taskFamily,
+      sourceChoice: context.sourceChoice,
+    });
+    return formatPaymentFollowUp(
+      nextContext,
+      trimmed,
+      options.emailTokenBudget.maxMessages,
+    );
   }
 
   return undefined;

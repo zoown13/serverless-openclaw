@@ -126,7 +126,14 @@ describe("gmail-tool", () => {
     fs.rmSync(tempHomeDir, { recursive: true, force: true });
   });
 
-  it("asks for clarification for ambiguous payment questions inside the tool runtime", async () => {
+  it("asks for clarification only when the advisor marks the source as ambiguous", async () => {
+    decideToolIntentMock.mockResolvedValueOnce({
+      action: "clarify_source",
+      taskFamily: "gmail_payment_summary",
+      sourceChoice: null,
+      confidence: 0.94,
+    });
+
     const response = await maybeHandleCustomGmailRequest({
       userId: "user-clarify",
       sessionKey: "session-clarify",
@@ -141,6 +148,34 @@ describe("gmail-tool", () => {
       source: "gmail-clarification",
     });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("defaults payment lookups to Gmail without requiring an explicit source mention", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m1" }] } }))
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "카드 결제 알림",
+          "Card Co <billing@example.com>",
+          "Fri, 03 Apr 2026 09:00:00 +0000",
+          "결제금액 12,300원 카드종류 삼성카드 가맹점명 스타벅스",
+        ),
+      );
+
+    const response = await maybeHandleCustomGmailRequest({
+      userId: "user-direct-payment",
+      sessionKey: "session-direct-payment",
+      message: "이번주 결제한 금액이 어느정도 되려나?",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    expect(response?.kind).toBe("direct");
+    expect(response?.message).toContain(
+      "Estimated total from visible headers/snippets: KRW 12,300",
+    );
+    expect(fetchMock).toHaveBeenCalled();
   });
 
   it("runs an explicit Gmail search in headers-first mode", async () => {
@@ -225,6 +260,58 @@ describe("gmail-tool", () => {
     expect(followUp?.kind).toBe("direct");
     expect(followUp?.message).toContain("삼성카드");
     expect(followUp?.message).toContain("현대카드");
+  });
+
+  it("reuses the active payment context for generic contextual follow-ups", async () => {
+    decideToolIntentMock.mockResolvedValueOnce({
+      action: "gmail",
+      taskFamily: "gmail_payment_summary",
+      sourceChoice: "gmail",
+      confidence: 0.95,
+    });
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m1" }, { id: "m2" }] } }))
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "카드 결제 알림",
+          "Card Co <billing@example.com>",
+          "Fri, 03 Apr 2026 09:00:00 +0000",
+          "결제금액 12,300원 카드종류 삼성카드 가맹점명 스타벅스",
+        ),
+      )
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "카드 결제 알림",
+          "Card Co <billing@example.com>",
+          "Thu, 02 Apr 2026 09:00:00 +0000",
+          "결제금액 45,000원 카드종류 현대카드 가맹점명 쿠팡",
+        ),
+      );
+
+    await maybeHandleCustomGmailRequest({
+      userId: "user-contextual-followup",
+      sessionKey: "session-contextual-followup",
+      message: "이번주 결제한 금액이 어느정도 되려나?",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    fetchMock.mockReset();
+
+    const followUp = await maybeHandleCustomGmailRequest({
+      userId: "user-contextual-followup",
+      sessionKey: "session-contextual-followup",
+      message: "그거 표로 정리해줄래?",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(followUp?.kind).toBe("direct");
+    expect(followUp?.message).toContain("Top matched payments:");
+    expect(followUp?.message).toContain("KRW 57,300");
   });
 
   it("explains the headers-first cap for payment coverage follow-ups without refetching", async () => {

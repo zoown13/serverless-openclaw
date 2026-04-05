@@ -150,218 +150,40 @@ describe("message service", () => {
       };
     }
 
-    it("should send a clarification instead of routing ambiguous payment questions", async () => {
+    it("should route ambiguous payment questions directly to tool-enabled compute", async () => {
       const deps = makeDeps({
         message: "이번주 결제한 금액이 어느정도 되려나?",
       });
 
       const result = await routeMessage(deps);
-      const clarificationState = (deps.putRoutingContext as ReturnType<typeof vi.fn>).mock
+      const affinityState = (deps.putRoutingContext as ReturnType<typeof vi.fn>).mock
         .calls[0][1];
 
-      expect(result).toBe("clarify");
+      expect(result).toBe("started");
       expect(deps.putRoutingContext).toHaveBeenCalledWith(
         "user-123",
         expect.objectContaining({
-          status: "awaiting_source",
-          intentKind: "payment_summary",
-          canonicalGoal: "이번주 결제한 금액이 어느정도 되려나?",
+          runtimeClass: "tool-enabled",
           channel: "web",
         }),
       );
       expect(
         Object.prototype.hasOwnProperty.call(
-          clarificationState as Record<string, unknown>,
-          "runtimeClass",
+          affinityState as Record<string, unknown>,
+          "canonicalGoal",
         ),
       ).toBe(false);
-      expect(deps.sendClarification).toHaveBeenCalledWith(
-        "지메일에서 확인할까요, 아니면 일반 답변으로 도와드릴까요?",
-      );
-      expect(deps.startTask).not.toHaveBeenCalled();
+      expect(deps.sendClarification).not.toHaveBeenCalled();
+      expect(deps.startTask).toHaveBeenCalled();
       expect(mockFetch).not.toHaveBeenCalled();
-    });
-
-    it("should replay the original message through Fargate after a Gmail clarification reply", async () => {
-      const deps = makeDeps({
-        message: "지메일에서 확인해줘",
-        getRoutingContext: vi.fn().mockResolvedValue({
-          status: "awaiting_source",
-          intentKind: "payment_summary",
-          channel: "web",
-          canonicalGoal: "이번주 결제한 금액이 어느정도 되려나?",
-          connectionId: "conn-1",
-          callbackUrl: "https://cb",
-          createdAt: "2026-04-04T00:00:00Z",
-          lastActivityAt: "2026-04-04T00:00:00Z",
-          expiresAt: "2099-04-04T00:05:00Z",
-        }),
-      });
-
-      const result = await routeMessage(deps);
-
-      expect(result).toBe("started");
-      expect(deps.putRoutingContext).toHaveBeenCalledWith(
-        "user-123",
-        expect.objectContaining({
-          status: "active_task",
-          sourceChoice: "gmail",
-          runtimeClass: "tool-enabled",
-          canonicalGoal: "이번주 결제한 금액이 어느정도 되려나?",
-        }),
-      );
-      expect(deps.startTask).toHaveBeenCalled();
       expect(deps.savePendingMessage).toHaveBeenCalledWith(
-        expect.objectContaining({
-          message: "이번주 결제한 금액이 어느정도 되려나?",
-          runtimeClass: "tool-enabled",
-          routingContext: expect.objectContaining({
-            status: "active_task",
-            intentKind: "payment_summary",
-            canonicalGoal: "이번주 결제한 금액이 어느정도 되려나?",
-            sourceChoice: "gmail",
-            runtimeClass: "tool-enabled",
-          }),
+        expect.not.objectContaining({
+          routingContext: expect.anything(),
         }),
       );
     });
 
-    it("should accept Gmail clarification replies with punctuation", async () => {
-      const deps = makeDeps({
-        message: "지메일에서 확인해줘.",
-        getRoutingContext: vi.fn().mockResolvedValue({
-          status: "awaiting_source",
-          intentKind: "payment_summary",
-          channel: "web",
-          canonicalGoal: "이번주 결제한 금액이 어느정도 되려나?",
-          connectionId: "conn-1",
-          callbackUrl: "https://cb",
-          createdAt: "2026-04-04T00:00:00Z",
-          lastActivityAt: "2026-04-04T00:00:00Z",
-          expiresAt: "2099-04-04T00:05:00Z",
-        }),
-      });
-
-      const result = await routeMessage(deps);
-
-      expect(result).toBe("started");
-      expect(deps.putRoutingContext).toHaveBeenCalledWith(
-        "user-123",
-        expect.objectContaining({
-          runtimeClass: "tool-enabled",
-        }),
-      );
-      expect(deps.startTask).toHaveBeenCalled();
-      expect(deps.sendClarification).not.toHaveBeenCalled();
-    });
-
-    it("should accept short Gmail clarification replies that only name the source", async () => {
-      const deps = makeDeps({
-        message: "지메일로.",
-        getRoutingContext: vi.fn().mockResolvedValue({
-          status: "awaiting_source",
-          intentKind: "payment_summary",
-          channel: "web",
-          canonicalGoal: "이번주 결제한 금액이 어느정도 되려나?",
-          connectionId: "conn-1",
-          callbackUrl: "https://cb",
-          createdAt: "2026-04-04T00:00:00Z",
-          lastActivityAt: "2026-04-04T00:00:00Z",
-          expiresAt: "2099-04-04T00:05:00Z",
-        }),
-      });
-
-      const result = await routeMessage(deps);
-
-      expect(result).toBe("started");
-      expect(deps.putRoutingContext).toHaveBeenCalledWith(
-        "user-123",
-        expect.objectContaining({
-          runtimeClass: "tool-enabled",
-        }),
-      );
-      expect(deps.startTask).toHaveBeenCalled();
-      expect(deps.sendClarification).not.toHaveBeenCalled();
-    });
-
-    it("should replay the original message through Lambda after a general clarification reply", async () => {
-      const mockInvokeLambda = vi.fn().mockResolvedValue({ accepted: true });
-      const deps = makeDeps({
-        message: "일반 답변으로 해줘",
-        agentRuntime: "both",
-        invokeLambdaAgent: mockInvokeLambda,
-        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
-        getRoutingContext: vi.fn().mockResolvedValue({
-          status: "awaiting_source",
-          intentKind: "payment_summary",
-          channel: "web",
-          canonicalGoal: "이번주 결제한 금액이 어느정도 되려나?",
-          connectionId: "conn-1",
-          callbackUrl: "https://cb",
-          createdAt: "2026-04-04T00:00:00Z",
-          lastActivityAt: "2026-04-04T00:00:00Z",
-          expiresAt: "2099-04-04T00:05:00Z",
-        }),
-      });
-
-      const result = await routeMessage(deps);
-
-      expect(result).toBe("lambda");
-      expect(deps.putRoutingContext).toHaveBeenCalledWith(
-        "user-123",
-        expect.objectContaining({
-          status: "active_task",
-          sourceChoice: "general",
-          runtimeClass: "chat-only",
-          canonicalGoal: "이번주 결제한 금액이 어느정도 되려나?",
-        }),
-      );
-      expect(mockInvokeLambda).toHaveBeenCalledWith(
-        expect.objectContaining({
-          message: "이번주 결제한 금액이 어느정도 되려나?",
-        }),
-      );
-      expect(deps.startTask).not.toHaveBeenCalled();
-    });
-
-    it("should accept general clarification replies with punctuation", async () => {
-      const mockInvokeLambda = vi.fn().mockResolvedValue({ accepted: true });
-      const deps = makeDeps({
-        message: "일반 답변으로 해줘.",
-        agentRuntime: "both",
-        invokeLambdaAgent: mockInvokeLambda,
-        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
-        getRoutingContext: vi.fn().mockResolvedValue({
-          status: "awaiting_source",
-          intentKind: "payment_summary",
-          channel: "web",
-          canonicalGoal: "이번주 결제한 금액이 어느정도 되려나?",
-          connectionId: "conn-1",
-          callbackUrl: "https://cb",
-          createdAt: "2026-04-04T00:00:00Z",
-          lastActivityAt: "2026-04-04T00:00:00Z",
-          expiresAt: "2099-04-04T00:05:00Z",
-        }),
-      });
-
-      const result = await routeMessage(deps);
-
-      expect(result).toBe("lambda");
-      expect(deps.putRoutingContext).toHaveBeenCalledWith(
-        "user-123",
-        expect.objectContaining({
-          runtimeClass: "chat-only",
-        }),
-      );
-      expect(mockInvokeLambda).toHaveBeenCalledWith(
-        expect.objectContaining({
-          message: "이번주 결제한 금액이 어느정도 되려나?",
-        }),
-      );
-      expect(deps.sendClarification).not.toHaveBeenCalled();
-    });
-
-    it("should reuse the resolved Gmail context for one short follow-up request", async () => {
+    it("should reuse an active tool affinity for a short payment follow-up", async () => {
       const deps = makeDeps({
         message: "얼마 썼는지 정리해줄래?",
         getTaskState: vi.fn().mockResolvedValue({
@@ -373,17 +195,13 @@ describe("message service", () => {
           lastActivity: "2024-01-01T00:00:00Z",
         }),
         getRoutingContext: vi.fn().mockResolvedValue({
-          status: "active_task",
-          intentKind: "payment_summary",
           channel: "web",
-          canonicalGoal: "이번주 결제한 금액이 어느정도 되려나?",
           connectionId: "conn-1",
           callbackUrl: "https://cb",
-          sourceChoice: "gmail",
-          runtimeClass: "tool-enabled",
           createdAt: "2026-04-04T00:00:00Z",
           lastActivityAt: "2026-04-04T00:00:00Z",
           expiresAt: "2099-04-04T00:05:00Z",
+          runtimeClass: "tool-enabled",
         }),
       });
 
@@ -393,7 +211,6 @@ describe("message service", () => {
       expect(deps.putRoutingContext).toHaveBeenCalledWith(
         "user-123",
         expect.objectContaining({
-          status: "active_task",
           runtimeClass: "tool-enabled",
         }),
       );
@@ -401,28 +218,16 @@ describe("message service", () => {
       const body = JSON.parse(mockFetch.mock.calls[0][1].body);
       expect(body.message).toBe("얼마 썼는지 정리해줄래?");
       expect(body.runtimeClass).toBe("tool-enabled");
-      expect(body.routingContext).toEqual(
-        expect.objectContaining({
-          status: "active_task",
-          intentKind: "payment_summary",
-          canonicalGoal: "이번주 결제한 금액이 어느정도 되려나?",
-          sourceChoice: "gmail",
-          runtimeClass: "tool-enabled",
-        }),
-      );
+      expect(body.routingContext).toBeUndefined();
     });
 
-    it("should clear an active task context on explicit cancel", async () => {
+    it("should clear an active tool affinity on explicit cancel", async () => {
       const deps = makeDeps({
         message: "취소",
         getRoutingContext: vi.fn().mockResolvedValue({
-          status: "active_task",
-          intentKind: "payment_summary",
           channel: "web",
-          canonicalGoal: "이번주 결제한 금액이 어느정도 되려나?",
           connectionId: "conn-1",
           callbackUrl: "https://cb",
-          sourceChoice: "gmail",
           runtimeClass: "tool-enabled",
           createdAt: "2026-04-04T00:00:00Z",
           lastActivityAt: "2026-04-04T00:00:00Z",
@@ -435,7 +240,7 @@ describe("message service", () => {
       expect(result).toBe("clarify");
       expect(deps.deleteRoutingContext).toHaveBeenCalledWith("user-123", "web");
       expect(deps.sendClarification).toHaveBeenCalledWith(
-        "알겠습니다. 현재 작업 문맥을 종료할게요.",
+        "알겠습니다. 현재 도구 작업 문맥을 종료할게요.",
       );
     });
 
@@ -447,13 +252,9 @@ describe("message service", () => {
         invokeLambdaAgent: mockInvokeLambda,
         lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
         getRoutingContext: vi.fn().mockResolvedValue({
-          status: "active_task",
-          intentKind: "payment_summary",
           channel: "web",
-          canonicalGoal: "이번주 결제한 금액이 어느정도 되려나?",
           connectionId: "conn-1",
           callbackUrl: "https://cb",
-          sourceChoice: "gmail",
           runtimeClass: "tool-enabled",
           createdAt: "2026-04-04T00:00:00Z",
           lastActivityAt: "2026-04-04T00:00:00Z",
@@ -469,75 +270,6 @@ describe("message service", () => {
         expect.objectContaining({
           message: "안녕",
         }),
-      );
-    });
-
-    it("should accept short general clarification replies that only name the route", async () => {
-      const mockInvokeLambda = vi.fn().mockResolvedValue({ accepted: true });
-      const deps = makeDeps({
-        message: "일반으로.",
-        agentRuntime: "both",
-        invokeLambdaAgent: mockInvokeLambda,
-        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
-        getRoutingContext: vi.fn().mockResolvedValue({
-          status: "awaiting_source",
-          intentKind: "payment_summary",
-          channel: "web",
-          canonicalGoal: "이번주 결제한 금액이 어느정도 되려나?",
-          connectionId: "conn-1",
-          callbackUrl: "https://cb",
-          createdAt: "2026-04-04T00:00:00Z",
-          lastActivityAt: "2026-04-04T00:00:00Z",
-          expiresAt: "2099-04-04T00:05:00Z",
-        }),
-      });
-
-      const result = await routeMessage(deps);
-
-      expect(result).toBe("lambda");
-      expect(deps.putRoutingContext).toHaveBeenCalledWith(
-        "user-123",
-        expect.objectContaining({
-          runtimeClass: "chat-only",
-        }),
-      );
-      expect(mockInvokeLambda).toHaveBeenCalledWith(
-        expect.objectContaining({
-          message: "이번주 결제한 금액이 어느정도 되려나?",
-        }),
-      );
-      expect(deps.sendClarification).not.toHaveBeenCalled();
-    });
-
-    it("should resend the same clarification once for a short ambiguous follow-up", async () => {
-      const deps = makeDeps({
-        message: "그걸로?",
-        getRoutingContext: vi.fn().mockResolvedValue({
-          status: "awaiting_source",
-          intentKind: "payment_summary",
-          channel: "web",
-          canonicalGoal: "이번주 결제한 금액이 어느정도 되려나?",
-          connectionId: "conn-1",
-          callbackUrl: "https://cb",
-          clarificationResendCount: 0,
-          createdAt: "2026-04-04T00:00:00Z",
-          lastActivityAt: "2026-04-04T00:00:00Z",
-          expiresAt: "2099-04-04T00:05:00Z",
-        }),
-      });
-
-      const result = await routeMessage(deps);
-
-      expect(result).toBe("clarify");
-      expect(deps.putRoutingContext).toHaveBeenCalledWith(
-        "user-123",
-        expect.objectContaining({
-          clarificationResendCount: 1,
-          canonicalGoal: "이번주 결제한 금액이 어느정도 되려나?",
-        }),
-      );
-      expect(deps.sendClarification).toHaveBeenCalledWith(
-        "지메일에서 확인할까요, 아니면 일반 답변으로 도와드릴까요?",
       );
     });
 

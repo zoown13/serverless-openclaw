@@ -132,22 +132,22 @@ describe("classifyRouteRuntimeClass", () => {
 });
 
 describe("classifyRoute payment routing", () => {
-  it("routes Korean payment summary questions to clarification first", () => {
+  it("routes Korean payment summary questions to tool-enabled compute", () => {
     const result = classifyRoute({
       message: "이번주 결제한 금액이 어느정도 되려나?",
       taskState: runningTask,
     });
 
-    expect(result).toBe("clarify");
+    expect(result).toBe("fargate-reuse");
   });
 
-  it("routes compact Korean payment summary questions to clarification first", () => {
+  it("routes compact Korean payment summary questions to tool-enabled compute", () => {
     const result = classifyRoute({
       message: "이번주 카드값이 얼마나 나왔을까",
       taskState: runningTask,
     });
 
-    expect(result).toBe("clarify");
+    expect(result).toBe("fargate-reuse");
   });
 });
 

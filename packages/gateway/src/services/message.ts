@@ -8,23 +8,20 @@ import {
   PREWARM_USER_ID,
 } from "@serverless-openclaw/shared";
 import type {
-  BridgeRoutingContext,
   BridgeMessageRequest,
   Channel,
   EmailTokenBudgetPolicy,
   PendingMessageItem,
   RouteDecision,
-  RoutingContextState,
-  RoutingSourceChoice,
   RuntimeClass,
   TaskStateItem,
+  ToolRuntimeAffinityState,
 } from "@serverless-openclaw/shared";
 import type { StartTaskParams } from "./container.js";
 import type { InvokeLambdaAgentParams } from "./lambda-agent.js";
 import {
   classifyRoute,
   classifyRouteRuntimeClass,
-  isAmbiguousPaymentSourceQuestion,
   stripRouteHint,
 } from "./route-classifier.js";
 import { publishGatewayCountMetric } from "./metrics.js";
@@ -102,10 +99,10 @@ export interface RouteDeps {
   getRoutingContext: (
     userId: string,
     channel: Channel,
-  ) => Promise<RoutingContextState | null>;
+  ) => Promise<ToolRuntimeAffinityState | null>;
   putRoutingContext: (
     userId: string,
-    state: RoutingContextState,
+    state: ToolRuntimeAffinityState,
   ) => Promise<void>;
   deleteRoutingContext: (userId: string, channel: Channel) => Promise<void>;
   sendClarification: (text: string) => Promise<void>;
@@ -119,49 +116,11 @@ export interface RouteDeps {
 
 export type RouteResult = "sent" | "queued" | "started" | "lambda" | "clarify";
 
-const ROUTING_CONTEXT_TTL_MS = 5 * 60 * 1000;
-const PAYMENT_SOURCE_CLARIFICATION =
-  "지메일에서 확인할까요, 아니면 일반 답변으로 도와드릴까요?";
-const ROUTING_CONTEXT_CANCEL_PATTERN =
-  /^(?:취소|그만|끝|됐어|done|cancel|stop)$/i;
-const GMAIL_CONFIRMATION_PATTERNS = [
-  /^(?:지메일|지메일에서|gmail|gmail에서)$/i,
-  /^(?:메일에서|이메일에서|메일로|이메일로)$/i,
-  /^(?:지메일에서|gmail에서)\s*확인해줘$/i,
-  /^(?:지메일|지메일에서|gmail|gmail에서|메일에서|이메일에서)(?:\s*확인해줘(?:요)?|\s*봐줘|\s*해주세요)?$/i,
-];
-const GENERAL_CONFIRMATION_PATTERNS = [
-  /^(?:일반|일반으로)$/i,
-  /^(?:그냥 답변|일반 답변)$/i,
-  /^(?:채팅으로|추론으로)$/i,
-  /^(?:일반 답변으로 해줘|그냥 답변해줘)$/i,
-  /^(?:일반|일반 답변|그냥 답변|채팅|추론)(?:으로)?(?:\s*해줘(?:요)?|\s*해주세요)?$/i,
-];
-
-type ClarificationChoice = "gmail" | "general";
-const GMAIL_CONFIRMATION_TOKENS = [
-  "지메일",
-  "gmail",
-  "이메일",
-  "메일에서",
-  "이메일에서",
-  "gmail에서",
-];
-const GENERAL_CONFIRMATION_TOKENS = [
-  "일반",
-  "일반답변",
-  "그냥답변",
-  "채팅",
-  "추론",
-];
-const SHORT_GMAIL_CONFIRMATION_PATTERN =
-  /(?:지메일|gmail|이메일|메일(?:에서|로)?)/i;
-const SHORT_GENERAL_CONFIRMATION_PATTERN =
-  /(?:일반|그냥\s*답변|채팅|추론)/i;
-const PAYMENT_FOLLOWUP_PATTERN =
-  /(?:얼마|얼마나|합계|총액|총합|정리|요약|분석|설명|보여|알려|더|계속|그거|그걸|그건|그럼|썼|쓴|사용|결제|지출|카드값)/i;
-const SHORT_CONTINUATION_PATTERN =
-  /(?:더|다시|그거|그걸|그건|그럼|이번주|이번 달|이번달|카드사별|합계|총액|요약|정리)/i;
+const TOOL_AFFINITY_TTL_MS = 5 * 60 * 1000;
+const TOOL_AFFINITY_CANCEL_PATTERN = /^(?:취소|그만|끝|됐어|done|cancel|stop)$/i;
+const TOOL_AFFINITY_CONTINUATION_PATTERN =
+  /(?:얼마|얼마나|합계|총액|총합|정리|요약|분석|설명|자세히|상세|본문|내용|열어|읽어|보여|알려|다시|더|계속|그거|그걸|그건|그럼|이번주|이번 주|이번달|이번 달|카드사별|결제처별|메일|이메일|지메일|결제|지출|카드값|사용금액|사용 금액|영수증|명세서|청구서)/i;
+const TOOL_AFFINITY_END_MESSAGE = "알겠습니다. 현재 도구 작업 문맥을 종료할게요.";
 
 function assertLambdaInvokeAccepted(result: unknown): void {
   if (typeof result !== "object" || result === null) return;
@@ -176,18 +135,7 @@ function hasValue(value?: string): boolean {
 }
 
 function normalizeMessage(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
-}
-
-function normalizeClarificationReply(value: string): string {
-  return normalizeMessage(value)
-    .normalize("NFKC")
-    .replace(/[.!?~。？！]+$/gu, "")
-    .trim();
-}
-
-function compactClarificationReply(value: string): string {
-  return normalizeClarificationReply(value).replace(/[\s\p{P}\p{S}]+/gu, "");
+  return value.normalize("NFKC").replace(/\s+/g, " ").trim();
 }
 
 function parsePositiveInteger(value: string | undefined, fallback: number): number {
@@ -241,7 +189,6 @@ function buildBridgeMessageRequest(
   message: string,
   runtimeClass: RuntimeClass,
   routeDecision: RouteDecision,
-  routingContext?: BridgeRoutingContext,
 ): BridgeMessageRequest {
   return {
     userId: deps.userId,
@@ -252,27 +199,10 @@ function buildBridgeMessageRequest(
     traceId: deps.traceId,
     runtimeClass,
     routeDecision,
-    routingContext,
     emailTokenBudget:
       runtimeClass === "tool-enabled"
         ? resolveEmailTokenBudgetPolicy()
         : undefined,
-  };
-}
-
-function toBridgeRoutingContext(
-  state: RoutingContextState,
-): BridgeRoutingContext {
-  return {
-    status: state.status,
-    intentKind: state.intentKind,
-    canonicalGoal: state.canonicalGoal,
-    ...(state.sourceChoice
-      ? { sourceChoice: state.sourceChoice }
-      : {}),
-    ...(state.runtimeClass
-      ? { runtimeClass: state.runtimeClass }
-      : {}),
   };
 }
 
@@ -296,112 +226,42 @@ function buildRouteLogPayload(
   };
 }
 
-function parseClarificationChoice(message: string): ClarificationChoice | null {
-  const normalized = normalizeClarificationReply(message);
-  const compact = compactClarificationReply(message);
-
-  if (GMAIL_CONFIRMATION_PATTERNS.some((pattern) => pattern.test(normalized))) {
-    return "gmail";
-  }
-
-  if (GMAIL_CONFIRMATION_TOKENS.some((token) => compact.includes(token))) {
-    return "gmail";
-  }
-
-  if (GENERAL_CONFIRMATION_PATTERNS.some((pattern) => pattern.test(normalized))) {
-    return "general";
-  }
-
-  if (GENERAL_CONFIRMATION_TOKENS.some((token) => compact.includes(token))) {
-    return "general";
-  }
-
-  // Accept short source-choice replies from chat apps even when the phrasing
-  // does not match the stricter confirmation patterns exactly.
-  if (normalized.length <= 24 && SHORT_GMAIL_CONFIRMATION_PATTERN.test(normalized)) {
-    return "gmail";
-  }
-
-  if (
-    normalized.length <= 24 &&
-    SHORT_GENERAL_CONFIRMATION_PATTERN.test(normalized)
-  ) {
-    return "general";
-  }
-
-  return null;
+function buildToolRuntimeAffinityState(
+  deps: RouteDeps,
+  createdAt?: string,
+): ToolRuntimeAffinityState {
+  const now = new Date();
+  return {
+    channel: deps.channel,
+    runtimeClass: "tool-enabled",
+    connectionId: deps.connectionId,
+    callbackUrl: deps.callbackUrl,
+    ...(deps.telegramChatId ? { telegramChatId: deps.telegramChatId } : {}),
+    createdAt: createdAt ?? now.toISOString(),
+    lastActivityAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + TOOL_AFFINITY_TTL_MS).toISOString(),
+  };
 }
 
-function isShortAmbiguousReply(message: string): boolean {
-  return normalizeMessage(message).length <= 20;
-}
-
-function isContextExpired(state: RoutingContextState): boolean {
+function isToolAffinityExpired(state: ToolRuntimeAffinityState): boolean {
   return Date.parse(state.expiresAt) <= Date.now();
 }
 
-function shouldReuseActiveTaskContext(
-  state: RoutingContextState,
-  message: string,
-): boolean {
-  if (state.status !== "active_task" || !state.runtimeClass) {
+function shouldKeepToolAffinity(message: string): boolean {
+  const normalized = normalizeMessage(message);
+  if (!normalized) {
     return false;
   }
 
-  const normalized = normalizeClarificationReply(message);
-
-  if (normalized.length === 0) {
-    return false;
+  const runtimeClass = classifyRouteRuntimeClass(normalized);
+  if (runtimeClass === "tool-enabled") {
+    return true;
   }
 
-  if (ROUTING_CONTEXT_CANCEL_PATTERN.test(normalized)) {
-    return false;
-  }
-
-  if (state.intentKind !== "payment_summary") {
-    return normalized.length <= 40;
-  }
-
-  return (
-    PAYMENT_FOLLOWUP_PATTERN.test(normalized) ||
-    SHORT_CONTINUATION_PATTERN.test(normalized)
-  );
-}
-
-function buildRoutingContext(
-  deps: RouteDeps,
-  status: RoutingContextState["status"],
-  canonicalGoal: string,
-  options: {
-    sourceChoice?: RoutingSourceChoice;
-    runtimeClass?: RuntimeClass;
-    clarificationResendCount?: number;
-    createdAt?: string;
-  } = {},
-): RoutingContextState {
-  const now = new Date();
-  const createdAt = options.createdAt ?? now.toISOString();
-  return {
-    status,
-    intentKind: "payment_summary",
-    channel: deps.channel,
-    canonicalGoal,
-    connectionId: deps.connectionId,
-    callbackUrl: deps.callbackUrl,
-    telegramChatId: deps.telegramChatId,
-    createdAt,
-    lastActivityAt: now.toISOString(),
-    expiresAt: new Date(now.getTime() + ROUTING_CONTEXT_TTL_MS).toISOString(),
-    ...(options.sourceChoice
-      ? { sourceChoice: options.sourceChoice }
-      : {}),
-    ...(options.runtimeClass
-      ? { runtimeClass: options.runtimeClass }
-      : {}),
-    ...(options.clarificationResendCount !== undefined
-      ? { clarificationResendCount: options.clarificationResendCount }
-      : {}),
-  };
+  // Keep the existing tool runtime affinity for short continuation turns unless
+  // the user clearly switched topics. This keeps follow-up analysis on Fargate
+  // without rebuilding the old semantic state machine in Gateway.
+  return normalized.length <= 40 && TOOL_AFFINITY_CONTINUATION_PATTERN.test(normalized);
 }
 
 function validateLambdaDeliveryTarget(deps: RouteDeps): void {
@@ -422,14 +282,12 @@ async function routeFargate(
   taskState: TaskStateItem | null,
   runtimeClass: RuntimeClass,
   routeDecision: RouteDecision,
-  routingContext?: BridgeRoutingContext,
 ): Promise<RouteResult> {
   const bridgeMessage = buildBridgeMessageRequest(
     deps,
     deps.message,
     runtimeClass,
     routeDecision,
-    routingContext,
   );
 
   if (taskState?.status === "Running" && taskState.publicIp) {
@@ -509,7 +367,6 @@ async function routeFargate(
     traceId: deps.traceId,
     runtimeClass: bridgeMessage.runtimeClass,
     routeDecision: bridgeMessage.routeDecision,
-    routingContext: bridgeMessage.routingContext,
     emailTokenBudget: bridgeMessage.emailTokenBudget,
     createdAt: new Date(now).toISOString(),
     ttl: Math.floor(now / 1000) + PENDING_MESSAGE_TTL_SEC,
@@ -589,7 +446,6 @@ async function routeForcedRuntimeClass(
   deps: RouteDeps,
   message: string,
   runtimeClass: RuntimeClass,
-  routingContext?: BridgeRoutingContext,
 ): Promise<RouteResult> {
   const taskState = await deps.getTaskState(deps.userId);
 
@@ -607,7 +463,6 @@ async function routeForcedRuntimeClass(
       taskState,
       runtimeClass,
       routeDecision,
-      routingContext,
     );
   }
 
@@ -636,225 +491,86 @@ async function routeForcedRuntimeClass(
     taskState,
     runtimeClass,
     routeDecision,
-    routingContext,
   );
 }
 
-async function maybeHandleRoutingContext(
+async function maybeHandleToolRuntimeAffinity(
   deps: RouteDeps,
 ): Promise<{
   handled: boolean;
   result?: RouteResult;
   replayMessage?: string;
   replayRuntimeClass?: RuntimeClass;
-  replayRoutingContext?: BridgeRoutingContext;
 }> {
-  const context = await deps.getRoutingContext(deps.userId, deps.channel);
-  if (!context) {
+  const affinity = await deps.getRoutingContext(deps.userId, deps.channel);
+  if (!affinity) {
     return { handled: false };
   }
 
-  if (isContextExpired(context)) {
+  if (isToolAffinityExpired(affinity)) {
     await deps.deleteRoutingContext(deps.userId, deps.channel);
-    logRouteEvent("route.context.expired", {
+    logRouteEvent("route.affinity.expired", {
       traceId: deps.traceId,
       channel: deps.channel,
-      status: context.status,
-      intentKind: context.intentKind,
+      runtimeClass: affinity.runtimeClass,
     });
     return { handled: false };
   }
 
-  if (context.status === "active_task") {
-    const normalized = normalizeClarificationReply(deps.message);
-    if (ROUTING_CONTEXT_CANCEL_PATTERN.test(normalized)) {
-      await deps.deleteRoutingContext(deps.userId, deps.channel);
-      await deps.sendClarification("알겠습니다. 현재 작업 문맥을 종료할게요.");
-      logRouteEvent("route.context.cleared", {
-        traceId: deps.traceId,
-        channel: deps.channel,
-        status: context.status,
-        intentKind: context.intentKind,
-        reason: "explicit_cancel",
-      });
-      return { handled: true, result: "clarify" };
-    }
-
-    if (shouldReuseActiveTaskContext(context, deps.message)) {
-      const activeRuntimeClass = context.runtimeClass;
-      if (!activeRuntimeClass) {
-        await deps.deleteRoutingContext(deps.userId, deps.channel);
-        logRouteEvent("route.context.cleared", {
-          traceId: deps.traceId,
-          channel: deps.channel,
-          status: context.status,
-          intentKind: context.intentKind,
-          reason: "missing_runtime",
-        });
-        return { handled: false };
-      }
-      await deps.putRoutingContext(
-        deps.userId,
-        buildRoutingContext(
-          deps,
-          "active_task",
-          context.canonicalGoal,
-          {
-            createdAt: context.createdAt,
-            sourceChoice: context.sourceChoice,
-            runtimeClass: activeRuntimeClass,
-          },
-        ),
-      );
-      logRouteEvent("route.context.reused", {
-        traceId: deps.traceId,
-        channel: deps.channel,
-        status: context.status,
-        intentKind: context.intentKind,
-        runtimeClass: activeRuntimeClass,
-      });
-      return {
-        handled: false,
-        replayMessage: deps.message,
-        replayRuntimeClass: activeRuntimeClass,
-        replayRoutingContext: toBridgeRoutingContext(context),
-      };
-    }
-
+  const normalized = normalizeMessage(deps.message);
+  if (TOOL_AFFINITY_CANCEL_PATTERN.test(normalized)) {
     await deps.deleteRoutingContext(deps.userId, deps.channel);
-    logRouteEvent("route.context.cleared", {
+    await deps.sendClarification(TOOL_AFFINITY_END_MESSAGE);
+    logRouteEvent("route.affinity.cleared", {
       traceId: deps.traceId,
       channel: deps.channel,
-      status: context.status,
-      intentKind: context.intentKind,
-      reason: "topic_switched",
-    });
-    return { handled: false };
-  }
-
-  const choice = parseClarificationChoice(deps.message);
-  if (choice && context.status === "awaiting_source") {
-    const sourceChoice: RoutingSourceChoice =
-      choice === "gmail" ? "gmail" : "general";
-    const runtimeClass: RuntimeClass =
-      sourceChoice === "gmail" ? "tool-enabled" : "chat-only";
-    await deps.putRoutingContext(
-      deps.userId,
-      buildRoutingContext(
-        deps,
-        "active_task",
-        context.canonicalGoal,
-        {
-          createdAt: context.createdAt,
-          sourceChoice,
-          runtimeClass,
-        },
-      ),
-    );
-    logRouteEvent("route.context.resolved", {
-      traceId: deps.traceId,
-      channel: deps.channel,
-      choice,
-      status: "active_task",
-      intentKind: context.intentKind,
-      runtimeClass,
-    });
-    return {
-      handled: false,
-      replayMessage: context.canonicalGoal,
-      replayRuntimeClass: runtimeClass,
-      replayRoutingContext: toBridgeRoutingContext(
-        buildRoutingContext(
-          deps,
-          "active_task",
-          context.canonicalGoal,
-          {
-            createdAt: context.createdAt,
-            sourceChoice,
-            runtimeClass,
-          },
-        ),
-      ),
-    };
-  }
-
-  if (context.status === "awaiting_source" && isShortAmbiguousReply(deps.message)) {
-    const resendCount = context.clarificationResendCount ?? 0;
-    if (resendCount >= 1) {
-      await deps.deleteRoutingContext(deps.userId, deps.channel);
-      logRouteEvent("route.context.cleared", {
-        traceId: deps.traceId,
-        channel: deps.channel,
-        status: context.status,
-        intentKind: context.intentKind,
-        reason: "ambiguous_reply_exhausted",
-      });
-      return { handled: false };
-    }
-    await deps.putRoutingContext(
-      deps.userId,
-      buildRoutingContext(
-        deps,
-        "awaiting_source",
-        context.canonicalGoal,
-        {
-          createdAt: context.createdAt,
-          clarificationResendCount: resendCount + 1,
-        },
-      ),
-    );
-    await deps.sendClarification(PAYMENT_SOURCE_CLARIFICATION);
-    logRouteEvent("route.context.reused", {
-      traceId: deps.traceId,
-      channel: deps.channel,
-      status: context.status,
-      intentKind: context.intentKind,
-      clarificationResendCount: resendCount + 1,
+      runtimeClass: affinity.runtimeClass,
+      reason: "explicit_cancel",
     });
     return { handled: true, result: "clarify" };
   }
 
+  if (shouldKeepToolAffinity(deps.message)) {
+    await deps.putRoutingContext(
+      deps.userId,
+      buildToolRuntimeAffinityState(deps, affinity.createdAt),
+    );
+    logRouteEvent("route.affinity.reused", {
+      traceId: deps.traceId,
+      channel: deps.channel,
+      runtimeClass: affinity.runtimeClass,
+    });
+    return {
+      handled: false,
+      replayMessage: deps.message,
+      replayRuntimeClass: affinity.runtimeClass,
+    };
+  }
+
   await deps.deleteRoutingContext(deps.userId, deps.channel);
-  logRouteEvent("route.context.cleared", {
+  logRouteEvent("route.affinity.cleared", {
     traceId: deps.traceId,
     channel: deps.channel,
-    status: context.status,
-    intentKind: context.intentKind,
-    reason: "fresh_message",
+    runtimeClass: affinity.runtimeClass,
+    reason: "topic_switched",
   });
   return { handled: false };
 }
 
 export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
-  const routingContextResolution = await maybeHandleRoutingContext(deps);
-  if (routingContextResolution.handled) {
-    return routingContextResolution.result ?? "clarify";
+  const affinityResolution = await maybeHandleToolRuntimeAffinity(deps);
+  if (affinityResolution.handled) {
+    return affinityResolution.result ?? "clarify";
   }
   if (
-    routingContextResolution.replayMessage &&
-    routingContextResolution.replayRuntimeClass
+    affinityResolution.replayMessage &&
+    affinityResolution.replayRuntimeClass
   ) {
     return routeForcedRuntimeClass(
       deps,
-      routingContextResolution.replayMessage,
-      routingContextResolution.replayRuntimeClass,
-      routingContextResolution.replayRoutingContext,
+      affinityResolution.replayMessage,
+      affinityResolution.replayRuntimeClass,
     );
-  }
-
-  if (isAmbiguousPaymentSourceQuestion(deps.message)) {
-    await deps.putRoutingContext(
-      deps.userId,
-      buildRoutingContext(deps, "awaiting_source", deps.message),
-    );
-    await deps.sendClarification(PAYMENT_SOURCE_CLARIFICATION);
-    logRouteEvent("route.context.created", {
-      traceId: deps.traceId,
-      channel: deps.channel,
-      status: "awaiting_source",
-      intentKind: "payment_summary",
-    });
-    return "clarify";
   }
 
   // Phase 2: Lambda agent path
@@ -871,7 +587,7 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
     return invokeLambdaRoute(deps, deps.message, runtimeClass, "lambda", null);
   }
 
-  // Smart routing: when agentRuntime=both, classify based on task state and message hints
+  // Smart routing: when agentRuntime=both, classify based on runtime class
   if (
     deps.agentRuntime === "both" &&
     deps.invokeLambdaAgent &&
@@ -884,30 +600,23 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
     logRouteEvent(
       "route.classified",
       buildRouteLogPayload(deps, runtimeClass, decision, taskState, false),
+    );
+
+    if (runtimeClass === "tool-enabled") {
+      await deps.putRoutingContext(
+        deps.userId,
+        buildToolRuntimeAffinityState(deps),
       );
-
-      if (decision === "clarify") {
-        await deps.putRoutingContext(
-          deps.userId,
-          buildRoutingContext(deps, "awaiting_source", routedMessage),
-        );
-        await deps.sendClarification(PAYMENT_SOURCE_CLARIFICATION);
-        logRouteEvent("route.context.created", {
-          traceId: deps.traceId,
-          channel: deps.channel,
-          status: "awaiting_source",
-          intentKind: "payment_summary",
-        });
-        return "clarify";
-      }
-
-    if (decision === "fargate-reuse" || decision === "fargate-new") {
+      logRouteEvent("route.affinity.created", {
+        traceId: deps.traceId,
+        channel: deps.channel,
+        runtimeClass,
+      });
       return routeFargate(
         { ...deps, message: routedMessage },
         taskState,
         runtimeClass,
         decision,
-        undefined,
       );
     }
 
@@ -942,26 +651,35 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
         taskState,
         runtimeClass,
         fallbackDecision,
-        undefined,
       );
     }
   }
 
   // Fargate path (default)
   const taskState = await deps.getTaskState(deps.userId);
+  const runtimeClass: RuntimeClass = "tool-enabled";
   const routeDecision: RouteDecision =
     taskState?.status === "Running" && taskState.publicIp
       ? "fargate-reuse"
       : "fargate-new";
+  await deps.putRoutingContext(
+    deps.userId,
+    buildToolRuntimeAffinityState(deps),
+  );
+  logRouteEvent("route.affinity.created", {
+    traceId: deps.traceId,
+    channel: deps.channel,
+    runtimeClass,
+  });
   logRouteEvent(
     "route.classified",
     buildRouteLogPayload(
       deps,
-      "tool-enabled",
+      runtimeClass,
       routeDecision,
       taskState,
       false,
     ),
   );
-  return routeFargate(deps, taskState, "tool-enabled", routeDecision);
+  return routeFargate(deps, taskState, runtimeClass, routeDecision);
 }

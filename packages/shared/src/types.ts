@@ -23,9 +23,6 @@ export type Channel = "web" | "telegram";
 export type RuntimeClass = "chat-only" | "tool-enabled";
 export type RouteDecision = "lambda" | "fargate-reuse" | "fargate-new" | "clarify";
 export type ClarificationKind = "payment_source";
-export type RoutingContextStatus = "awaiting_source" | "active_task";
-export type RoutingIntentKind = "payment_summary";
-export type RoutingSourceChoice = "gmail" | "general";
 
 export interface EmailTokenBudgetPolicy {
   mode: "headers-first";
@@ -35,31 +32,42 @@ export interface EmailTokenBudgetPolicy {
   requireExplicitBodyAccess: boolean;
 }
 
-export interface RoutingContextState {
-  status: RoutingContextStatus;
-  intentKind: RoutingIntentKind;
+/**
+ * Minimal Gateway-side affinity state.
+ *
+ * Gateway only remembers that the current user/channel is in a tool-capable
+ * workflow so follow-up turns can stay on Fargate until they clearly switch
+ * topics, are cancelled, or expire.
+ */
+export interface ToolRuntimeAffinityState {
   channel: Channel;
-  canonicalGoal: string;
+  runtimeClass: "tool-enabled";
   connectionId: string;
   callbackUrl: string;
   telegramChatId?: string;
-  sourceChoice?: RoutingSourceChoice;
-  runtimeClass?: RuntimeClass;
-  clarificationResendCount?: number;
   createdAt: string;
   lastActivityAt: string;
   expiresAt: string;
 }
 
-/** @deprecated Use RoutingContextState for new code. */
-export type PendingClarificationState = RoutingContextState;
+export type ToolTaskContextStatus = "awaiting_source" | "active";
+export type ToolTaskFamily =
+  | "gmail_payment_summary"
+  | "gmail_search"
+  | "gmail_body_selection"
+  | "generic_tool_task";
+export type ToolSourceChoice = "gmail" | "general";
+export type ToolIntentAdvisorAction =
+  | "gmail"
+  | "clarify_source"
+  | "generic_openclaw"
+  | "continue_active_task";
 
-export interface BridgeRoutingContext {
-  status: RoutingContextStatus;
-  intentKind: RoutingIntentKind;
-  canonicalGoal: string;
-  sourceChoice?: RoutingSourceChoice;
-  runtimeClass?: RuntimeClass;
+export interface ToolIntentAdvisorResult {
+  action: ToolIntentAdvisorAction;
+  taskFamily: ToolTaskFamily;
+  sourceChoice?: ToolSourceChoice | null;
+  confidence: number;
 }
 
 // === DynamoDB Items (architecture.md §5) ===
@@ -107,7 +115,6 @@ export interface PendingMessageItem {
   traceId?: string;
   runtimeClass?: RuntimeClass;
   routeDecision?: RouteDecision;
-  routingContext?: BridgeRoutingContext;
   emailTokenBudget?: EmailTokenBudgetPolicy;
   retryCount?: number;
   nextAttemptAt?: string;
@@ -127,7 +134,6 @@ export interface BridgeMessageRequest {
   traceId?: string;
   runtimeClass?: RuntimeClass;
   routeDecision?: RouteDecision;
-  routingContext?: BridgeRoutingContext;
   emailTokenBudget?: EmailTokenBudgetPolicy;
 }
 

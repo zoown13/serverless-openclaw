@@ -6,13 +6,15 @@ import {
   publishFirstResponseTime,
 } from "./metrics.js";
 import {
+  isGmailReady,
   maybeHandleCustomGmailRequest,
-  type GmailTelemetryEvent,
+  type ToolEvent,
 } from "./gmail-tool.js";
 import type {
   BridgeMessageRequest,
   ServerMessage,
   Channel,
+  EmailTokenBudgetPolicy,
 } from "@serverless-openclaw/shared";
 
 export interface BridgeDeps {
@@ -99,6 +101,57 @@ function buildToolEnabledPrefix(
   return `[System: Operate in headers-first safe mode to control Gmail and browser token usage. Inspect at most ${budget.maxMessages} items per step. Prefer sender, subject, date, and snippet previews truncated to ${budget.maxSnippetChars} characters. ${bodyAccessInstruction} If the user clearly identifies one Gmail result, open only that single message body. Never inspect attachments in this runtime. If body access is needed, read at most ${budget.maxBodyChars} characters from one item at a time and summarize incrementally before reading more.]`;
 }
 
+function defaultEmailTokenBudget(): EmailTokenBudgetPolicy {
+  return {
+    mode: "headers-first",
+    maxMessages: 5,
+    maxSnippetChars: 240,
+    maxBodyChars: 1600,
+    requireExplicitBodyAccess: true,
+  };
+}
+
+function logToolEvent(
+  event: ToolEvent,
+  logContext: Record<string, unknown>,
+): void {
+  switch (event.type) {
+    case "intentDecided":
+      logBridgeEvent("bridge.tool.intent.decided", {
+        ...logContext,
+        action: event.action,
+        taskFamily: event.taskFamily,
+        sourceChoice: event.sourceChoice,
+        confidence: event.confidence,
+      });
+      return;
+    case "contextCreated":
+    case "contextReused":
+    case "contextCleared":
+    case "contextExpired":
+      logBridgeEvent(`bridge.tool.context.${event.type.replace("context", "").toLowerCase()}`, {
+        ...logContext,
+        taskFamily: event.taskFamily,
+        sourceChoice: event.sourceChoice,
+        reason: event.reason,
+      });
+      return;
+    case "clarificationSent":
+      logBridgeEvent("bridge.tool.clarification.sent", {
+        ...logContext,
+        taskFamily: event.taskFamily,
+        reason: event.reason,
+      });
+      return;
+    case "handlerFallback":
+      logBridgeEvent("bridge.tool.handler.fallback", {
+        ...logContext,
+        taskFamily: event.taskFamily,
+        reason: event.reason,
+      });
+  }
+}
+
 export function createApp(deps: BridgeDeps): express.Express {
   const app = express();
   let firstResponseSent = false;
@@ -128,113 +181,64 @@ export function createApp(deps: BridgeDeps): express.Express {
       const msgStart = Date.now();
       const logContext = buildBridgeLogContext(body);
       const deliveryType = resolveDeliveryType(body.channel);
-      const gmailTelemetry = (event: GmailTelemetryEvent) => {
-        switch (event.event) {
-          case "matched":
-            logBridgeEvent("bridge.gmail.matched", logContext);
-            void publishCountMetric("GmailToolMatched", {
-              channel: body.channel!,
-              runtime: "fargate",
-            });
-            return;
-          case "queryBuilt":
-            logBridgeEvent("bridge.gmail.query.built", {
-              ...logContext,
-              sanitizedQuery: event.sanitizedQuery,
-              isUnread: event.isUnread,
-              dateRange: event.dateRange,
-              keywordCount: event.keywordCount,
-            });
-            return;
-          case "result":
-            logBridgeEvent("bridge.gmail.query.result", {
-              ...logContext,
-              sanitizedQuery: event.sanitizedQuery,
-              outcome: event.outcome,
-              isUnread: event.isUnread,
-              dateRange: event.dateRange,
-              keywordCount: event.keywordCount,
-              matchedCount: event.matchedCount,
-              inspectedCount: event.inspectedCount,
-            });
-            void publishCountMetric(
-              event.outcome === "success" ? "GmailToolSuccess" : "GmailToolNoResults",
-              {
-                channel: body.channel!,
-                runtime: "fargate",
-              },
-            );
-            return;
-          case "failure":
-            logBridgeEvent("bridge.gmail.query.failure", {
-              ...logContext,
-              sanitizedQuery: event.sanitizedQuery,
-              reason: event.reason,
-              isUnread: event.isUnread,
-              dateRange: event.dateRange,
-              keywordCount: event.keywordCount,
-            }, "error");
-            void publishCountMetric("GmailToolFailure", {
-              channel: body.channel!,
-              runtime: "fargate",
-            });
-        }
-      };
-
       logBridgeEvent("bridge.message.accepted", logContext);
 
       try {
+        const gmailReady = await isGmailReady();
         const gmailResponse = await maybeHandleCustomGmailRequest({
           userId: body.userId!,
           sessionKey: body.connectionId!,
           message: body.message!,
-          runtimeClass: body.runtimeClass,
-          routingContext: body.routingContext,
-          emailTokenBudget: body.emailTokenBudget,
-          onTelemetry: gmailTelemetry,
+          gmailReady,
+          emailTokenBudget: body.emailTokenBudget ?? defaultEmailTokenBudget(),
+          onToolEvent: (event) => logToolEvent(event, logContext),
         });
         if (gmailResponse !== undefined) {
-          await deps.callbackSender.send(body.connectionId!, {
-            type: "stream_chunk",
-            content: gmailResponse,
-            conversationId: undefined,
-          });
-          await deps.callbackSender.send(body.connectionId!, {
-            type: "stream_end",
-          });
+          if (gmailResponse.kind === "direct") {
+            await deps.callbackSender.send(body.connectionId!, {
+              type: "stream_chunk",
+              content: gmailResponse.message,
+              conversationId: undefined,
+            });
+            await deps.callbackSender.send(body.connectionId!, {
+              type: "stream_end",
+            });
 
-          const latency = Date.now() - msgStart;
-          void publishMessageMetrics({
-            latency,
-            responseLength: gmailResponse.length,
-            channel: deps.channel,
-          });
+            const latency = Date.now() - msgStart;
+            void publishMessageMetrics({
+              latency,
+              responseLength: gmailResponse.message.length,
+              channel: deps.channel,
+            });
 
-          if (!firstResponseSent) {
-            firstResponseSent = true;
-            void publishFirstResponseTime(Date.now() - deps.processStartTime, deps.channel);
+            if (!firstResponseSent) {
+              firstResponseSent = true;
+              void publishFirstResponseTime(Date.now() - deps.processStartTime, deps.channel);
+            }
+
+            if (deps.onMessageComplete) {
+              await deps.onMessageComplete(
+                body.userId!,
+                body.message!,
+                gmailResponse.message,
+                body.channel! as "web" | "telegram",
+              ).catch(() => {});
+            }
+
+            logBridgeEvent("bridge.delivery.success", {
+              ...logContext,
+              deliveryType,
+              source: gmailResponse.source,
+            });
+            void publishCountMetric("DeliverySuccess", {
+              channel: body.channel!,
+              runtime: "fargate",
+              deliveryType,
+            });
+            return;
           }
 
-          if (deps.onMessageComplete) {
-            await deps.onMessageComplete(
-              body.userId!,
-              body.message!,
-              gmailResponse,
-              body.channel! as "web" | "telegram",
-            ).catch(() => {});
-          }
-
-          logBridgeEvent("bridge.delivery.success", {
-            ...logContext,
-            deliveryType,
-            source: "gmail-tool",
-          });
-          void publishCountMetric("DeliverySuccess", {
-            channel: body.channel!,
-            runtime: "fargate",
-            deliveryType,
-          });
-          return;
+          body.message = gmailResponse.message;
         }
 
         const prefixes: string[] = [];

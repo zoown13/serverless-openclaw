@@ -9,14 +9,14 @@ import {
 } from "@serverless-openclaw/shared";
 import type {
   Channel,
-  RoutingContextState,
+  ToolRuntimeAffinityState,
 } from "@serverless-openclaw/shared";
 
 type Send = (command: unknown) => Promise<unknown>;
 
 interface GetResult {
   Item?: {
-    value?: RoutingContextState;
+    value?: ToolRuntimeAffinityState;
   };
 }
 
@@ -26,7 +26,7 @@ function routingContextKey(userId: string, channel: Channel): {
 } {
   return {
     PK: `${KEY_PREFIX.USER}${userId}`,
-    SK: `${KEY_PREFIX.SETTING}routing-context:${channel}`,
+    SK: `${KEY_PREFIX.SETTING}tool-affinity:${channel}`,
   };
 }
 
@@ -34,7 +34,7 @@ export async function getRoutingContext(
   send: Send,
   userId: string,
   channel: Channel,
-): Promise<RoutingContextState | null> {
+): Promise<ToolRuntimeAffinityState | null> {
   const result = (await send(
     new GetCommand({
       TableName: TABLE_NAMES.SETTINGS,
@@ -48,7 +48,7 @@ export async function getRoutingContext(
 export async function putRoutingContext(
   send: Send,
   userId: string,
-  state: RoutingContextState,
+  state: ToolRuntimeAffinityState,
 ): Promise<void> {
   await send(
     new PutCommand({

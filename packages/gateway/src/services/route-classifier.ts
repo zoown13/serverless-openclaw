@@ -154,25 +154,11 @@ export function classifyRouteRuntimeClass(message: string): RuntimeClass {
     : "chat-only";
 }
 
-export function isAmbiguousPaymentSourceQuestion(message: string): boolean {
-  const normalized = normalizeIntentMessage(message);
-
-  return (
-    looksLikePaymentDataLookup(normalized) &&
-    !EMAIL_HINT_PATTERN.test(normalized) &&
-    !hasFargateHint(normalized)
-  );
-}
-
 /**
- * Classify which runtime to use for a message when AGENT_RUNTIME=both.
- * Tool-heavy requests prefer Fargate, while normal chat stays on Lambda.
+ * Classify which runtime to use when AGENT_RUNTIME=both.
+ * Gateway now makes only a coarse cost-aware runtime decision.
  */
 export function classifyRoute(params: ClassifyRouteParams): RouteDecision {
-  if (isAmbiguousPaymentSourceQuestion(params.message)) {
-    return "clarify";
-  }
-
   const runtimeClass = classifyRouteRuntimeClass(params.message);
 
   if (runtimeClass === "tool-enabled") {

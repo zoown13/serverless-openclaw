@@ -3,9 +3,10 @@ import request from "supertest";
 import { createApp } from "../src/bridge.js";
 import type { BridgeDeps } from "../src/bridge.js";
 
-const { gmailToolMock, publishCountMetricMock } = vi.hoisted(() => ({
+const { gmailToolMock, publishCountMetricMock, isGmailReadyMock } = vi.hoisted(() => ({
   gmailToolMock: vi.fn(),
   publishCountMetricMock: vi.fn().mockResolvedValue(undefined),
+  isGmailReadyMock: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock("../src/metrics.js", () => ({
@@ -16,6 +17,7 @@ vi.mock("../src/metrics.js", () => ({
 
 vi.mock("../src/gmail-tool.js", () => ({
   maybeHandleCustomGmailRequest: gmailToolMock,
+  isGmailReady: isGmailReadyMock,
 }));
 
 function createMockDeps(): BridgeDeps {
@@ -52,6 +54,8 @@ describe("Bridge HTTP Server", () => {
     gmailToolMock.mockReset();
     gmailToolMock.mockResolvedValue(undefined);
     publishCountMetricMock.mockClear();
+    isGmailReadyMock.mockReset();
+    isGmailReadyMock.mockResolvedValue(true);
     deps = createMockDeps();
     app = createApp(deps);
     infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
@@ -188,7 +192,11 @@ describe("Bridge HTTP Server", () => {
     });
 
     it("should return a direct Gmail tool response without calling OpenClaw", async () => {
-      gmailToolMock.mockResolvedValue("Inbox summary result");
+      gmailToolMock.mockResolvedValue({
+        kind: "direct",
+        message: "Inbox summary result",
+        source: "gmail",
+      });
 
       const res = await request(app)
         .post("/message")
@@ -202,13 +210,6 @@ describe("Bridge HTTP Server", () => {
           runtimeClass: "tool-enabled",
           traceId: "trace-123",
           routeDecision: "fargate-new",
-          routingContext: {
-            status: "active_task",
-            intentKind: "payment_summary",
-            canonicalGoal: "이번주 결제한 금액이 어느정도 되려나?",
-            sourceChoice: "gmail",
-            runtimeClass: "tool-enabled",
-          },
         });
 
       expect(res.status).toBe(202);
@@ -224,13 +225,8 @@ describe("Bridge HTTP Server", () => {
       });
       expect(gmailToolMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          routingContext: expect.objectContaining({
-            status: "active_task",
-            intentKind: "payment_summary",
-            canonicalGoal: "이번주 결제한 금액이 어느정도 되려나?",
-            sourceChoice: "gmail",
-            runtimeClass: "tool-enabled",
-          }),
+          sessionKey: "conn-123",
+          message: "Check my Gmail inbox",
         }),
       );
       expect(deps.openclawClient.sendMessage).not.toHaveBeenCalled();
@@ -245,26 +241,29 @@ describe("Bridge HTTP Server", () => {
     });
 
     it("should log Gmail telemetry with sanitized query metadata", async () => {
-      gmailToolMock.mockImplementation(async (options: { onTelemetry?: (event: unknown) => void }) => {
-        options.onTelemetry?.({ event: "matched" });
-        options.onTelemetry?.({
-          event: "queryBuilt",
-          sanitizedQuery: "after:2026/03/01 [REDACTED]",
-          isUnread: false,
-          dateRange: "after:2026/03/01 before:2026/04/01",
-          keywordCount: 2,
+      gmailToolMock.mockImplementation(async (options: { onToolEvent?: (event: unknown) => void }) => {
+        options.onToolEvent?.({
+          type: "intentDecided",
+          action: "clarify_source",
+          taskFamily: "gmail_payment_summary",
+          sourceChoice: null,
+          confidence: 0.82,
         });
-        options.onTelemetry?.({
-          event: "result",
-          sanitizedQuery: "after:2026/03/01 [REDACTED]",
-          outcome: "no-results",
-          isUnread: false,
-          dateRange: "after:2026/03/01 before:2026/04/01",
-          keywordCount: 2,
-          matchedCount: 0,
-          inspectedCount: 0,
+        options.onToolEvent?.({
+          type: "contextCreated",
+          taskFamily: "gmail_payment_summary",
+          sourceChoice: null,
         });
-        return "No matches";
+        options.onToolEvent?.({
+          type: "clarificationSent",
+          taskFamily: "gmail_payment_summary",
+          reason: "advisor-clarify-source",
+        });
+        return {
+          kind: "direct",
+          message: "지메일에서 확인할까요, 아니면 일반 답변으로 도와드릴까요?",
+          source: "gmail-clarification",
+        };
       });
 
       const res = await request(app)
@@ -285,24 +284,25 @@ describe("Bridge HTTP Server", () => {
 
       await vi.waitFor(() => {
         expect(infoSpy).toHaveBeenCalledWith(
-          expect.stringContaining("\"event\":\"bridge.gmail.query.built\""),
+          expect.stringContaining("\"event\":\"bridge.tool.intent.decided\""),
         );
       });
       expect(infoSpy).toHaveBeenCalledWith(
-        expect.stringContaining("[REDACTED]"),
+        expect.stringContaining("\"event\":\"bridge.tool.clarification.sent\""),
       );
-      expect(publishCountMetricMock).toHaveBeenCalledWith("GmailToolMatched", {
+      expect(publishCountMetricMock).toHaveBeenCalledWith("DeliverySuccess", {
         channel: "web",
         runtime: "fargate",
-      });
-      expect(publishCountMetricMock).toHaveBeenCalledWith("GmailToolNoResults", {
-        channel: "web",
-        runtime: "fargate",
+        deliveryType: "websocket",
       });
     });
 
     it("should record delivery failure when callback delivery throws", async () => {
-      gmailToolMock.mockResolvedValue("Inbox summary result");
+      gmailToolMock.mockResolvedValue({
+        kind: "direct",
+        message: "Inbox summary result",
+        source: "gmail",
+      });
       deps.callbackSender.send = vi.fn().mockRejectedValue(new Error("telegram send failed"));
       app = createApp(deps);
 

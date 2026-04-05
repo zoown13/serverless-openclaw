@@ -5,8 +5,9 @@ import { OpenClawClient } from "./openclaw-client.js";
 import { LifecycleManager } from "./lifecycle.js";
 import { consumePendingMessages } from "./pending-messages.js";
 import {
+  isGmailReady,
   maybeHandleCustomGmailRequest,
-  type GmailTelemetryEvent,
+  type ToolEvent,
 } from "./gmail-tool.js";
 import { restoreFromS3 } from "./s3-sync.js";
 import { discoverPublicIp } from "./discover-public-ip.js";
@@ -15,7 +16,11 @@ import {
   loadRecentHistory,
   formatHistoryContext,
 } from "./conversation-store.js";
-import type { PendingMessageItem, Channel } from "@serverless-openclaw/shared";
+import type {
+  PendingMessageItem,
+  Channel,
+  EmailTokenBudgetPolicy,
+} from "@serverless-openclaw/shared";
 import {
   publishCountMetric,
   publishStartupMetrics,
@@ -39,6 +44,16 @@ export interface StartContainerOptions {
   dynamoSend: Send;
   ecsSend: Send;
   ec2Send: Send;
+}
+
+function defaultEmailTokenBudget(): EmailTokenBudgetPolicy {
+  return {
+    mode: "headers-first",
+    maxMessages: 5,
+    maxSnippetChars: 240,
+    maxBodyChars: 1600,
+    requireExplicitBodyAccess: true,
+  };
 }
 
 function logBridgeEvent(
@@ -176,107 +191,98 @@ export async function startContainer(opts: StartContainerOptions): Promise<void>
         deliveryType,
         pendingMessage: true,
       };
-      const gmailTelemetry = (event: GmailTelemetryEvent) => {
-        switch (event.event) {
-          case "matched":
-            logBridgeEvent("bridge.gmail.matched", logContext);
-            void publishCountMetric("GmailToolMatched", {
-              channel: msg.channel,
-              runtime: "fargate",
-            });
-            return;
-          case "queryBuilt":
-            logBridgeEvent("bridge.gmail.query.built", {
-              ...logContext,
-              sanitizedQuery: event.sanitizedQuery,
-              isUnread: event.isUnread,
-              dateRange: event.dateRange,
-              keywordCount: event.keywordCount,
-            });
-            return;
-          case "result":
-            logBridgeEvent("bridge.gmail.query.result", {
-              ...logContext,
-              sanitizedQuery: event.sanitizedQuery,
-              outcome: event.outcome,
-              isUnread: event.isUnread,
-              dateRange: event.dateRange,
-              keywordCount: event.keywordCount,
-              matchedCount: event.matchedCount,
-              inspectedCount: event.inspectedCount,
-            });
-            void publishCountMetric(
-              event.outcome === "success" ? "GmailToolSuccess" : "GmailToolNoResults",
-              {
-                channel: msg.channel,
-                runtime: "fargate",
-              },
-            );
-            return;
-          case "failure":
-            logBridgeEvent("bridge.gmail.query.failure", {
-              ...logContext,
-              sanitizedQuery: event.sanitizedQuery,
-              reason: event.reason,
-              isUnread: event.isUnread,
-              dateRange: event.dateRange,
-              keywordCount: event.keywordCount,
-            }, "error");
-            void publishCountMetric("GmailToolFailure", {
-              channel: msg.channel,
-              runtime: "fargate",
-            });
-        }
-      };
 
       logBridgeEvent("bridge.message.accepted", logContext);
       try {
+        const gmailReady = await isGmailReady();
         const gmailResponse = await maybeHandleCustomGmailRequest({
           userId,
           sessionKey: msg.connectionId,
           message: msg.message,
-          runtimeClass: msg.runtimeClass,
-          routingContext: msg.routingContext,
-          emailTokenBudget: msg.emailTokenBudget,
-          onTelemetry: gmailTelemetry,
+          gmailReady,
+          emailTokenBudget: msg.emailTokenBudget ?? defaultEmailTokenBudget(),
+          onToolEvent: (event: ToolEvent) => {
+            switch (event.type) {
+              case "intentDecided":
+                logBridgeEvent("bridge.tool.intent.decided", {
+                  ...logContext,
+                  action: event.action,
+                  taskFamily: event.taskFamily,
+                  sourceChoice: event.sourceChoice,
+                  confidence: event.confidence,
+                });
+                return;
+              case "contextCreated":
+              case "contextReused":
+              case "contextCleared":
+              case "contextExpired":
+                logBridgeEvent(
+                  `bridge.tool.context.${event.type.replace("context", "").toLowerCase()}`,
+                  {
+                    ...logContext,
+                    taskFamily: event.taskFamily,
+                    sourceChoice: event.sourceChoice,
+                    reason: event.reason,
+                  },
+                );
+                return;
+              case "clarificationSent":
+                logBridgeEvent("bridge.tool.clarification.sent", {
+                  ...logContext,
+                  taskFamily: event.taskFamily,
+                  reason: event.reason,
+                });
+                return;
+              case "handlerFallback":
+                logBridgeEvent("bridge.tool.handler.fallback", {
+                  ...logContext,
+                  taskFamily: event.taskFamily,
+                  reason: event.reason,
+                });
+            }
+          },
         });
         if (gmailResponse !== undefined) {
           historyPrefix = "";
-          await callbackSender.send(msg.connectionId, {
-            type: "stream_chunk",
-            content: gmailResponse,
-          });
-          await callbackSender.send(msg.connectionId, {
-            type: "stream_end",
-          });
+          if (gmailResponse.kind === "direct") {
+            await callbackSender.send(msg.connectionId, {
+              type: "stream_chunk",
+              content: gmailResponse.message,
+            });
+            await callbackSender.send(msg.connectionId, {
+              type: "stream_end",
+            });
 
-          void publishMessageMetrics({
-            latency: Date.now() - msgStart,
-            responseLength: gmailResponse.length,
-            channel: msg.channel,
-          });
+            void publishMessageMetrics({
+              latency: Date.now() - msgStart,
+              responseLength: gmailResponse.message.length,
+              channel: msg.channel,
+            });
 
-          await saveMessagePair(
-            dynamoSend,
-            userId,
-            msg.message,
-            gmailResponse,
-            msg.channel,
-          ).catch(() => {});
-          logBridgeEvent("bridge.delivery.success", {
-            ...logContext,
-            source: "gmail-tool",
-          });
-          void publishCountMetric("DeliverySuccess", {
-            channel: msg.channel,
-            runtime: "fargate",
-            deliveryType,
-          });
-          void publishCountMetric("PendingMessagesDrained", {
-            channel: msg.channel,
-            runtime: "fargate",
-          });
-          return;
+            await saveMessagePair(
+              dynamoSend,
+              userId,
+              msg.message,
+              gmailResponse.message,
+              msg.channel,
+            ).catch(() => {});
+            logBridgeEvent("bridge.delivery.success", {
+              ...logContext,
+              source: gmailResponse.source,
+            });
+            void publishCountMetric("DeliverySuccess", {
+              channel: msg.channel,
+              runtime: "fargate",
+              deliveryType,
+            });
+            void publishCountMetric("PendingMessagesDrained", {
+              channel: msg.channel,
+              runtime: "fargate",
+            });
+            return;
+          }
+
+          msg.message = gmailResponse.message;
         }
 
         const messageToSend = historyPrefix

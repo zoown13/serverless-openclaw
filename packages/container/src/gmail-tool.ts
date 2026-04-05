@@ -1,1323 +1,1382 @@
-import fs from "node:fs";
-import path from "node:path";
+import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 import type {
-  BridgeRoutingContext,
   EmailTokenBudgetPolicy,
-  RuntimeClass,
+  ToolIntentAdvisorAction,
+  ToolSourceChoice,
+  ToolTaskFamily,
 } from "@serverless-openclaw/shared";
 
-interface GmailToolOptions {
-  userId?: string;
-  sessionKey?: string;
-  message: string;
-  runtimeClass?: RuntimeClass;
-  routingContext?: BridgeRoutingContext;
-  emailTokenBudget?: EmailTokenBudgetPolicy;
-  onTelemetry?: (event: GmailTelemetryEvent) => void;
+import {
+  decideToolIntent,
+  type DecideToolIntentInput,
+} from "./tool-intent-advisor.js";
+
+const DEFAULT_CONTEXT_TTL_MS = 5 * 60 * 1000;
+const SUMMARY_FOLLOW_UP_PATTERN =
+  /(얼마|합계|총액|정리|요약|카드사|결제처|가맹점|merchant|issuer|sum|summary|breakdown|이번주 것만 다시|이번 주 것만 다시)/i;
+const PAYMENT_HINT_PATTERN =
+  /(결제|카드값|카드 값|명세서|청구서|영수증|receipt|statement|invoice|spent|spend|payment|total|amount|얼마 썼|얼마 쓴)/i;
+const EXPLICIT_GMAIL_PATTERN =
+  /(gmail|google mail|inbox|mailbox|이메일|메일함|메일에서|지메일)/i;
+const GMAIL_CONFIRM_PATTERN =
+  /^(?:지메일(?:에서|로)?(?:\s*확인해줘)?|gmail|gmail로|gmail에서|메일(?:에서|로)?|이메일(?:에서|로)?)(?:[.!?])?$/i;
+const GENERAL_CONFIRM_PATTERN =
+  /^(?:일반(?:으로)?|그냥\s*답변|일반\s*답변(?:으로)?|채팅(?:으로)?|추론(?:으로)?)(?:[.!?])?$/i;
+const CANCEL_PATTERN = /^(?:취소|그만|끝|됐어|done|cancel|stop)(?:[.!?])?$/i;
+const ATTACHMENT_PATTERN = /(첨부|attachment|pdf|파일|download)/i;
+const BODY_REQUEST_PATTERN =
+  /(자세히|본문|내용 보여|본문 보여|열어줘|open|full body|details?)/i;
+const ORDER_ONLY_PATTERN =
+  /(주문하신 내역|주문배송조회|구매내역|배송상태|배송정보|주문번호|주문하신)/i;
+const PAYMENT_SIGNAL_PATTERN =
+  /(결제|승인|카드|결제금액|최종결제금액|총 결제 금액|payment|receipt|statement|invoice)/i;
+const PAYMENT_MERCHANT_PATTERN =
+  /(가맹점명|구매상점명|상호명|merchant)\s*[:：]?\s*([^\n\r,]+)/i;
+const PAYMENT_AMOUNT_PATTERNS: RegExp[] = [
+  /(총\s*결제\s*금액|최종\s*결제\s*금액|결제\s*금액|결제금액|승인금액|청구금액)\s*[:：]?\s*([0-9][0-9,]*)\s*원/gi,
+  /(amount|total)\s*[:：]?\s*(?:krw\s*)?([0-9][0-9,]*)/gi,
+  /([0-9][0-9,]*)\s*원/gi,
+];
+const CARD_ISSUER_PATTERNS: RegExp[] = [
+  /(삼성카드|신한카드|현대카드|KB국민카드|국민카드|우리카드|롯데카드|하나카드|비씨카드|BC카드|NH카드|농협카드|카카오뱅크|토스뱅크)/i,
+  /(카드종류|결제기관|카드사)\s*[:：]?\s*([^\n\r,]+)/i,
+];
+const lastSearchContextByUser = new Map<string, SearchContext>();
+const taskContextByUser = new Map<string, ToolTaskContext>();
+
+interface ToolTaskContext {
+  status: "awaiting_source" | "active";
+  taskFamily: ToolTaskFamily;
+  sourceChoice: ToolSourceChoice | null;
+  canonicalGoal: string;
+  lastSearchQuery?: string;
+  parsedPaymentRecords?: ParsedPaymentRecord[];
+  lastMessages?: GmailMessageSummary[];
+  lastResultSummary?: string;
+  createdAt: string;
+  lastActivityAt: string;
+  expiresAt: string;
+  clarificationResendCount: number;
 }
 
-export type GmailTelemetryEvent =
-  | { event: "matched" }
-  | {
-    event: "queryBuilt";
-    sanitizedQuery: string;
-    isUnread: boolean;
-    dateRange?: string;
-    keywordCount: number;
-  }
-  | {
-    event: "result";
-    sanitizedQuery: string;
-    outcome: "success" | "no-results";
-    isUnread: boolean;
-    dateRange?: string;
-    keywordCount: number;
-    matchedCount: number;
-    inspectedCount: number;
-  }
-  | {
-    event: "failure";
-    sanitizedQuery?: string;
-    reason: string;
-    isUnread: boolean;
-    dateRange?: string;
-    keywordCount: number;
-  };
+interface SearchContext {
+  messages: GmailMessageSummary[];
+  query: string;
+  createdAt: string;
+}
+
+interface ParsedPaymentRecord {
+  messageId: string;
+  subject: string;
+  from: string;
+  date: string;
+  merchant?: string;
+  amount?: number;
+  cardIssuer?: string;
+  snippet: string;
+  confidence: number;
+  source: "snippet" | "body";
+}
+
+interface GmailCredentials {
+  clientId: string;
+  clientSecret: string;
+  refreshToken: string;
+}
+
+interface OAuthClientDescriptor {
+  client_id?: string;
+  client_secret?: string;
+}
+
+interface GogCredentialFile {
+  installed?: OAuthClientDescriptor;
+  web?: OAuthClientDescriptor;
+  client_id?: string;
+  client_secret?: string;
+}
 
 interface GogOauthExport {
-  email?: string;
   refresh_token?: string;
-}
-
-interface GoogleClientCredentials {
-  client_id: string;
-  client_secret: string;
-}
-
-interface GmailMessageListResponse {
-  messages?: Array<{ id: string }>;
-  resultSizeEstimate?: number;
-}
-
-interface GmailPayloadPart {
-  mimeType?: string;
-  filename?: string;
-  body?: {
-    data?: string;
+  token?: {
+    refresh_token?: string;
   };
-  parts?: GmailPayloadPart[];
-  headers?: Array<{ name?: string; value?: string }>;
+  accounts?: Record<string, GogOauthExport>;
+  [key: string]: unknown;
+}
+
+interface GmailListResponse {
+  messages?: Array<{
+    id: string;
+    threadId: string;
+  }>;
 }
 
 interface GmailMessageResponse {
+  id: string;
+  threadId: string;
   snippet?: string;
-  payload?: GmailPayloadPart;
+  payload?: GmailPayload;
 }
 
-interface GmailMessageSummaryItem {
-  messageId: string;
-  from: string;
+interface GmailPayload {
+  mimeType?: string;
+  body?: {
+    data?: string;
+  };
+  headers?: Array<{
+    name: string;
+    value: string;
+  }>;
+  parts?: GmailPayload[];
+}
+
+export interface MaybeHandleCustomGmailRequestOptions {
+  userId: string;
+  message: string;
+  sessionKey?: string;
+  gmailReady: boolean;
+  emailTokenBudget: EmailTokenBudgetPolicy;
+  onToolEvent?: (event: ToolEvent) => void;
+}
+
+export interface GmailMessageSummary {
+  id: string;
+  threadId: string;
   subject: string;
+  from: string;
   date: string;
   snippet: string;
 }
 
-interface GmailSearchContextItem {
-  ordinal: number;
-  messageId: string;
-  from: string;
-  subject: string;
-  date: string;
-  snippet: string;
-}
+export type ToolHandlerResult =
+  | {
+      kind: "direct";
+      message: string;
+      source:
+        | "gmail"
+        | "gmail-clarification"
+        | "gmail-context"
+        | "gmail-fallback";
+    }
+  | {
+      kind: "forward";
+      message: string;
+      source: "openclaw";
+    };
 
-interface GmailSearchContext {
-  query: string;
-  items: GmailSearchContextItem[];
-  updatedAt: string;
-}
+export type ToolEvent =
+  | {
+      type: "intentDecided";
+      action: ToolIntentAdvisorAction | "deterministic";
+      taskFamily?: ToolTaskFamily;
+      sourceChoice?: ToolSourceChoice | null;
+      confidence?: number;
+    }
+  | {
+      type: "contextCreated" | "contextReused" | "contextCleared" | "contextExpired";
+      taskFamily?: ToolTaskFamily;
+      sourceChoice?: ToolSourceChoice | null;
+      reason?: string;
+    }
+  | {
+      type: "clarificationSent";
+      taskFamily?: ToolTaskFamily;
+      reason: string;
+    }
+  | {
+      type: "handlerFallback";
+      reason: string;
+      taskFamily?: ToolTaskFamily;
+    };
 
-interface GmailTaskContext {
-  intentKind: "payment_summary";
-  canonicalGoal: string;
-  sourceChoice: "gmail";
-  updatedAt: string;
-}
-
-interface DateRange {
-  after: string;
-  before: string;
-}
-
-const GMAIL_HINT_RE =
-  /(?:\bgmail\b|\bemail\b|\be-mail\b|\binbox\b|\bunread\b|지메일|이메일|메일(?:함)?|수신함|받은편지함|편지함|안 읽은|읽지 않은)/i;
-const GMAIL_SUMMARY_RE =
-  /(?:\baccess\b|\bconnect\b|\bintegrat(?:e|ion)?\b|\bfetch\b|\bload\b|\bget\b|\bcheck\b|\bshow\b|\blist\b|\bread\b|\bopen\b|\bsearch\b|\bfind\b|\blook for\b|\bfilter\b|\bsummar(?:ize|ise)\b|\banaly[sz]e\b|\breview\b|\btriage\b|\blatest\b|\brecent\b|\bunread\b|\binbox\b|접근|연동|연결|가져오|불러오|조회|확인|보여|봐|읽|열|검색|요약|분석|정리|최신|최근|수신함|받은편지함|찾)/i;
-const PAYMENT_DATA_RE =
-  /(?:결제|지출|사용금액|사용 금액|승인내역|카드값|카드\s*(?:사용|결제)|청구서|영수증|명세서|\bpayment(?:s)?\b|\bcharge(?:s|d)?\b|\btransaction(?:s)?\b|\bspent\b|\bspend\b|\bbilling\b|\binvoice\b|\breceipt\b|\bstatement\b)/i;
-const PAYMENT_SUMMARY_RE =
-  /(?:얼마|총액|합계|총합|어느 정도|어느정도|얼마나|계산|정리|요약|찾|알려|보여|확인|\bhow much\b|\btotal\b|\bsum\b|\bcalculate\b|\bshow\b|\bcheck\b|\bfind\b)/i;
-const PAYMENT_FOLLOWUP_RE =
-  /(?:얼마|얼마나|합계|총액|총합|정리|요약|분석|다시|이번주|이번 주|이번달|이번 달|카드사별|결제|지출|사용금액|사용 금액|썼|쓴|사용|승인내역)/i;
-const GMAIL_UNSUPPORTED_ACTION_RE =
-  /(?:\bsend\b|\bcompose\b|\bdraft\b|\breply\b|\bforward\b|\bdelete\b|\barchive\b|\bwrite\b|보내|작성|답장|전달|삭제|보관)/i;
-const ATTACHMENT_REQUEST_RE =
-  /(?:\battachment\b|\battachments\b|\bpdf\b|\bfile\b|첨부|첨부파일|파일|pdf)/i;
-const BODY_REQUEST_RE =
-  /(?:\bbody\b|\bcontent\b|\bdetails?\b|\bdetailed\b|\bfull\s+body\b|\bopen\b|\bread\b|\bshow\b|본문|내용|자세히|상세|열어|읽어|보여)/i;
-const EXPLICIT_UNREAD_RE = /(?:\bunread\b|안 읽은|읽지 않은)/i;
-const ALL_MESSAGES_RE = /(?:\ball\b|\bevery\b|전체|모든)/i;
-const TARGETED_SEARCH_RE =
-  /(?:\bfind\b|\blook for\b|\bsearch\b|\bfilter\b|\bsubject\b|\bfrom\b|찾|검색|조회|필터|조건|에서)/i;
-const ENGLISH_MONTH_NAMES = [
-  "january",
-  "february",
-  "march",
-  "april",
-  "may",
-  "june",
-  "july",
-  "august",
-  "september",
-  "october",
-  "november",
-  "december",
-] as const;
-
-const lastSearchContextByUser = new Map<string, GmailSearchContext>();
-const activeTaskContextByUser = new Map<string, GmailTaskContext>();
-const GMAIL_CONTEXT_TTL_MS = 5 * 60 * 1000;
-
-function buildContextKey(
-  userId: string | undefined,
-  sessionKey: string | undefined,
-): string | undefined {
-  if (!userId) {
-    return undefined;
-  }
-
-  return sessionKey
-    ? `${userId}:${sessionKey}`
-    : userId;
-}
-
-function isExpiredTimestamp(value: string | undefined): boolean {
-  if (!value) {
-    return true;
-  }
-
-  const parsed = Date.parse(value);
-  if (!Number.isFinite(parsed)) {
-    return true;
-  }
-
-  return parsed + GMAIL_CONTEXT_TTL_MS <= Date.now();
-}
-
-function getSearchContext(
-  userId: string | undefined,
-  sessionKey: string | undefined,
-): GmailSearchContext | undefined {
-  const contextKey = buildContextKey(userId, sessionKey);
-  if (!contextKey) {
-    return undefined;
-  }
-
-  const context = lastSearchContextByUser.get(contextKey);
-  if (!context) {
-    return undefined;
-  }
-
-  if (isExpiredTimestamp(context.updatedAt)) {
-    lastSearchContextByUser.delete(contextKey);
-    return undefined;
-  }
-
-  return context;
-}
-
-function getActiveTaskContext(
-  userId: string | undefined,
-  sessionKey: string | undefined,
-): GmailTaskContext | undefined {
-  const contextKey = buildContextKey(userId, sessionKey);
-  if (!contextKey) {
-    return undefined;
-  }
-
-  const context = activeTaskContextByUser.get(contextKey);
-  if (!context) {
-    return undefined;
-  }
-
-  if (isExpiredTimestamp(context.updatedAt)) {
-    activeTaskContextByUser.delete(contextKey);
-    return undefined;
-  }
-
-  return context;
-}
-
-function saveActiveTaskContext(
-  userId: string | undefined,
-  sessionKey: string | undefined,
-  context: Omit<GmailTaskContext, "updatedAt">,
+function emitToolEvent(
+  callback: MaybeHandleCustomGmailRequestOptions["onToolEvent"],
+  event: ToolEvent,
 ): void {
-  const contextKey = buildContextKey(userId, sessionKey);
-  if (!contextKey) {
-    return;
-  }
-
-  activeTaskContextByUser.set(contextKey, {
-    ...context,
-    updatedAt: new Date().toISOString(),
-  });
+  callback?.(event);
 }
 
-function syncTaskContextFromRoutingContext(
-  options: GmailToolOptions,
-): GmailTaskContext | undefined {
-  const incoming = options.routingContext;
+function getGogCredentialsPath(): string {
+  return join(homedir(), ".config", "gogcli", "credentials.json");
+}
+
+function getOauthExportPath(): string {
+  return join(homedir(), ".config", "gogcli", "oauth.json");
+}
+
+function getOpenClawOauthExportPath(): string {
+  return join(homedir(), ".openclaw", "credentials", "oauth.json");
+}
+
+async function readJsonFile<T>(path: string): Promise<T | null> {
+  try {
+    const content = await readFile(path, "utf8");
+    return JSON.parse(content) as T;
+  } catch {
+    return null;
+  }
+}
+
+function extractRefreshToken(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  if (typeof record.refresh_token === "string") {
+    return record.refresh_token;
+  }
   if (
-    incoming?.status === "active_task" &&
-    incoming.intentKind === "payment_summary" &&
-    incoming.sourceChoice === "gmail"
+    record.token &&
+    typeof record.token === "object" &&
+    typeof (record.token as Record<string, unknown>).refresh_token === "string"
   ) {
-    saveActiveTaskContext(options.userId, options.sessionKey, {
-      intentKind: "payment_summary",
-      canonicalGoal: incoming.canonicalGoal,
-      sourceChoice: "gmail",
-    });
+    return (record.token as Record<string, unknown>).refresh_token as string;
   }
-
-  return getActiveTaskContext(options.userId, options.sessionKey);
+  if (record.accounts && typeof record.accounts === "object") {
+    for (const nested of Object.values(record.accounts as Record<string, unknown>)) {
+      const nestedToken = extractRefreshToken(nested);
+      if (nestedToken) {
+        return nestedToken;
+      }
+    }
+  }
+  for (const nested of Object.values(record)) {
+    const nestedToken = extractRefreshToken(nested);
+    if (nestedToken) {
+      return nestedToken;
+    }
+  }
+  return undefined;
 }
 
-function isSupportedGmailSummaryRequest(message: string, runtimeClass?: RuntimeClass): boolean {
-  if (runtimeClass !== "tool-enabled") {
-    return false;
+async function loadGmailCredentials(): Promise<GmailCredentials | null> {
+  const credentialFile = await readJsonFile<GogCredentialFile>(getGogCredentialsPath());
+  const descriptor =
+    credentialFile?.installed ??
+    credentialFile?.web ??
+    (credentialFile?.client_id && credentialFile?.client_secret
+      ? credentialFile
+      : null);
+  const clientId = descriptor?.client_id;
+  const clientSecret = descriptor?.client_secret;
+
+  const oauthFile =
+    (await readJsonFile<GogOauthExport>(getOauthExportPath())) ??
+    (await readJsonFile<GogOauthExport>(getOpenClawOauthExportPath()));
+  const refreshToken = extractRefreshToken(oauthFile);
+
+  if (!clientId || !clientSecret || !refreshToken) {
+    return null;
   }
 
-  const looksLikeGmailSummary =
-    GMAIL_HINT_RE.test(message) && GMAIL_SUMMARY_RE.test(message);
-  const looksLikePaymentSummary =
-    PAYMENT_DATA_RE.test(message) && PAYMENT_SUMMARY_RE.test(message);
-
-  if (!looksLikeGmailSummary && !looksLikePaymentSummary) {
-    return false;
-  }
-
-  return !GMAIL_UNSUPPORTED_ACTION_RE.test(message);
+  return { clientId, clientSecret, refreshToken };
 }
 
-function isExplicitBodyRequest(message: string): boolean {
-  return BODY_REQUEST_RE.test(message);
+export async function isGmailReady(): Promise<boolean> {
+  const credentials = await loadGmailCredentials();
+  return Boolean(credentials);
+}
+
+function getContextKey(userId: string, sessionKey?: string): string {
+  return `${userId}:${sessionKey ?? "default"}`;
+}
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+function futureIso(offsetMs: number): string {
+  return new Date(Date.now() + offsetMs).toISOString();
+}
+
+function isExpired(expiresAt?: string): boolean {
+  return !expiresAt || Date.parse(expiresAt) <= Date.now();
+}
+
+function getTaskContext(key: string): ToolTaskContext | undefined {
+  const context = taskContextByUser.get(key);
+  if (!context) {
+    return undefined;
+  }
+  if (isExpired(context.expiresAt)) {
+    taskContextByUser.delete(key);
+    return undefined;
+  }
+  return context;
+}
+
+function setTaskContext(key: string, context: ToolTaskContext): void {
+  taskContextByUser.set(key, context);
+}
+
+function clearTaskContext(key: string): void {
+  taskContextByUser.delete(key);
+}
+
+function setSearchContext(key: string, context: SearchContext): void {
+  lastSearchContextByUser.set(key, context);
+}
+
+function getSearchContext(key: string): SearchContext | undefined {
+  const context = lastSearchContextByUser.get(key);
+  if (!context) {
+    return undefined;
+  }
+  if (Date.parse(context.createdAt) + DEFAULT_CONTEXT_TTL_MS <= Date.now()) {
+    lastSearchContextByUser.delete(key);
+    return undefined;
+  }
+  return context;
+}
+
+function looksLikePaymentQuestion(message: string): boolean {
+  return PAYMENT_HINT_PATTERN.test(message);
+}
+
+function isExplicitGmailMessage(message: string): boolean {
+  return EXPLICIT_GMAIL_PATTERN.test(message);
+}
+
+function isBodyRequest(message: string): boolean {
+  return BODY_REQUEST_PATTERN.test(message);
 }
 
 function isAttachmentRequest(message: string): boolean {
-  return ATTACHMENT_REQUEST_RE.test(message);
+  return ATTACHMENT_PATTERN.test(message);
 }
 
-function getHomeDir(): string {
-  return process.env.HOME ?? "/home/openclaw";
+function isPaymentFollowUp(message: string): boolean {
+  return SUMMARY_FOLLOW_UP_PATTERN.test(message);
 }
 
-function readJsonFile<T>(filePath: string): T | undefined {
-  if (!fs.existsSync(filePath)) {
-    return undefined;
-  }
-
-  try {
-    return JSON.parse(fs.readFileSync(filePath, "utf-8")) as T;
-  } catch {
-    return undefined;
-  }
-}
-
-function loadOauthExport(): GogOauthExport | undefined {
-  const filePath = path.join(getHomeDir(), ".openclaw", "credentials", "oauth.json");
-  return readJsonFile<GogOauthExport>(filePath);
-}
-
-function loadGoogleCredentials():
-  | GoogleClientCredentials
-  | undefined {
-  const filePath = path.join(getHomeDir(), ".config", "gogcli", "credentials.json");
-  const raw = readJsonFile<Record<string, unknown>>(filePath);
-
-  if (!raw || typeof raw !== "object") {
-    return undefined;
-  }
-
-  const directClientId = raw.client_id;
-  const directClientSecret = raw.client_secret;
-  if (typeof directClientId === "string" && typeof directClientSecret === "string") {
-    return {
-      client_id: directClientId,
-      client_secret: directClientSecret,
-    };
-  }
-
-  for (const key of ["installed", "web"] as const) {
-    const nested = raw[key];
-    if (
-      nested &&
-      typeof nested === "object" &&
-      typeof (nested as Record<string, unknown>).client_id === "string" &&
-      typeof (nested as Record<string, unknown>).client_secret === "string"
-    ) {
-      return {
-        client_id: (nested as Record<string, string>).client_id,
-        client_secret: (nested as Record<string, string>).client_secret,
-      };
-    }
-  }
-
-  return undefined;
-}
-
-function formatQueryDate(date: Date): string {
-  const year = date.getUTCFullYear();
-  const month = `${date.getUTCMonth() + 1}`.padStart(2, "0");
-  const day = `${date.getUTCDate()}`.padStart(2, "0");
-  return `${year}/${month}/${day}`;
-}
-
-function getStartOfUtcWeek(date: Date): Date {
-  const start = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
-  const day = start.getUTCDay();
-  const diff = day === 0 ? 6 : day - 1;
-  start.setUTCDate(start.getUTCDate() - diff);
-  return start;
-}
-
-function extractExplicitMonthRange(message: string, now: Date): DateRange | undefined {
-  const explicitYearMonth = message.match(/\b(20\d{2})[/.-](1[0-2]|0?[1-9])\b/);
-  if (explicitYearMonth) {
-    const year = Number.parseInt(explicitYearMonth[1], 10);
-    const month = Number.parseInt(explicitYearMonth[2], 10);
-    const start = new Date(Date.UTC(year, month - 1, 1));
-    const end = new Date(Date.UTC(year, month, 1));
-    return {
-      after: formatQueryDate(start),
-      before: formatQueryDate(end),
-    };
-  }
-
-  const explicitYear = message.match(/\b(20\d{2})\b|(?:(20\d{2})\s*년)/);
-  const yearText = explicitYear?.[1] ?? explicitYear?.[2];
-
-  let month: number | undefined;
-  const koreanMonth = message.match(/\b(1[0-2]|0?[1-9])\s*월/);
-  if (koreanMonth) {
-    month = Number.parseInt(koreanMonth[1], 10);
-  } else {
-    const lower = message.toLowerCase();
-    const englishMonthIndex = ENGLISH_MONTH_NAMES.findIndex((name) => lower.includes(name));
-    if (englishMonthIndex >= 0) {
-      month = englishMonthIndex + 1;
-    }
-  }
-
-  if (!month) {
-    return undefined;
-  }
-
-  const currentYear = now.getUTCFullYear();
-  const currentMonth = now.getUTCMonth() + 1;
-  const year = yearText
-    ? Number.parseInt(yearText, 10)
-    : month > currentMonth
-      ? currentYear - 1
-      : currentYear;
-
-  const start = new Date(Date.UTC(year, month - 1, 1));
-  const end = new Date(Date.UTC(year, month, 1));
-  return {
-    after: formatQueryDate(start),
-    before: formatQueryDate(end),
-  };
-}
-
-function extractDateRange(message: string, now: Date): DateRange | undefined {
-  const explicitMonth = extractExplicitMonthRange(message, now);
-  if (explicitMonth) {
-    return explicitMonth;
-  }
-
-  const normalized = message.toLowerCase();
-  const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-
-  if (/\btoday\b|오늘/.test(normalized)) {
-    const end = new Date(todayStart);
-    end.setUTCDate(end.getUTCDate() + 1);
-    return {
-      after: formatQueryDate(todayStart),
-      before: formatQueryDate(end),
-    };
-  }
-
-  if (/\byesterday\b|어제/.test(normalized)) {
-    const start = new Date(todayStart);
-    start.setUTCDate(start.getUTCDate() - 1);
-    return {
-      after: formatQueryDate(start),
-      before: formatQueryDate(todayStart),
-    };
-  }
-
-  if (/\bthis week\b|이번 주|이번주/.test(normalized)) {
-    const start = getStartOfUtcWeek(now);
-    const end = new Date(start);
-    end.setUTCDate(end.getUTCDate() + 7);
-    return {
-      after: formatQueryDate(start),
-      before: formatQueryDate(end),
-    };
-  }
-
-  if (/\bthis month\b|이번 달|이번달/.test(normalized)) {
-    const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-    const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
-    return {
-      after: formatQueryDate(start),
-      before: formatQueryDate(end),
-    };
-  }
-
-  if (/\blast month\b|지난달|저번 달|저번달|전월/.test(normalized)) {
-    const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
-    const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-    return {
-      after: formatQueryDate(start),
-      before: formatQueryDate(end),
-    };
-  }
-
-  return undefined;
+function isShortReply(message: string): boolean {
+  return message.trim().length <= 24;
 }
 
 function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
-function normalizeMatchText(value: string): string {
-  return normalizeWhitespace(value).toLowerCase();
+function sanitizeForSearch(message: string): string {
+  return message
+    .replace(EXPLICIT_GMAIL_PATTERN, " ")
+    .replace(BODY_REQUEST_PATTERN, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
-
-function dedupeTerms(terms: string[]): string[] {
-  return [...new Set(terms.map((term) => normalizeWhitespace(term)).filter(Boolean))];
-}
-
-function extractFromTerms(message: string): string[] {
-  const terms: string[] = [];
-
-  const englishFrom = message.match(/\bfrom\s+["']?([^"'\n]+?)["']?(?=\s+(?:email|gmail|mail|message|messages|subject|body|summary|search|show|open|read)|$)/i);
-  if (englishFrom) {
-    terms.push(englishFrom[1]);
-  }
-
-  const koreanFrom = message.match(/(.+?)에서\s+온(?:\s+(?:메일|이메일|지메일))?/);
-  if (koreanFrom) {
-    terms.push(koreanFrom[1]);
-  }
-
-  const senderField = message.match(/보낸사람(?:은|이|:)?\s*["']?(.+?)["']?(?=\s*(?:메일|이메일|지메일|본문|내용|요약|검색|조회|확인|보여|$))/);
-  if (senderField) {
-    terms.push(senderField[1]);
-  }
-
-  return dedupeTerms(terms);
-}
-
-function extractSubjectTerms(message: string): string[] {
-  const terms: string[] = [];
-
-  const englishSubject = message.match(/\bsubject\s*(?::|contains)?\s*["']?([^"'\n]+?)["']?(?=\s+(?:email|gmail|mail|message|messages|body|summary|search|show|open|read)|$)/i);
-  if (englishSubject) {
-    terms.push(englishSubject[1]);
-  }
-
-  const koreanSubjectContains = message.match(/제목(?:에)?\s*["']?(.+?)["']?\s*(?:포함|들어간|있는)/);
-  if (koreanSubjectContains) {
-    terms.push(koreanSubjectContains[1]);
-  }
-
-  const koreanSubjectField = message.match(/제목(?:은|이|:)?\s*["']?(.+?)["']?(?=\s*(?:메일|이메일|본문|내용|요약|검색|조회|확인|보여|$))/);
-  if (koreanSubjectField) {
-    terms.push(koreanSubjectField[1]);
-  }
-
-  return dedupeTerms(terms);
-}
-
-function extractSemanticTerms(message: string): string[] {
-  const terms: string[] = [];
-
-  if (/카드/.test(message)) {
-    terms.push("카드");
-  }
-  if (/\bcard\b/i.test(message)) {
-    terms.push("card");
-  }
-  if (/명세서/.test(message)) {
-    terms.push("명세서");
-  }
-  if (/\bstatement\b|\bbilling\b|\bbill\b/i.test(message)) {
-    terms.push("statement");
-  }
-  if (/청구서/.test(message)) {
-    terms.push("청구서");
-  }
-  if (/\binvoice\b/i.test(message)) {
-    terms.push("invoice");
-  }
-  if (/영수증/.test(message)) {
-    terms.push("영수증");
-  }
-  if (/\breceipt\b/i.test(message)) {
-    terms.push("receipt");
-  }
-  if (/결제|승인내역|사용금액|사용 금액/.test(message)) {
-    terms.push("결제");
-  }
-  if (/\bpayment(?:s)?\b|\bcharge(?:s|d)?\b|\btransaction(?:s)?\b/i.test(message)) {
-    terms.push("payment");
-  }
-
-  return dedupeTerms(terms);
-}
-
-function formatQueryToken(term: string): string {
-  const cleaned = normalizeWhitespace(term).replace(/"/g, "");
-  if (!cleaned) {
-    return "";
-  }
-  return /\s/.test(cleaned) ? `"${cleaned}"` : cleaned;
-}
-
-function deriveQuery(message: string, now = new Date()): string {
-  const parts: string[] = [];
+function monthIndexFromText(message: string): number | undefined {
   const normalized = message.toLowerCase();
-  const dateRange = extractDateRange(message, now);
-  const semanticTerms = extractSemanticTerms(message);
-  const fromTerms = extractFromTerms(message);
-  const subjectTerms = extractSubjectTerms(message);
-  const targetedSearch =
-    TARGETED_SEARCH_RE.test(message) ||
-    Boolean(dateRange) ||
-    semanticTerms.length > 0 ||
-    fromTerms.length > 0 ||
-    subjectTerms.length > 0;
-
-  if (EXPLICIT_UNREAD_RE.test(message) || (!targetedSearch && !ALL_MESSAGES_RE.test(normalized))) {
-    parts.push("is:unread");
+  const numericMatch = normalized.match(/(\d{1,2})\s*월/);
+  if (numericMatch) {
+    const month = Number.parseInt(numericMatch[1] ?? "", 10);
+    if (month >= 1 && month <= 12) {
+      return month - 1;
+    }
   }
 
-  if (dateRange) {
-    parts.push(`after:${dateRange.after}`);
-    parts.push(`before:${dateRange.before}`);
-  } else if (!targetedSearch) {
-    parts.push("newer_than:7d");
-  }
-
-  parts.push(
-    ...fromTerms
-      .map((term) => formatQueryToken(term))
-      .filter(Boolean)
-      .map((term) => `from:${term}`),
-  );
-  parts.push(
-    ...subjectTerms
-      .map((term) => formatQueryToken(term))
-      .filter(Boolean)
-      .map((term) => `subject:${term}`),
-  );
-  parts.push(
-    ...semanticTerms
-      .map((term) => formatQueryToken(term))
-      .filter(Boolean),
-  );
-
-  return parts.join(" ");
-}
-
-export function sanitizeQueryForLogs(query: string): string {
-  return query
-    .replace(/\S+@\S+/g, "[REDACTED]")
-    .replace(/\b(?:bearer|token|access_token|refresh_token|oauth)[^\s]*/gi, "[REDACTED]")
-    .replace(/\b\d{8,}\b/g, "[REDACTED]");
-}
-
-function summarizeQuery(query: string): {
-  sanitizedQuery: string;
-  isUnread: boolean;
-  dateRange?: string;
-  keywordCount: number;
-} {
-  const sanitizedQuery = sanitizeQueryForLogs(query);
-  const tokens = query.split(/\s+/).filter(Boolean);
-  const dateTokens = tokens.filter((token) =>
-    /^(?:after:|before:|newer_than:)/i.test(token),
-  );
-  const keywordCount = tokens.filter(
-    (token) =>
-      !/^(?:after:|before:|newer_than:|is:unread)$/i.test(token),
-  ).length;
-
-  return {
-    sanitizedQuery,
-    isUnread: /\bis:unread\b/i.test(query),
-    dateRange: dateTokens.length > 0 ? dateTokens.join(" ") : undefined,
-    keywordCount,
-  };
-}
-
-async function exchangeRefreshToken(
-  refreshToken: string,
-  credentials: GoogleClientCredentials,
-): Promise<string> {
-  const response = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: new URLSearchParams({
-      client_id: credentials.client_id,
-      client_secret: credentials.client_secret,
-      refresh_token: refreshToken,
-      grant_type: "refresh_token",
-    }),
-    signal: AbortSignal.timeout(10000),
-  });
-
-  const payload = (await response.json()) as {
-    access_token?: string;
-    error?: string;
-    error_description?: string;
-  };
-
-  if (!response.ok || typeof payload.access_token !== "string") {
-    const detail = payload.error_description ?? payload.error ?? `HTTP ${response.status}`;
-    throw new Error(
-      `Gmail token exchange failed: ${detail}. Ensure google-oauth-client-json matches the OAuth client used during gog auth add.`,
-    );
-  }
-
-  return payload.access_token;
-}
-
-async function gmailGetJson<T>(accessToken: string, url: string): Promise<T> {
-  const response = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-    },
-    signal: AbortSignal.timeout(10000),
-  });
-
-  const payload = (await response.json()) as T & {
-    error?: {
-      message?: string;
-    };
-  };
-
-  if (!response.ok) {
-    const detail =
-      payload && typeof payload === "object" && "error" in payload
-        ? payload.error?.message
-        : undefined;
-    throw new Error(detail ?? `Gmail API request failed with HTTP ${response.status}`);
-  }
-
-  return payload;
-}
-
-function getHeader(
-  headers: Array<{ name?: string; value?: string }> | undefined,
-  name: string,
-): string {
-  return (
-    headers?.find((header) => header.name?.toLowerCase() === name.toLowerCase())?.value ??
-    "Unknown"
-  );
-}
-
-function sanitizePreview(text: string | undefined, maxChars: number): string {
-  const compact = (text ?? "").replace(/\s+/g, " ").trim();
-  if (compact.length <= maxChars) {
-    return compact || "No preview available.";
-  }
-  return `${compact.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
-}
-
-function extractPaymentAmount(text: string): number | undefined {
-  const patterns = [
-    /₩\s*(\d{1,3}(?:,\d{3})+|\d+)/g,
-    /\bKRW\s*(\d{1,3}(?:,\d{3})+|\d+)\b/gi,
-    /(\d{1,3}(?:,\d{3})+|\d+)\s*원/g,
+  const names = [
+    "january",
+    "february",
+    "march",
+    "april",
+    "may",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december",
   ];
-
-  for (const pattern of patterns) {
-    const match = pattern.exec(text);
-    if (!match?.[1]) {
-      continue;
-    }
-
-    const numeric = Number.parseInt(match[1].replace(/,/g, ""), 10);
-    if (Number.isFinite(numeric)) {
-      return numeric;
+  for (const [index, name] of names.entries()) {
+    if (normalized.includes(name) || normalized.includes(name.slice(0, 3))) {
+      return index;
     }
   }
-
   return undefined;
 }
 
-function formatPaymentEstimate(items: GmailMessageSummaryItem[]): string | undefined {
-  const amounts = items
-    .map((item) => extractPaymentAmount(`${item.subject} ${item.snippet}`))
-    .filter((value): value is number => value !== undefined);
+function buildDateRange(message: string): { after?: string; before?: string } {
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
-  if (amounts.length === 0) {
-    return undefined;
+  if (/오늘|today/i.test(message)) {
+    return {
+      after: formatDate(startOfToday),
+      before: formatDate(new Date(startOfToday.getTime() + 24 * 60 * 60 * 1000)),
+    };
   }
 
-  const total = amounts.reduce((sum, amount) => sum + amount, 0);
-  const formatted = new Intl.NumberFormat("en-US").format(total);
-  return `Estimated total from visible headers/snippets: KRW ${formatted} across ${amounts.length} matched message(s). This is a rough headers-first estimate only.`;
-}
-
-function formatSummary(
-  query: string,
-  inspected: number,
-  items: GmailMessageSummaryItem[],
-  options?: {
-    includePaymentEstimate?: boolean;
-  },
-): string {
-  if (items.length === 0) {
-    return `I checked Gmail headers-first with query "${query}" and found no matching messages.`;
+  if (/어제|yesterday/i.test(message)) {
+    const yesterday = new Date(startOfToday.getTime() - 24 * 60 * 60 * 1000);
+    return {
+      after: formatDate(yesterday),
+      before: formatDate(startOfToday),
+    };
   }
 
-  const paymentEstimate = options?.includePaymentEstimate
-    ? formatPaymentEstimate(items)
-    : undefined;
-  const lines = [
-    `I checked Gmail headers-first with query "${query}" and inspected ${inspected} message(s).`,
-    "I did not open full bodies or attachments.",
-  ];
-  if (paymentEstimate) {
-    lines.push(paymentEstimate);
-  }
-  lines.push("");
-
-  items.forEach((item, index) => {
-    lines.push(`${index + 1}. ${item.subject}`);
-    lines.push(`From: ${item.from}`);
-    lines.push(`Date: ${item.date}`);
-    lines.push(`Snippet: ${item.snippet}`);
-    if (index < items.length - 1) {
-      lines.push("");
-    }
-  });
-
-  return lines.join("\n");
-}
-
-function formatNoResults(
-  query: string,
-  options?: { paymentSummary?: boolean },
-): string {
-  if (options?.paymentSummary) {
-    return `I checked Gmail headers-first with query "${query}" and found no payment emails I could use safely. Try narrowing by period, sender, or card company.`;
+  if (/이번\s*주|이번주|this week/i.test(message)) {
+    const weekday = startOfToday.getDay();
+    const diff = weekday === 0 ? -6 : 1 - weekday;
+    const weekStart = new Date(startOfToday);
+    weekStart.setDate(startOfToday.getDate() + diff);
+    return {
+      after: formatDate(weekStart),
+      before: formatDate(new Date(weekStart.getTime() + 7 * 24 * 60 * 60 * 1000)),
+    };
   }
 
-  return `I checked Gmail headers-first with query "${query}" and found no matching messages.`;
-}
-
-function encodeContextItems(items: GmailMessageSummaryItem[]): GmailSearchContextItem[] {
-  return items.map((item, index) => ({
-    ordinal: index + 1,
-    messageId: item.messageId,
-    from: item.from,
-    subject: item.subject,
-    date: item.date,
-    snippet: item.snippet,
-  }));
-}
-
-function saveSearchContext(
-  userId: string | undefined,
-  sessionKey: string | undefined,
-  query: string,
-  items: GmailMessageSummaryItem[],
-): void {
-  const contextKey = buildContextKey(userId, sessionKey);
-  if (!contextKey) {
-    return;
+  if (/지난\s*달|지난달|last month/i.test(message)) {
+    const start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const end = new Date(now.getFullYear(), now.getMonth(), 1);
+    return { after: formatDate(start), before: formatDate(end) };
   }
 
-  lastSearchContextByUser.set(contextKey, {
-    query,
-    items: encodeContextItems(items),
-    updatedAt: new Date().toISOString(),
-  });
-}
-
-function toSummaryItems(items: GmailSearchContextItem[]): GmailMessageSummaryItem[] {
-  return items.map((item) => ({
-    messageId: item.messageId,
-    from: item.from,
-    subject: item.subject,
-    date: item.date,
-    snippet: item.snippet,
-  }));
-}
-
-function saveNarrowedContext(
-  userId: string | undefined,
-  sessionKey: string | undefined,
-  items: GmailSearchContextItem[],
-  query: string,
-): void {
-  const contextKey = buildContextKey(userId, sessionKey);
-  if (!contextKey) {
-    return;
+  if (/이번\s*달|이번달|this month/i.test(message)) {
+    const start = new Date(now.getFullYear(), now.getMonth(), 1);
+    const end = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    return { after: formatDate(start), before: formatDate(end) };
   }
 
-  lastSearchContextByUser.set(contextKey, {
-    query,
-    items: items.map((item, index) => ({
-      ...item,
-      ordinal: index + 1,
-    })),
-    updatedAt: new Date().toISOString(),
-  });
+  const explicitYearMonth = message.match(/(20\d{2})[./-](\d{1,2})/);
+  if (explicitYearMonth) {
+    const year = Number.parseInt(explicitYearMonth[1] ?? "", 10);
+    const month = Number.parseInt(explicitYearMonth[2] ?? "", 10) - 1;
+    const start = new Date(year, month, 1);
+    const end = new Date(year, month + 1, 1);
+    return { after: formatDate(start), before: formatDate(end) };
+  }
+
+  const monthIndex = monthIndexFromText(message);
+  if (monthIndex !== undefined) {
+    const year = now.getFullYear();
+    const start = new Date(year, monthIndex, 1);
+    const end = new Date(year, monthIndex + 1, 1);
+    return { after: formatDate(start), before: formatDate(end) };
+  }
+
+  return {};
 }
 
-async function listMessageIds(
-  accessToken: string,
-  query: string,
-  maxResults: number,
-): Promise<GmailMessageListResponse> {
-  return gmailGetJson<GmailMessageListResponse>(
-    accessToken,
-    `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=${maxResults}`,
+function formatDate(date: Date): string {
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+  return `${year}/${month}/${day}`;
+}
+
+function extractFromQuery(message: string): string | undefined {
+  const fromMatch =
+    message.match(/(?:from|보낸사람|보낸 사람)\s+([^\s]+)/i) ??
+    message.match(/([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})/);
+  return fromMatch?.[1];
+}
+
+function extractSubjectKeyword(message: string): string | undefined {
+  const subjectMatch = message.match(/(?:subject|제목)(?:에)?\s+(.+)/i);
+  if (subjectMatch?.[1]) {
+    return normalizeWhitespace(subjectMatch[1]);
+  }
+
+  const sanitized = sanitizeForSearch(message);
+  const keywordMatch = sanitized.match(
+    /(카드|명세서|청구서|영수증|invoice|receipt|statement|결제|승인|payment)/i,
   );
+  return keywordMatch?.[0];
 }
 
-async function loadMessageSummaries(
+function buildPaymentSearchQuery(message: string, unreadOnly: boolean): string {
+  const parts: string[] = [];
+  const dateRange = buildDateRange(message);
+  if (dateRange.after) {
+    parts.push(`after:${dateRange.after}`);
+  }
+  if (dateRange.before) {
+    parts.push(`before:${dateRange.before}`);
+  }
+  if (unreadOnly && /unread|안\s*읽/i.test(message)) {
+    parts.push("is:unread");
+  }
+
+  const from = extractFromQuery(message);
+  if (from) {
+    parts.push(`from:${from}`);
+  }
+
+  const keywords = new Set<string>();
+  const subjectKeyword = extractSubjectKeyword(message);
+  if (subjectKeyword) {
+    keywords.add(subjectKeyword);
+  }
+  if (/카드|statement|invoice/i.test(message)) {
+    keywords.add("카드");
+  }
+  if (/명세서|statement/i.test(message)) {
+    keywords.add("명세서");
+  }
+  if (/청구서|invoice/i.test(message)) {
+    keywords.add("청구서");
+  }
+  if (/영수증|receipt/i.test(message)) {
+    keywords.add("영수증");
+  }
+  if (/결제|payment|amount|spent|spend/i.test(message)) {
+    keywords.add("결제");
+  }
+  if (keywords.size === 0) {
+    keywords.add("결제");
+  }
+
+  parts.push(...keywords);
+  return parts.join(" ").trim();
+}
+
+async function refreshAccessToken(credentials: GmailCredentials): Promise<string | null> {
+  const body = new URLSearchParams({
+    client_id: credentials.clientId,
+    client_secret: credentials.clientSecret,
+    refresh_token: credentials.refreshToken,
+    grant_type: "refresh_token",
+  });
+
+  const response = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+    },
+    body,
+  });
+
+  if (!response.ok) {
+    return null;
+  }
+
+  const json = (await response.json()) as { access_token?: string };
+  return json.access_token ?? null;
+}
+
+async function gmailApiRequest<T>(
   accessToken: string,
-  messageIds: Array<{ id: string }>,
-  maxSnippetChars: number,
-): Promise<GmailMessageSummaryItem[]> {
-  return Promise.all(
-    messageIds.map(async ({ id }) => {
-      const metadata = await gmailGetJson<GmailMessageResponse>(
-        accessToken,
-        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(id)}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`,
-      );
+  path: string,
+  init?: RequestInit,
+): Promise<T> {
+  const response = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me${path}`, {
+    ...init,
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      ...(init?.headers ?? {}),
+    },
+  });
 
-      return {
-        messageId: id,
-        from: getHeader(metadata.payload?.headers, "From"),
-        subject: getHeader(metadata.payload?.headers, "Subject"),
-        date: getHeader(metadata.payload?.headers, "Date"),
-        snippet: sanitizePreview(metadata.snippet, maxSnippetChars),
-      };
-    }),
+  if (!response.ok) {
+    throw new Error(`gmail api request failed: ${response.status}`);
+  }
+
+  return (await response.json()) as T;
+}
+
+function getHeader(payload: GmailPayload | undefined, name: string): string {
+  const match = payload?.headers?.find(
+    (header) => header.name.toLowerCase() === name.toLowerCase(),
   );
+  return match?.value ?? "";
 }
 
-function decodeBase64Url(value: string): string {
-  return Buffer.from(value, "base64url").toString("utf-8");
+function base64UrlDecode(value: string): string {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+  return Buffer.from(padded, "base64").toString("utf8");
 }
 
-function stripHtml(value: string): string {
-  return value
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<[^>]+>/g, " ");
-}
-
-function extractTextFromPayload(payload: GmailPayloadPart | undefined): string {
+function extractPlainText(payload: GmailPayload | undefined): string {
   if (!payload) {
     return "";
   }
 
-  const currentType = payload.mimeType?.toLowerCase();
-  const hasAttachment = Boolean(payload.filename);
-  const currentBody = payload.body?.data
-    ? decodeBase64Url(payload.body.data)
-    : "";
-
-  if (!hasAttachment && currentType?.startsWith("text/plain") && currentBody) {
-    return currentBody;
+  if (payload.mimeType?.startsWith("text/plain") && payload.body?.data) {
+    return base64UrlDecode(payload.body.data);
   }
 
-  if (payload.parts && payload.parts.length > 0) {
-    for (const part of payload.parts) {
-      const nested = extractTextFromPayload(part);
-      if (nested) {
-        return nested;
-      }
+  for (const part of payload.parts ?? []) {
+    const text = extractPlainText(part);
+    if (text) {
+      return text;
     }
   }
 
-  if (!hasAttachment && currentType?.startsWith("text/html") && currentBody) {
-    return stripHtml(currentBody);
+  if (payload.mimeType?.startsWith("text/html") && payload.body?.data) {
+    return base64UrlDecode(payload.body.data).replace(/<[^>]+>/g, " ");
   }
 
-  return !hasAttachment ? currentBody : "";
+  return "";
 }
 
-function truncateBodyPreview(text: string, maxChars: number): string {
-  return sanitizePreview(text, maxChars);
-}
-
-async function loadMessageBodyPreview(
+async function fetchMessageSummary(
   accessToken: string,
   messageId: string,
-  maxBodyChars: number,
-): Promise<string> {
-  const full = await gmailGetJson<GmailMessageResponse>(
+): Promise<GmailMessageSummary> {
+  const json = await gmailApiRequest<GmailMessageResponse>(
     accessToken,
-    `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(messageId)}?format=full`,
+    `/messages/${messageId}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`,
   );
 
-  const extracted = extractTextFromPayload(full.payload);
-  if (!extracted) {
-    return "No readable plain-text body was available for this message.";
-  }
-
-  return truncateBodyPreview(extracted, maxBodyChars);
+  return {
+    id: json.id,
+    threadId: json.threadId,
+    subject: getHeader(json.payload, "Subject"),
+    from: getHeader(json.payload, "From"),
+    date: getHeader(json.payload, "Date"),
+    snippet: normalizeWhitespace(json.snippet ?? ""),
+  };
 }
 
-function formatBodyResponse(item: GmailSearchContextItem, bodyPreview: string): string {
-  return [
-    "I opened one Gmail message body after narrowing the request safely.",
-    "I did not inspect attachments.",
-    "",
-    `Subject: ${item.subject}`,
-    `From: ${item.from}`,
-    `Date: ${item.date}`,
-    `Body preview: ${bodyPreview}`,
-  ].join("\n");
+async function fetchMessageBody(
+  accessToken: string,
+  messageId: string,
+): Promise<GmailMessageSummary & { body: string }> {
+  const json = await gmailApiRequest<GmailMessageResponse>(
+    accessToken,
+    `/messages/${messageId}?format=full`,
+  );
+
+  return {
+    id: json.id,
+    threadId: json.threadId,
+    subject: getHeader(json.payload, "Subject"),
+    from: getHeader(json.payload, "From"),
+    date: getHeader(json.payload, "Date"),
+    snippet: normalizeWhitespace(json.snippet ?? ""),
+    body: normalizeWhitespace(extractPlainText(json.payload)),
+  };
 }
-
-function formatDisambiguationResponse(items: GmailSearchContextItem[]): string {
-  const lines = [
-    "I found multiple matching Gmail messages. Tell me which one to open by number.",
-    "I can read the body of one message only.",
-    "",
-  ];
-
-  items.forEach((item) => {
-    lines.push(`${item.ordinal}. ${item.subject}`);
-    lines.push(`From: ${item.from}`);
-    lines.push(`Date: ${item.date}`);
-    lines.push("");
-  });
-
-  lines.push("Reply with something like '1번 메일 자세히 보여줘'.");
-  return lines.join("\n");
-}
-
-function extractSelectionOrdinal(message: string): number | undefined {
-  const koreanOrdinal = message.match(/(?:^|\s)(\d+)\s*번/);
-  if (koreanOrdinal) {
-    return Number.parseInt(koreanOrdinal[1], 10);
+function extractMerchant(subject: string, snippet: string): string | undefined {
+  const joined = `${subject}\n${snippet}`;
+  const directMatch = joined.match(PAYMENT_MERCHANT_PATTERN);
+  if (directMatch?.[2]) {
+    return normalizeWhitespace(directMatch[2]);
   }
 
-  const englishOrdinal = message.match(/\b(\d+)(?:st|nd|rd|th)\b/i);
-  if (englishOrdinal) {
-    return Number.parseInt(englishOrdinal[1], 10);
+  const subjectMatch =
+    subject.match(/(.+?)에서\s*(?:결제|승인)/) ??
+    subject.match(/(.+?)의\s*(?:결제|승인)\s*내역/);
+  if (subjectMatch?.[1]) {
+    return normalizeWhitespace(
+      subjectMatch[1].replace(/^[["']+/, "").replace(/[\]"']+$/, ""),
+    );
   }
 
-  const ordinalWords: Array<[RegExp, number]> = [
-    [/\bfirst\b|첫 번째|첫번째|첫 메일/i, 1],
-    [/\bsecond\b|두 번째|두번째/i, 2],
-    [/\bthird\b|세 번째|세번째/i, 3],
-  ];
+  return undefined;
+}
 
-  for (const [pattern, value] of ordinalWords) {
-    if (pattern.test(message)) {
-      return value;
+function pickBestAmount(text: string): number | undefined {
+  for (const pattern of PAYMENT_AMOUNT_PATTERNS) {
+    const matches = [...text.matchAll(pattern)];
+    for (const match of matches) {
+      const numberText = match[2] ?? match[1];
+      const normalized = numberText?.replace(/,/g, "");
+      const value = normalized ? Number.parseInt(normalized, 10) : Number.NaN;
+      if (!Number.isNaN(value) && value > 0) {
+        const leadingContext = text.slice(Math.max(0, (match.index ?? 0) - 12), (match.index ?? 0) + 12);
+        if (/할인|쿠폰|discount|수수료\s*0/i.test(leadingContext)) {
+          continue;
+        }
+        return value;
+      }
     }
   }
 
   return undefined;
 }
 
-function headerDateMatchesRange(date: string, range: DateRange): boolean {
-  const parsed = Date.parse(date);
-  if (!Number.isFinite(parsed)) {
-    return false;
+function extractCardIssuer(text: string): string | undefined {
+  for (const pattern of CARD_ISSUER_PATTERNS) {
+    const match = text.match(pattern);
+    if (!match) {
+      continue;
+    }
+    const issuer = match[2] ?? match[1];
+    if (issuer) {
+      return normalizeWhitespace(issuer);
+    }
   }
-  const start = Date.parse(`${range.after}T00:00:00Z`);
-  const end = Date.parse(`${range.before}T00:00:00Z`);
-  return parsed >= start && parsed < end;
+  return undefined;
 }
 
-function narrowContextItems(
+function buildPaymentRecord(summary: GmailMessageSummary): ParsedPaymentRecord | null {
+  const signalText = `${summary.subject}\n${summary.snippet}`;
+  const hasPaymentSignal = PAYMENT_SIGNAL_PATTERN.test(signalText);
+  const looksLikeOrderOnly =
+    ORDER_ONLY_PATTERN.test(signalText) && !hasPaymentSignal && !/결제금액|최종결제금액/.test(signalText);
+  if (looksLikeOrderOnly) {
+    return null;
+  }
+
+  const amount = pickBestAmount(signalText);
+  const merchant = extractMerchant(summary.subject, summary.snippet);
+  const cardIssuer = extractCardIssuer(signalText);
+  const confidence =
+    hasPaymentSignal && amount
+      ? 0.92
+      : amount
+        ? 0.78
+        : hasPaymentSignal
+          ? 0.65
+          : 0.35;
+  if (!amount && confidence < 0.6) {
+    return null;
+  }
+
+  return {
+    messageId: summary.id,
+    subject: summary.subject,
+    from: summary.from,
+    date: summary.date,
+    merchant,
+    amount,
+    cardIssuer,
+    snippet: summary.snippet,
+    confidence,
+    source: "snippet",
+  };
+}
+
+function formatCurrency(amount: number): string {
+  return `KRW ${amount.toLocaleString("en-US")}`;
+}
+
+function buildEvidenceList(messages: GmailMessageSummary[]): string {
+  return messages
+    .map((message, index) => {
+      return `${index + 1}. ${message.subject}\nFrom: ${message.from}\nDate: ${message.date}\nSnippet: ${message.snippet}`;
+    })
+    .join("\n\n");
+}
+
+function buildPaymentSummaryResponse(
+  query: string,
+  messages: GmailMessageSummary[],
+  records: ParsedPaymentRecord[],
+): string {
+  const total = records.reduce((sum, record) => sum + (record.amount ?? 0), 0);
+  const merchants = [...new Set(records.map((record) => record.merchant).filter(Boolean))];
+  const issuers = [...new Set(records.map((record) => record.cardIssuer).filter(Boolean))];
+
+  const summaryLines = [
+    `I checked Gmail headers-first with query "${query}" and inspected ${messages.length} message(s).`,
+    "I did not open full bodies or attachments.",
+  ];
+
+  if (records.length > 0) {
+    summaryLines.push(
+      `Estimated total from visible headers/snippets: ${formatCurrency(total)} across ${records.length} matched payment message(s). This is a rough headers-first estimate only.`,
+    );
+    if (issuers.length > 0) {
+      summaryLines.push(`Observed card issuers: ${issuers.join(", ")}.`);
+    }
+    if (merchants.length > 0) {
+      summaryLines.push(`Observed merchants: ${merchants.slice(0, 4).join(", ")}.`);
+    }
+  } else {
+    summaryLines.push(
+      "I found candidate messages but could not extract reliable payment amounts from the visible headers/snippets alone.",
+    );
+  }
+
+  return `${summaryLines.join("\n")}\n\n${buildEvidenceList(messages)}`;
+}
+
+function formatPaymentFollowUp(
+  context: ToolTaskContext,
   message: string,
-  context: GmailSearchContext,
-): GmailSearchContextItem[] {
-  const ordinal = extractSelectionOrdinal(message);
-  if (ordinal !== undefined) {
-    return context.items.filter((item) => item.ordinal === ordinal);
+): ToolHandlerResult | undefined {
+  const records = context.parsedPaymentRecords ?? [];
+  if (records.length === 0) {
+    return {
+      kind: "direct",
+      message:
+        "I do not have a usable payment summary in the current Gmail context. Please ask the Gmail question again so I can rebuild it.",
+      source: "gmail-context",
+    };
   }
 
-  let candidates = context.items.slice();
+  const total = records.reduce((sum, record) => sum + (record.amount ?? 0), 0);
+  const normalized = message.toLowerCase();
 
-  const subjectTerms = extractSubjectTerms(message).map(normalizeMatchText);
-  if (subjectTerms.length > 0) {
-    candidates = candidates.filter((item) => {
-      const subject = normalizeMatchText(item.subject);
-      return subjectTerms.some((term) => subject.includes(term));
+  if (/카드사|issuer/i.test(normalized)) {
+    const grouped = new Map<string, number>();
+    for (const record of records) {
+      const key = record.cardIssuer ?? "Unknown";
+      grouped.set(key, (grouped.get(key) ?? 0) + (record.amount ?? 0));
+    }
+    const lines = [...grouped.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([issuer, amount]) => `- ${issuer}: ${formatCurrency(amount)}`);
+    return {
+      kind: "direct",
+      message: `Within the current Gmail payment context, here is the card-issuer breakdown:\n${lines.join("\n")}`,
+      source: "gmail-context",
+    };
+  }
+
+  if (/결제처|가맹점|merchant/i.test(normalized)) {
+    const grouped = new Map<string, number>();
+    for (const record of records) {
+      const key = record.merchant ?? "Unknown merchant";
+      grouped.set(key, (grouped.get(key) ?? 0) + (record.amount ?? 0));
+    }
+    const lines = [...grouped.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([merchant, amount]) => `- ${merchant}: ${formatCurrency(amount)}`);
+    return {
+      kind: "direct",
+      message: `Within the current Gmail payment context, here is the merchant breakdown:\n${lines.join("\n")}`,
+      source: "gmail-context",
+    };
+  }
+
+  if (/합계|총액|sum|total/i.test(normalized)) {
+    return {
+      kind: "direct",
+      message: `Within the current Gmail payment context, the visible headers-first total is ${formatCurrency(total)} across ${records.length} payment message(s).`,
+      source: "gmail-context",
+    };
+  }
+
+  const topRecords = records
+    .slice()
+    .sort((a, b) => (b.amount ?? 0) - (a.amount ?? 0))
+    .slice(0, 5)
+    .map((record, index) => {
+      const issuer = record.cardIssuer ? `, ${record.cardIssuer}` : "";
+      const merchant = record.merchant ?? record.subject;
+      const amount = record.amount ? formatCurrency(record.amount) : "amount unavailable";
+      return `${index + 1}. ${merchant} - ${amount}${issuer} (${record.date})`;
     });
-  }
 
-  const fromTerms = extractFromTerms(message).map(normalizeMatchText);
-  if (fromTerms.length > 0) {
-    candidates = candidates.filter((item) => {
-      const from = normalizeMatchText(item.from);
-      return fromTerms.some((term) => from.includes(term));
-    });
-  }
-
-  const dateRange = extractDateRange(message, new Date());
-  if (dateRange) {
-    candidates = candidates.filter((item) => headerDateMatchesRange(item.date, dateRange));
-  }
-
-  return candidates;
+  return {
+    kind: "direct",
+    message:
+      `Within the current Gmail payment context, the visible headers-first total is ${formatCurrency(total)} across ${records.length} payment message(s).\n\n` +
+      `Top matched payments:\n${topRecords.join("\n")}`,
+    source: "gmail-context",
+  };
 }
 
-function buildSearchFirstResponse(): string {
-  return "I need a recent Gmail result set before I can open one message body. Ask me to search your inbox first, then tell me which result number to open.";
-}
-
-async function readExplicitBodyFromSelection(
-  options: GmailToolOptions,
-  accessToken: string,
-  maxBodyChars: number,
-): Promise<string | undefined> {
-  const context = getSearchContext(options.userId, options.sessionKey);
-  if (!context) {
-    return undefined;
+function parseBodySelector(message: string, searchContext?: SearchContext): GmailMessageSummary[] {
+  if (!searchContext) {
+    return [];
   }
 
-  const narrowed = narrowContextItems(options.message, context);
-  if (narrowed.length === 0) {
-    return undefined;
+  const ordinalMatch = message.match(/(?:^|\s)(\d+)\s*번/);
+  if (ordinalMatch) {
+    const index = Number.parseInt(ordinalMatch[1] ?? "", 10) - 1;
+    const selected = searchContext.messages[index];
+    return selected ? [selected] : [];
   }
 
-  if (narrowed.length > 1) {
-    saveNarrowedContext(options.userId, options.sessionKey, narrowed, context.query);
-    return formatDisambiguationResponse(
-      narrowed.map((item, index) => ({
-        ...item,
-        ordinal: index + 1,
-      })),
-    );
+  const normalized = sanitizeForSearch(message).toLowerCase();
+  if (!normalized) {
+    return [];
   }
 
-  const selected = narrowed[0];
-  const bodyPreview = await loadMessageBodyPreview(accessToken, selected.messageId, maxBodyChars);
-  return formatBodyResponse(selected, bodyPreview);
-}
-
-async function resolveExplicitBodyRequest(
-  options: GmailToolOptions,
-  accessToken: string,
-  maxMessages: number,
-  maxSnippetChars: number,
-  maxBodyChars: number,
-): Promise<string> {
-  const fromContext = await readExplicitBodyFromSelection(options, accessToken, maxBodyChars);
-  if (fromContext) {
-    return fromContext;
-  }
-
-  if (!GMAIL_HINT_RE.test(options.message)) {
-    return buildSearchFirstResponse();
-  }
-
-  const query = deriveQuery(options.message);
-  const querySummary = summarizeQuery(query);
-  options.onTelemetry?.({
-    event: "queryBuilt",
-    sanitizedQuery: querySummary.sanitizedQuery,
-    isUnread: querySummary.isUnread,
-    dateRange: querySummary.dateRange,
-    keywordCount: querySummary.keywordCount,
+  const filtered = searchContext.messages.filter((item) => {
+    const haystack = `${item.subject} ${item.from} ${item.snippet}`.toLowerCase();
+    return normalized
+      .split(/\s+/)
+      .filter(Boolean)
+      .every((token) => haystack.includes(token));
   });
-
-  const listResponse = await listMessageIds(accessToken, query, Math.min(maxMessages, 5));
-  const messageIds = listResponse.messages ?? [];
-  if (messageIds.length === 0) {
-    options.onTelemetry?.({
-      event: "result",
-      sanitizedQuery: querySummary.sanitizedQuery,
-      outcome: "no-results",
-      isUnread: querySummary.isUnread,
-      dateRange: querySummary.dateRange,
-      keywordCount: querySummary.keywordCount,
-      matchedCount: listResponse.resultSizeEstimate ?? 0,
-      inspectedCount: 0,
-    });
-    return `I couldn't find a Gmail message body to open with query "${query}".`;
-  }
-
-  const items = await loadMessageSummaries(accessToken, messageIds, maxSnippetChars);
-  saveSearchContext(options.userId, options.sessionKey, query, items);
-
-  options.onTelemetry?.({
-    event: "result",
-    sanitizedQuery: querySummary.sanitizedQuery,
-    outcome: "success",
-    isUnread: querySummary.isUnread,
-    dateRange: querySummary.dateRange,
-    keywordCount: querySummary.keywordCount,
-    matchedCount: listResponse.resultSizeEstimate ?? items.length,
-    inspectedCount: items.length,
-  });
-
-  if (items.length > 1) {
-    return formatDisambiguationResponse(
-      encodeContextItems(items),
-    );
-  }
-
-  const only = encodeContextItems(items)[0];
-  const bodyPreview = await loadMessageBodyPreview(accessToken, only.messageId, maxBodyChars);
-  return formatBodyResponse(only, bodyPreview);
+  return filtered;
 }
 
-export async function maybeHandleCustomGmailRequest(
-  options: GmailToolOptions,
-): Promise<string | undefined> {
-  if (options.runtimeClass !== "tool-enabled") {
-    return undefined;
+function buildClarificationPrompt(): string {
+  return "지메일에서 확인할까요, 아니면 일반 답변으로 도와드릴까요?";
+}
+
+function buildGmailUnavailableMessage(): string {
+  return "Gmail is not connected in this runtime yet. I need a valid exported refresh token before I can inspect your inbox.";
+}
+
+async function runGmailTask(
+  contextKey: string,
+  options: MaybeHandleCustomGmailRequestOptions,
+  taskFamily: ToolTaskFamily,
+  sourceMessage: string,
+  credentials: GmailCredentials,
+): Promise<ToolHandlerResult> {
+  if (isAttachmentRequest(sourceMessage)) {
+    return {
+      kind: "direct",
+      message:
+        "Attachments are still disabled in this Gmail runtime. I can search headers/snippets and open one email body when you explicitly point to it, but I will not open attachments.",
+      source: "gmail-fallback",
+    };
   }
 
-  const activeTaskContext = syncTaskContextFromRoutingContext(options);
-  const hasContext = Boolean(
-    getSearchContext(options.userId, options.sessionKey),
-  );
-  const isBodyRequest = isExplicitBodyRequest(options.message) && (GMAIL_HINT_RE.test(options.message) || hasContext);
-  const isSummaryRequest = isSupportedGmailSummaryRequest(options.message, options.runtimeClass);
-  const isAttachmentOnlyRequest =
-    isAttachmentRequest(options.message) && (GMAIL_HINT_RE.test(options.message) || hasContext);
-  const isPaymentSummary =
-    PAYMENT_DATA_RE.test(options.message) && PAYMENT_SUMMARY_RE.test(options.message);
-  const isPaymentTaskFollowup =
-    activeTaskContext?.intentKind === "payment_summary" &&
-    activeTaskContext.sourceChoice === "gmail" &&
-    PAYMENT_FOLLOWUP_RE.test(options.message);
-
-  if (
-    !isBodyRequest &&
-    !isSummaryRequest &&
-    !isAttachmentOnlyRequest &&
-    !isPaymentTaskFollowup
-  ) {
-    return undefined;
+  const accessToken = await refreshAccessToken(credentials);
+  if (!accessToken) {
+    return {
+      kind: "direct",
+      message: buildGmailUnavailableMessage(),
+      source: "gmail-fallback",
+    };
   }
 
-  options.onTelemetry?.({ event: "matched" });
-
-  if (isAttachmentOnlyRequest) {
-    options.onTelemetry?.({
-      event: "failure",
-      reason: "attachment-access-disabled",
-      isUnread: false,
-      keywordCount: 0,
-    });
-    return "Gmail attachment access is disabled in this runtime. I can summarize headers or open the body of one clearly identified message, but I will not inspect attachments.";
-  }
-
-  const oauthExport = loadOauthExport();
-  const refreshToken = oauthExport?.refresh_token;
-  if (!refreshToken) {
-    options.onTelemetry?.({
-      event: "failure",
-      reason: "missing-refresh-token",
-      isUnread: false,
-      keywordCount: 0,
-    });
-    return "Gmail is not connected in this runtime yet. I need a valid exported refresh token before I can inspect your inbox.";
-  }
-
-  const credentials = loadGoogleCredentials();
-  if (!credentials) {
-    options.onTelemetry?.({
-      event: "failure",
-      reason: "missing-client-credentials",
-      isUnread: false,
-      keywordCount: 0,
-    });
-    return "Gmail OAuth client credentials are missing in this runtime. I need the desktop client credentials JSON that was used during gog auth add.";
-  }
-
-  const maxMessages = options.emailTokenBudget?.maxMessages ?? 5;
-  const maxSnippetChars = options.emailTokenBudget?.maxSnippetChars ?? 240;
-  const maxBodyChars = options.emailTokenBudget?.maxBodyChars ?? 1600;
-
-  try {
-    if (isPaymentTaskFollowup) {
-      const cachedSearchContext = getSearchContext(options.userId, options.sessionKey);
-      if (cachedSearchContext) {
-        return formatSummary(
-          cachedSearchContext.query,
-          cachedSearchContext.items.length,
-          toSummaryItems(cachedSearchContext.items),
-          { includePaymentEstimate: true },
-        );
-      }
+  const searchContext = getSearchContext(contextKey);
+  if (isBodyRequest(sourceMessage)) {
+    const selectedMessages = parseBodySelector(sourceMessage, searchContext);
+    if (selectedMessages.length === 0) {
+      return {
+        kind: "direct",
+        message:
+          "I do not have a clear single email to open. Please refer to one result by number, for example `1번 메일 자세히 보여줘`.",
+        source: "gmail-fallback",
+      };
+    }
+    if (selectedMessages.length > 1) {
+      return {
+        kind: "direct",
+        message:
+          "Multiple Gmail messages still match that description. Please narrow it by sender, date, or the result number.",
+        source: "gmail-fallback",
+      };
     }
 
-    const accessToken = await exchangeRefreshToken(refreshToken, credentials);
+    const selected = await fetchMessageBody(accessToken, selectedMessages[0].id);
+    const body = selected.body.slice(0, options.emailTokenBudget.maxBodyChars);
+    return {
+      kind: "direct",
+      message:
+        `I opened one Gmail message body because you explicitly asked for it.\n\n` +
+        `Subject: ${selected.subject}\nFrom: ${selected.from}\nDate: ${selected.date}\n\n` +
+        `${body}`,
+      source: "gmail",
+    };
+  }
+  const query = buildPaymentSearchQuery(
+    sourceMessage,
+    !/\ball\b|전체|모두/i.test(sourceMessage),
+  );
+  const listJson = await gmailApiRequest<GmailListResponse>(
+    accessToken,
+    `/messages?q=${encodeURIComponent(query)}&maxResults=${options.emailTokenBudget.maxMessages}`,
+  );
+  const ids = listJson.messages?.map((item) => item.id) ?? [];
+  const messages = await Promise.all(ids.map((id) => fetchMessageSummary(accessToken, id)));
 
-    if (isBodyRequest) {
-      return await resolveExplicitBodyRequest(
+  setSearchContext(contextKey, {
+    messages,
+    query,
+    createdAt: nowIso(),
+  });
+
+  const paymentRecords =
+    taskFamily === "gmail_payment_summary"
+      ? messages
+          .map((summary) => buildPaymentRecord(summary))
+          .filter((record): record is ParsedPaymentRecord => Boolean(record))
+      : [];
+
+  const taskContext: ToolTaskContext = {
+    status: "active",
+    taskFamily,
+    sourceChoice: "gmail",
+    canonicalGoal: sourceMessage,
+    lastSearchQuery: query,
+    parsedPaymentRecords: paymentRecords,
+    lastMessages: messages,
+    lastResultSummary: messages.map((item) => item.subject).join(" | "),
+    createdAt: nowIso(),
+    lastActivityAt: nowIso(),
+    expiresAt: futureIso(DEFAULT_CONTEXT_TTL_MS),
+    clarificationResendCount: 0,
+  };
+  setTaskContext(contextKey, taskContext);
+  emitToolEvent(options.onToolEvent, {
+    type: "contextCreated",
+    taskFamily,
+    sourceChoice: "gmail",
+  });
+
+  if (taskFamily === "gmail_payment_summary" && paymentRecords.length === 0) {
+    return {
+      kind: "direct",
+      message:
+        messages.length === 0
+          ? "I did not find payment-related Gmail messages in the visible window. Please narrow it by period, sender, or card issuer."
+          : "I found candidate Gmail messages, but I could not extract reliable payment amounts from the visible headers/snippets. Please narrow it by sender, period, or ask me to open one specific email body.",
+      source: "gmail-fallback",
+    };
+  }
+
+  return {
+    kind: "direct",
+    message:
+      taskFamily === "gmail_payment_summary"
+        ? buildPaymentSummaryResponse(query, messages, paymentRecords)
+        : `${messages.length === 0 ? "I did not find matching Gmail messages." : `I checked Gmail headers-first with query "${query}" and inspected ${messages.length} message(s).`}\n\n${buildEvidenceList(messages)}`,
+    source: "gmail",
+  };
+}
+
+function buildDeterministicDecision(
+  message: string,
+  gmailReady: boolean,
+  activeContext?: ToolTaskContext,
+): ToolIntentAdvisorAction {
+  if (activeContext?.status === "active" && isPaymentFollowUp(message)) {
+    return "continue_active_task";
+  }
+  if (looksLikePaymentQuestion(message) && !isExplicitGmailMessage(message)) {
+    return "clarify_source";
+  }
+  if (gmailReady && (isExplicitGmailMessage(message) || looksLikePaymentQuestion(message) || isBodyRequest(message))) {
+    return "gmail";
+  }
+  return "generic_openclaw";
+}
+
+function buildAdvisorInput(
+  message: string,
+  gmailReady: boolean,
+  activeContext?: ToolTaskContext,
+): DecideToolIntentInput {
+  return {
+    message,
+    gmailReady,
+    activeContext: activeContext
+      ? {
+          taskFamily: activeContext.taskFamily,
+          sourceChoice: activeContext.sourceChoice,
+          canonicalGoal: activeContext.canonicalGoal,
+          lastResultSummary: activeContext.lastResultSummary,
+        }
+      : undefined,
+  };
+}
+
+function isClearlyUnrelated(message: string): boolean {
+  return !looksLikePaymentQuestion(message) && !isExplicitGmailMessage(message) && !isPaymentFollowUp(message) && !isBodyRequest(message);
+}
+
+async function handleAwaitingSourceContext(
+  contextKey: string,
+  context: ToolTaskContext,
+  options: MaybeHandleCustomGmailRequestOptions,
+): Promise<ToolHandlerResult | undefined> {
+  const trimmed = normalizeWhitespace(options.message);
+  if (CANCEL_PATTERN.test(trimmed)) {
+    clearTaskContext(contextKey);
+    emitToolEvent(options.onToolEvent, {
+      type: "contextCleared",
+      taskFamily: context.taskFamily,
+      reason: "user-cancelled",
+    });
+    return {
+      kind: "direct",
+      message: "알겠습니다. 현재 도구 작업 문맥을 종료할게요.",
+      source: "gmail-context",
+    };
+  }
+
+  if (GMAIL_CONFIRM_PATTERN.test(trimmed)) {
+    if (!options.gmailReady) {
+      clearTaskContext(contextKey);
+      emitToolEvent(options.onToolEvent, {
+        type: "contextCleared",
+        taskFamily: context.taskFamily,
+        reason: "gmail-not-ready",
+      });
+      return {
+        kind: "direct",
+        message: buildGmailUnavailableMessage(),
+        source: "gmail-fallback",
+      };
+    }
+
+    const credentials = await loadGmailCredentials();
+    if (!credentials) {
+      return {
+        kind: "direct",
+        message: buildGmailUnavailableMessage(),
+        source: "gmail-fallback",
+      };
+    }
+
+    return runGmailTask(
+      contextKey,
+      options,
+      context.taskFamily,
+      context.canonicalGoal,
+      credentials,
+    );
+  }
+
+  if (GENERAL_CONFIRM_PATTERN.test(trimmed)) {
+    clearTaskContext(contextKey);
+    emitToolEvent(options.onToolEvent, {
+      type: "contextCleared",
+      taskFamily: context.taskFamily,
+      reason: "general-selected",
+    });
+    return {
+      kind: "forward",
+      message: context.canonicalGoal,
+      source: "openclaw",
+    };
+  }
+
+  if (isShortReply(trimmed) && context.clarificationResendCount < 1) {
+    const nextContext: ToolTaskContext = {
+      ...context,
+      clarificationResendCount: context.clarificationResendCount + 1,
+      lastActivityAt: nowIso(),
+      expiresAt: futureIso(DEFAULT_CONTEXT_TTL_MS),
+    };
+    setTaskContext(contextKey, nextContext);
+    emitToolEvent(options.onToolEvent, {
+      type: "clarificationSent",
+      taskFamily: context.taskFamily,
+      reason: "awaiting-source-resend",
+    });
+    return {
+      kind: "direct",
+      message: buildClarificationPrompt(),
+      source: "gmail-clarification",
+    };
+  }
+
+  clearTaskContext(contextKey);
+  emitToolEvent(options.onToolEvent, {
+    type: "contextCleared",
+    taskFamily: context.taskFamily,
+    reason: "awaiting-source-replaced",
+  });
+  return undefined;
+}
+
+async function handleActiveTaskContext(
+  contextKey: string,
+  context: ToolTaskContext,
+  options: MaybeHandleCustomGmailRequestOptions,
+): Promise<ToolHandlerResult | undefined> {
+  const trimmed = normalizeWhitespace(options.message);
+  if (CANCEL_PATTERN.test(trimmed)) {
+    clearTaskContext(contextKey);
+    emitToolEvent(options.onToolEvent, {
+      type: "contextCleared",
+      taskFamily: context.taskFamily,
+      reason: "user-cancelled",
+    });
+    return {
+      kind: "direct",
+      message: "알겠습니다. 현재 도구 작업 문맥을 종료할게요.",
+      source: "gmail-context",
+    };
+  }
+
+  if (context.taskFamily === "gmail_payment_summary" && context.sourceChoice === "gmail") {
+    if (isPaymentFollowUp(trimmed)) {
+      const nextContext: ToolTaskContext = {
+        ...context,
+        lastActivityAt: nowIso(),
+        expiresAt: futureIso(DEFAULT_CONTEXT_TTL_MS),
+      };
+      setTaskContext(contextKey, nextContext);
+      emitToolEvent(options.onToolEvent, {
+        type: "contextReused",
+        taskFamily: context.taskFamily,
+        sourceChoice: context.sourceChoice,
+      });
+      return formatPaymentFollowUp(nextContext, trimmed);
+    }
+
+    if (isBodyRequest(trimmed) || isAttachmentRequest(trimmed)) {
+      const credentials = await loadGmailCredentials();
+      if (!credentials) {
+        return {
+          kind: "direct",
+          message: buildGmailUnavailableMessage(),
+          source: "gmail-fallback",
+        };
+      }
+      const nextContext: ToolTaskContext = {
+        ...context,
+        lastActivityAt: nowIso(),
+        expiresAt: futureIso(DEFAULT_CONTEXT_TTL_MS),
+      };
+      setTaskContext(contextKey, nextContext);
+      emitToolEvent(options.onToolEvent, {
+        type: "contextReused",
+        taskFamily: context.taskFamily,
+        sourceChoice: context.sourceChoice,
+      });
+      return runGmailTask(
+        contextKey,
         options,
-        accessToken,
-        maxMessages,
-        maxSnippetChars,
-        maxBodyChars,
+        "gmail_body_selection",
+        trimmed,
+        credentials,
       );
     }
 
-    const querySourceMessage = isPaymentTaskFollowup && activeTaskContext
-      ? activeTaskContext.canonicalGoal
-      : options.message;
-    const query = deriveQuery(querySourceMessage);
-    const querySummary = summarizeQuery(query);
-    options.onTelemetry?.({
-      event: "queryBuilt",
-      sanitizedQuery: querySummary.sanitizedQuery,
-      isUnread: querySummary.isUnread,
-      dateRange: querySummary.dateRange,
-      keywordCount: querySummary.keywordCount,
-    });
-
-    const listResponse = await listMessageIds(accessToken, query, maxMessages);
-    const messageIds = (listResponse.messages ?? []).slice(0, maxMessages);
-    if (messageIds.length === 0) {
-      options.onTelemetry?.({
-        event: "result",
-        sanitizedQuery: querySummary.sanitizedQuery,
-        outcome: "no-results",
-        isUnread: querySummary.isUnread,
-        dateRange: querySummary.dateRange,
-        keywordCount: querySummary.keywordCount,
-        matchedCount: listResponse.resultSizeEstimate ?? 0,
-        inspectedCount: 0,
+    if (isClearlyUnrelated(trimmed)) {
+      clearTaskContext(contextKey);
+      emitToolEvent(options.onToolEvent, {
+        type: "contextCleared",
+        taskFamily: context.taskFamily,
+        reason: "topic-switch",
       });
-      return formatNoResults(query, {
-        paymentSummary: isPaymentSummary || isPaymentTaskFollowup,
-      });
+      return undefined;
     }
 
-    const items = await loadMessageSummaries(accessToken, messageIds, maxSnippetChars);
-    saveSearchContext(options.userId, options.sessionKey, query, items);
-    if (isPaymentSummary || isPaymentTaskFollowup) {
-      saveActiveTaskContext(options.userId, options.sessionKey, {
-        intentKind: "payment_summary",
-        canonicalGoal: activeTaskContext?.canonicalGoal ?? querySourceMessage,
-        sourceChoice: "gmail",
-      });
-    }
-
-    if (messageIds.length > 0) {
-      options.onTelemetry?.({
-        event: "result",
-        sanitizedQuery: querySummary.sanitizedQuery,
-        outcome: "success",
-        isUnread: querySummary.isUnread,
-        dateRange: querySummary.dateRange,
-        keywordCount: querySummary.keywordCount,
-        matchedCount: listResponse.resultSizeEstimate ?? messageIds.length,
-        inspectedCount: messageIds.length,
-      });
-    }
-
-    return formatSummary(
-      query,
-      messageIds.length,
-      items,
-      { includePaymentEstimate: isPaymentSummary || isPaymentTaskFollowup },
-    );
-  } catch (err) {
-    options.onTelemetry?.({
-      event: "failure",
-      reason: err instanceof Error ? err.message : "unknown-error",
-      isUnread: false,
-      keywordCount: 0,
-    });
-    return err instanceof Error
-      ? err.message
-      : "Gmail request failed for an unknown reason.";
+    return {
+      kind: "direct",
+      message:
+        "I still have the current Gmail payment context, but I could not map that follow-up safely. Please ask for `합계`, `카드사별`, `결제처별`, or point to one email body by number.",
+      source: "gmail-context",
+    };
   }
+
+  return undefined;
+}
+
+export async function maybeHandleCustomGmailRequest(
+  options: MaybeHandleCustomGmailRequestOptions,
+): Promise<ToolHandlerResult | undefined> {
+  const contextKey = getContextKey(options.userId, options.sessionKey);
+  const activeContext = getTaskContext(contextKey);
+
+  if (activeContext && isExpired(activeContext.expiresAt)) {
+    clearTaskContext(contextKey);
+    emitToolEvent(options.onToolEvent, {
+      type: "contextExpired",
+      taskFamily: activeContext.taskFamily,
+      sourceChoice: activeContext.sourceChoice,
+    });
+  }
+
+  const currentContext = getTaskContext(contextKey);
+  if (currentContext?.status === "awaiting_source") {
+    const handled = await handleAwaitingSourceContext(contextKey, currentContext, options);
+    if (handled) {
+      return handled;
+    }
+  }
+
+  const refreshedContext = getTaskContext(contextKey);
+  if (refreshedContext?.status === "active") {
+    const handled = await handleActiveTaskContext(contextKey, refreshedContext, options);
+    if (handled) {
+      return handled;
+    }
+  }
+
+  const deterministicAction = buildDeterministicDecision(
+    options.message,
+    options.gmailReady,
+    refreshedContext,
+  );
+
+  const advisorDecision = await decideToolIntent(
+    buildAdvisorInput(options.message, options.gmailReady, refreshedContext),
+  );
+
+  const finalDecision = advisorDecision ?? {
+    action: deterministicAction,
+    confidence: 0.5,
+    sourceChoice: deterministicAction === "gmail" ? "gmail" : null,
+    taskFamily: looksLikePaymentQuestion(options.message)
+      ? "gmail_payment_summary"
+      : "gmail_search",
+  };
+
+  if (!advisorDecision) {
+    emitToolEvent(options.onToolEvent, {
+      type: "handlerFallback",
+      reason: "advisor-unavailable",
+      taskFamily: refreshedContext?.taskFamily,
+    });
+  }
+
+  emitToolEvent(options.onToolEvent, {
+    type: "intentDecided",
+    action: finalDecision.action,
+    taskFamily: finalDecision.taskFamily,
+    sourceChoice: finalDecision.sourceChoice,
+    confidence: finalDecision.confidence,
+  });
+
+  if (finalDecision.action === "continue_active_task" && refreshedContext) {
+    const handled = await handleActiveTaskContext(contextKey, refreshedContext, options);
+    if (handled) {
+      return handled;
+    }
+  }
+
+  if (finalDecision.action === "clarify_source") {
+    const taskFamily = finalDecision.taskFamily ?? "gmail_payment_summary";
+    const nextContext: ToolTaskContext = {
+      status: "awaiting_source",
+      taskFamily,
+      sourceChoice: null,
+      canonicalGoal: options.message,
+      createdAt: nowIso(),
+      lastActivityAt: nowIso(),
+      expiresAt: futureIso(DEFAULT_CONTEXT_TTL_MS),
+      clarificationResendCount: 0,
+    };
+    setTaskContext(contextKey, nextContext);
+    emitToolEvent(options.onToolEvent, {
+      type: "contextCreated",
+      taskFamily,
+      sourceChoice: null,
+    });
+    emitToolEvent(options.onToolEvent, {
+      type: "clarificationSent",
+      taskFamily,
+      reason: "advisor-clarify-source",
+    });
+    return {
+      kind: "direct",
+      message: buildClarificationPrompt(),
+      source: "gmail-clarification",
+    };
+  }
+
+  if (finalDecision.action === "gmail") {
+    if (!options.gmailReady) {
+      return {
+        kind: "direct",
+        message: buildGmailUnavailableMessage(),
+        source: "gmail-fallback",
+      };
+    }
+    const credentials = await loadGmailCredentials();
+    if (!credentials) {
+      return {
+        kind: "direct",
+        message: buildGmailUnavailableMessage(),
+        source: "gmail-fallback",
+      };
+    }
+    return runGmailTask(
+      contextKey,
+      options,
+      finalDecision.taskFamily ?? "gmail_search",
+      options.message,
+      credentials,
+    );
+  }
+
+  return {
+    kind: "forward",
+    message: options.message,
+    source: "openclaw",
+  };
 }

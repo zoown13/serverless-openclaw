@@ -16,7 +16,7 @@ import {
 
 const DEFAULT_CONTEXT_TTL_MS = 5 * 60 * 1000;
 const SUMMARY_FOLLOW_UP_PATTERN =
-  /(얼마|합계|총액|정리|요약|카드사|결제처|가맹점|merchant|issuer|sum|summary|breakdown|이번주 것만 다시|이번 주 것만 다시)/i;
+  /(얼마|합계|총액|정리|요약|카드사|결제처|가맹점|merchant|issuer|sum|summary|breakdown|이번주 것만 다시|이번 주 것만 다시|더\s*있|더\s*찾|더\s*보|밖에\s*없|몇\s*개|개수|건수|limit)/i;
 const PAYMENT_HINT_PATTERN =
   /(결제|카드값|카드 값|명세서|청구서|영수증|receipt|statement|invoice|spent|spend|payment|total|amount|얼마 썼|얼마 쓴)/i;
 const EXPLICIT_GMAIL_PATTERN =
@@ -793,6 +793,7 @@ function buildPaymentSummaryResponse(
 function formatPaymentFollowUp(
   context: ToolTaskContext,
   message: string,
+  maxMessages: number,
 ): ToolHandlerResult | undefined {
   const records = context.parsedPaymentRecords ?? [];
   if (records.length === 0) {
@@ -806,6 +807,23 @@ function formatPaymentFollowUp(
 
   const total = records.reduce((sum, record) => sum + (record.amount ?? 0), 0);
   const normalized = message.toLowerCase();
+
+  if (/더\s*(있|찾|보)|밖에\s*없|몇\s*개|개수|건수|limit/i.test(normalized)) {
+    const inspectedCount = context.lastMessages?.length ?? records.length;
+    const hitSafetyCap = inspectedCount >= maxMessages;
+    const capMessage = hitSafetyCap
+      ? `I only inspected the first ${maxMessages} Gmail message(s) because the current safety policy is headers-first with a ${maxMessages}-message cap, so there may be more matching payment emails beyond this window.`
+      : `I inspected ${inspectedCount} Gmail message(s) in the current headers-first window and did not hit the ${maxMessages}-message cap.`;
+
+    return {
+      kind: "direct",
+      message:
+        `${capMessage}\n\n` +
+        `Within the currently visible payment context, I extracted ${records.length} payment-like message(s) with a rough visible total of ${formatCurrency(total)}.\n` +
+        "If you want me to check a different slice safely, narrow it by period, sender, card issuer, or merchant.",
+      source: "gmail-context",
+    };
+  }
 
   if (/카드사|issuer/i.test(normalized)) {
     const grouped = new Map<string, number>();
@@ -1193,7 +1211,11 @@ async function handleActiveTaskContext(
         taskFamily: context.taskFamily,
         sourceChoice: context.sourceChoice,
       });
-      return formatPaymentFollowUp(nextContext, trimmed);
+      return formatPaymentFollowUp(
+        nextContext,
+        trimmed,
+        options.emailTokenBudget.maxMessages,
+      );
     }
 
     if (isBodyRequest(trimmed) || isAttachmentRequest(trimmed)) {

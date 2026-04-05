@@ -227,6 +227,88 @@ describe("gmail-tool", () => {
     expect(followUp?.message).toContain("현대카드");
   });
 
+  it("explains the headers-first cap for payment coverage follow-ups without refetching", async () => {
+    decideToolIntentMock.mockResolvedValueOnce({
+      action: "gmail",
+      taskFamily: "gmail_payment_summary",
+      sourceChoice: "gmail",
+      confidence: 0.95,
+    });
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          body: {
+            messages: [{ id: "m1" }, { id: "m2" }, { id: "m3" }, { id: "m4" }, { id: "m5" }],
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "카드 결제 알림",
+          "Card Co <billing@example.com>",
+          "Fri, 03 Apr 2026 09:00:00 +0000",
+          "결제금액 12,300원 카드종류 삼성카드 가맹점명 스타벅스",
+        ),
+      )
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "카드 결제 알림",
+          "Card Co <billing@example.com>",
+          "Thu, 02 Apr 2026 09:00:00 +0000",
+          "결제금액 45,000원 카드종류 현대카드 가맹점명 쿠팡",
+        ),
+      )
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "카드 결제 알림",
+          "Card Co <billing@example.com>",
+          "Wed, 01 Apr 2026 09:00:00 +0000",
+          "결제금액 2,700원 카드종류 삼성카드 가맹점명 이마트24",
+        ),
+      )
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "카드 결제 알림",
+          "Card Co <billing@example.com>",
+          "Tue, 31 Mar 2026 09:00:00 +0000",
+          "결제금액 1,200원 카드종류 현대카드 가맹점명 편의점",
+        ),
+      )
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "카드 결제 알림",
+          "Card Co <billing@example.com>",
+          "Mon, 30 Mar 2026 09:00:00 +0000",
+          "결제금액 800원 카드종류 삼성카드 가맹점명 카페",
+        ),
+      );
+
+    await maybeHandleCustomGmailRequest({
+      userId: "user-payment-cap",
+      sessionKey: "session-payment-cap",
+      message: "이번주 결제한 금액이 어느정도 되려나?",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    fetchMock.mockReset();
+
+    const followUp = await maybeHandleCustomGmailRequest({
+      userId: "user-payment-cap",
+      sessionKey: "session-payment-cap",
+      message: "결제 내역이 더 있을텐데",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(followUp?.kind).toBe("direct");
+    expect(followUp?.message).toContain("first 5 Gmail message(s)");
+    expect(followUp?.message).toContain("there may be more matching payment emails");
+  });
+
   it("opens one selected body from the last search context", async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))

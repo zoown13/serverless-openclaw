@@ -29,6 +29,12 @@ const CANCEL_PATTERN = /^(?:취소|그만|끝|됐어|done|cancel|stop)(?:[.!?])?
 const ATTACHMENT_PATTERN = /(첨부|attachment|pdf|파일|download)/i;
 const BODY_REQUEST_PATTERN =
   /(자세히|본문|내용 보여|본문 보여|열어줘|open|full body|details?)/i;
+const POLICY_NOTICE_PATTERN =
+  /(약관|개정\s*안내|기본약관|이용약관|정책\s*안내|표준\s*전자금융거래|전자금융거래\s*기본약관|terms?|policy)/i;
+const TRAVEL_REFINEMENT_PATTERN =
+  /(관련된\s*것만|관련만|쪽만|만\s*(?:가져|보여|알려|정리)|여행\s*관련|일본\s*관련|travel|trip)/i;
+const TRAVEL_SIGNAL_PATTERN =
+  /(일본|japan|여행|travel|trip|항공|flight|호텔|hotel|숙소|stay|esim|e-sim|jr|rail|공항|airport|마이리얼트립|myrealtrip)/i;
 const ORDER_ONLY_PATTERN =
   /(주문하신 내역|주문배송조회|구매내역|배송상태|배송정보|주문번호|주문하신)/i;
 const PAYMENT_SIGNAL_PATTERN =
@@ -53,6 +59,9 @@ interface ToolTaskContext {
   sourceChoice: ToolSourceChoice | null;
   canonicalGoal: string;
   lastSearchQuery?: string;
+  topicKeywords?: string[];
+  lastQueryMode?: "payment_summary" | "topic_filtered_payment_summary";
+  refinedFromFollowUp?: boolean;
   parsedPaymentRecords?: ParsedPaymentRecord[];
   lastMessages?: GmailMessageSummary[];
   lastResultSummary?: string;
@@ -77,6 +86,9 @@ interface ParsedPaymentRecord {
   amount?: number;
   cardIssuer?: string;
   snippet: string;
+  topicTags?: string[];
+  matchedBy?: "snippet" | "body" | "query";
+  isTravelRelated?: boolean;
   confidence: number;
   source: "snippet" | "body";
 }
@@ -191,6 +203,17 @@ export type ToolEvent =
       type: "handlerFallback";
       reason: string;
       taskFamily?: ToolTaskFamily;
+    }
+  | {
+      type:
+        | "paymentRefineStarted"
+        | "paymentRefineUsedBodyCheck"
+        | "paymentRefineCompleted"
+        | "paymentRefineNoMatch";
+      taskFamily?: ToolTaskFamily;
+      topicKeywords?: string[];
+      matchedCount?: number;
+      reason?: string;
     };
 
 function emitToolEvent(
@@ -369,6 +392,122 @@ function sanitizeForSearch(message: string): string {
     .replace(/\s+/g, " ")
     .trim();
 }
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.map((value) => normalizeWhitespace(value)).filter(Boolean))];
+}
+
+function extractTopicKeywords(message: string): string[] {
+  const normalized = normalizeWhitespace(message);
+  const keywords = new Set<string>();
+
+  if (/일본|japan/i.test(normalized)) {
+    for (const keyword of ["일본", "japan", "여행", "travel", "trip", "esim", "eSIM"]) {
+      keywords.add(keyword);
+    }
+  }
+  if (/여행|travel|trip/i.test(normalized)) {
+    for (const keyword of [
+      "여행",
+      "travel",
+      "trip",
+      "항공",
+      "flight",
+      "호텔",
+      "hotel",
+      "숙소",
+      "esim",
+    ]) {
+      keywords.add(keyword);
+    }
+  }
+  if (/항공|flight|airline/i.test(normalized)) {
+    for (const keyword of ["항공", "flight"]) {
+      keywords.add(keyword);
+    }
+  }
+  if (/호텔|hotel|숙소|stay/i.test(normalized)) {
+    for (const keyword of ["호텔", "hotel", "숙소"]) {
+      keywords.add(keyword);
+    }
+  }
+  if (/esim|e-sim/i.test(normalized)) {
+    for (const keyword of ["esim", "eSIM"]) {
+      keywords.add(keyword);
+    }
+  }
+  if (/jr|rail/i.test(normalized)) {
+    for (const keyword of ["jr", "rail"]) {
+      keywords.add(keyword);
+    }
+  }
+
+  const stopwords = new Set([
+    "결제",
+    "내역",
+    "알려줘",
+    "정리해줄래",
+    "정리",
+    "요약",
+    "가져와",
+    "가져와야지",
+    "것만",
+    "관련된",
+    "관련",
+    "이번주",
+    "이번",
+    "주",
+    "카드",
+    "명세서",
+    "영수증",
+    "얼마",
+  ]);
+  for (const token of normalized.split(/\s+/)) {
+    const cleaned = token.replace(/[^\p{L}\p{N}]/gu, "");
+    if (cleaned.length < 2 || stopwords.has(cleaned.toLowerCase())) {
+      continue;
+    }
+    if (/^[0-9]+$/.test(cleaned)) {
+      continue;
+    }
+    if (TRAVEL_SIGNAL_PATTERN.test(cleaned)) {
+      keywords.add(cleaned);
+    }
+  }
+
+  return uniqueStrings([...keywords]).slice(0, 8);
+}
+
+function extractTopicTags(text: string, topicKeywords: string[]): string[] {
+  const normalized = text.toLowerCase();
+  const tags = new Set<string>();
+
+  for (const keyword of topicKeywords) {
+    if (normalized.includes(keyword.toLowerCase())) {
+      tags.add(keyword);
+    }
+  }
+
+  if (TRAVEL_SIGNAL_PATTERN.test(text)) {
+    if (/일본|japan/i.test(text)) tags.add("일본");
+    if (/여행|travel|trip/i.test(text)) tags.add("여행");
+    if (/항공|flight|airline/i.test(text)) tags.add("항공");
+    if (/호텔|hotel|숙소|stay/i.test(text)) tags.add("호텔");
+    if (/esim|e-sim/i.test(text)) tags.add("eSIM");
+    if (/jr|rail/i.test(text)) tags.add("JR");
+  }
+
+  return uniqueStrings([...tags]);
+}
+
+function mergeTopicKeywords(...groups: Array<string[] | undefined>): string[] {
+  return uniqueStrings(groups.flatMap((group) => group ?? []));
+}
+
+function isTopicRefinementFollowUp(message: string): boolean {
+  const extracted = extractTopicKeywords(message);
+  return extracted.length > 0 || TRAVEL_REFINEMENT_PATTERN.test(message);
+}
 function monthIndexFromText(message: string): number | undefined {
   const normalized = message.toLowerCase();
   const numericMatch = normalized.match(/(\d{1,2})\s*월/);
@@ -490,7 +629,11 @@ function extractSubjectKeyword(message: string): string | undefined {
   return keywordMatch?.[0];
 }
 
-function buildPaymentSearchQuery(message: string, unreadOnly: boolean): string {
+function buildPaymentSearchQuery(
+  message: string,
+  unreadOnly: boolean,
+  topicKeywords: string[] = [],
+): string {
   const parts: string[] = [];
   const dateRange = buildDateRange(message);
   if (dateRange.after) {
@@ -533,6 +676,7 @@ function buildPaymentSearchQuery(message: string, unreadOnly: boolean): string {
   }
 
   parts.push(...keywords);
+  parts.push(...topicKeywords);
   return parts.join(" ").trim();
 }
 
@@ -673,6 +817,10 @@ function extractMerchant(subject: string, snippet: string): string | undefined {
   return undefined;
 }
 
+function looksLikePolicyNotice(subject: string, snippet: string): boolean {
+  return POLICY_NOTICE_PATTERN.test(`${subject}\n${snippet}`);
+}
+
 function pickBestAmount(text: string): number | undefined {
   for (const pattern of PAYMENT_AMOUNT_PATTERNS) {
     const matches = [...text.matchAll(pattern)];
@@ -707,11 +855,17 @@ function extractCardIssuer(text: string): string | undefined {
   return undefined;
 }
 
-function buildPaymentRecord(summary: GmailMessageSummary): ParsedPaymentRecord | null {
+function buildPaymentRecord(
+  summary: GmailMessageSummary,
+  topicKeywords: string[] = [],
+): ParsedPaymentRecord | null {
   const signalText = `${summary.subject}\n${summary.snippet}`;
   const hasPaymentSignal = PAYMENT_SIGNAL_PATTERN.test(signalText);
   const looksLikeOrderOnly =
     ORDER_ONLY_PATTERN.test(signalText) && !hasPaymentSignal && !/결제금액|최종결제금액/.test(signalText);
+  if (looksLikePolicyNotice(summary.subject, summary.snippet) && !/\d[\d,]*\s*원/.test(signalText)) {
+    return null;
+  }
   if (looksLikeOrderOnly) {
     return null;
   }
@@ -719,6 +873,7 @@ function buildPaymentRecord(summary: GmailMessageSummary): ParsedPaymentRecord |
   const amount = pickBestAmount(signalText);
   const merchant = extractMerchant(summary.subject, summary.snippet);
   const cardIssuer = extractCardIssuer(signalText);
+  const topicTags = extractTopicTags(`${signalText}\n${merchant ?? ""}`, topicKeywords);
   const confidence =
     hasPaymentSignal && amount
       ? 0.92
@@ -740,6 +895,9 @@ function buildPaymentRecord(summary: GmailMessageSummary): ParsedPaymentRecord |
     amount,
     cardIssuer,
     snippet: summary.snippet,
+    topicTags,
+    matchedBy: topicTags.length > 0 ? "query" : "snippet",
+    isTravelRelated: topicTags.length > 0,
     confidence,
     source: "snippet",
   };
@@ -788,6 +946,292 @@ function buildPaymentSummaryResponse(
   }
 
   return `${summaryLines.join("\n")}\n\n${buildEvidenceList(messages)}`;
+}
+
+function filterRecordsByTopic(
+  records: ParsedPaymentRecord[],
+  topicKeywords: string[],
+): ParsedPaymentRecord[] {
+  if (topicKeywords.length === 0) {
+    return records;
+  }
+
+  return records.filter((record) => {
+    if (record.isTravelRelated || (record.topicTags?.length ?? 0) > 0) {
+      return true;
+    }
+
+    const haystack = `${record.subject}\n${record.from}\n${record.snippet}\n${record.merchant ?? ""}`;
+    return extractTopicTags(haystack, topicKeywords).length > 0;
+  });
+}
+
+function buildTopicFilteredPaymentSummaryResponse(
+  query: string,
+  records: ParsedPaymentRecord[],
+  topicKeywords: string[],
+  usedBodyCheck: boolean,
+): string {
+  const total = records.reduce((sum, record) => sum + (record.amount ?? 0), 0);
+  const topicLabel = topicKeywords.join(", ");
+  const lines = records
+    .slice()
+    .sort((a, b) => (b.amount ?? 0) - (a.amount ?? 0))
+    .slice(0, 5)
+    .map((record, index) => {
+      const merchant = record.merchant ?? record.subject;
+      const amount = record.amount ? formatCurrency(record.amount) : "amount unavailable";
+      const issuer = record.cardIssuer ? `, ${record.cardIssuer}` : "";
+      const matchedBy = record.matchedBy ? `, matched by ${record.matchedBy}` : "";
+      return `${index + 1}. ${merchant} - ${amount}${issuer}${matchedBy} (${record.date})`;
+    });
+
+  return [
+    `I filtered the Gmail payment context for travel-related payments linked to: ${topicLabel}.`,
+    `Topic-aware query: "${query}".`,
+    "I stayed in headers-first mode by default.",
+    usedBodyCheck
+      ? "I opened up to 2 short email bodies only where snippet evidence was ambiguous."
+      : "I did not open full bodies or attachments.",
+    `Estimated topic-linked total: ${formatCurrency(total)} across ${records.length} matched payment message(s).`,
+    "",
+    "Matched travel-related payments:",
+    ...lines,
+  ].join("\n");
+}
+
+async function fetchPaymentMessages(
+  accessToken: string,
+  query: string,
+  maxMessages: number,
+  topicKeywords: string[] = [],
+): Promise<{
+  messages: GmailMessageSummary[];
+  records: ParsedPaymentRecord[];
+}> {
+  const listJson = await gmailApiRequest<GmailListResponse>(
+    accessToken,
+    `/messages?q=${encodeURIComponent(query)}&maxResults=${maxMessages}`,
+  );
+  const ids = listJson.messages?.map((item) => item.id) ?? [];
+  const messages = await Promise.all(ids.map((id) => fetchMessageSummary(accessToken, id)));
+  const records = messages
+    .map((summary) => buildPaymentRecord(summary, topicKeywords))
+    .filter((record): record is ParsedPaymentRecord => Boolean(record));
+
+  return { messages, records };
+}
+
+async function refineRecordsWithBodyChecks(
+  accessToken: string,
+  records: ParsedPaymentRecord[],
+  topicKeywords: string[],
+  maxBodyChars: number,
+): Promise<{
+  records: ParsedPaymentRecord[];
+  usedBodyCheck: boolean;
+}> {
+  const refined = records.map((record) => ({ ...record }));
+  const candidates = refined
+    .filter((record) => !record.isTravelRelated)
+    .filter((record) => Boolean(record.amount || record.merchant))
+    .slice(0, 2);
+
+  if (candidates.length === 0) {
+    return { records: refined, usedBodyCheck: false };
+  }
+
+  for (const candidate of candidates) {
+    const full = await fetchMessageBody(accessToken, candidate.messageId);
+    const bodySlice = full.body.slice(0, maxBodyChars);
+    const bodyTags = extractTopicTags(
+      `${full.subject}\n${full.snippet}\n${candidate.merchant ?? ""}\n${bodySlice}`,
+      topicKeywords,
+    );
+    if (bodyTags.length > 0) {
+      candidate.topicTags = uniqueStrings([...(candidate.topicTags ?? []), ...bodyTags]);
+      candidate.isTravelRelated = true;
+      candidate.matchedBy = "body";
+    }
+  }
+
+  return { records: refined, usedBodyCheck: candidates.length > 0 };
+}
+
+async function refineActivePaymentContextByTopic(
+  contextKey: string,
+  context: ToolTaskContext,
+  options: MaybeHandleCustomGmailRequestOptions,
+): Promise<ToolHandlerResult> {
+  const topicKeywords = mergeTopicKeywords(
+    context.topicKeywords,
+    extractTopicKeywords(context.canonicalGoal),
+    extractTopicKeywords(options.message),
+  );
+  emitToolEvent(options.onToolEvent, {
+    type: "paymentRefineStarted",
+    taskFamily: context.taskFamily,
+    topicKeywords,
+  });
+
+  const currentMatches = filterRecordsByTopic(context.parsedPaymentRecords ?? [], topicKeywords);
+  if (currentMatches.length > 0) {
+    const nextContext: ToolTaskContext = {
+      ...context,
+      topicKeywords,
+      lastQueryMode: "topic_filtered_payment_summary",
+      refinedFromFollowUp: true,
+      parsedPaymentRecords: currentMatches,
+      lastResultSummary: currentMatches.map((record) => record.subject).join(" | "),
+      lastActivityAt: nowIso(),
+      expiresAt: futureIso(DEFAULT_CONTEXT_TTL_MS),
+    };
+    setTaskContext(contextKey, nextContext);
+    emitToolEvent(options.onToolEvent, {
+      type: "paymentRefineCompleted",
+      taskFamily: context.taskFamily,
+      topicKeywords,
+      matchedCount: currentMatches.length,
+    });
+    return {
+      kind: "direct",
+      message: buildTopicFilteredPaymentSummaryResponse(
+        context.lastSearchQuery ?? "current-payment-context",
+        currentMatches,
+        topicKeywords,
+        false,
+      ),
+      source: "gmail-context",
+    };
+  }
+
+  const credentials = await loadGmailCredentials();
+  if (!credentials) {
+    return {
+      kind: "direct",
+      message: buildGmailUnavailableMessage(),
+      source: "gmail-fallback",
+    };
+  }
+
+  const accessToken = await refreshAccessToken(credentials);
+  if (!accessToken) {
+    return {
+      kind: "direct",
+      message: buildGmailUnavailableMessage(),
+      source: "gmail-fallback",
+    };
+  }
+
+  const unreadOnly = Boolean(context.lastSearchQuery?.includes("is:unread"));
+  const narrowedQuery = buildPaymentSearchQuery(context.canonicalGoal, unreadOnly, topicKeywords);
+  let { messages, records } = await fetchPaymentMessages(
+    accessToken,
+    narrowedQuery,
+    options.emailTokenBudget.maxMessages,
+    topicKeywords,
+  );
+  let matched = filterRecordsByTopic(records, topicKeywords);
+  let usedBodyCheck = false;
+
+  if (matched.length === 0) {
+    const bodyRefined = await refineRecordsWithBodyChecks(
+      accessToken,
+      records,
+      topicKeywords,
+      options.emailTokenBudget.maxBodyChars,
+    );
+    records = bodyRefined.records;
+    matched = filterRecordsByTopic(records, topicKeywords);
+    usedBodyCheck = bodyRefined.usedBodyCheck;
+    if (usedBodyCheck) {
+      emitToolEvent(options.onToolEvent, {
+        type: "paymentRefineUsedBodyCheck",
+        taskFamily: context.taskFamily,
+        topicKeywords,
+      });
+    }
+  }
+
+  if (matched.length === 0 && topicKeywords.length > 0) {
+    const broadQuery = buildPaymentSearchQuery(context.canonicalGoal, unreadOnly);
+    if (broadQuery !== narrowedQuery) {
+      const broadResult = await fetchPaymentMessages(
+        accessToken,
+        broadQuery,
+        options.emailTokenBudget.maxMessages,
+        topicKeywords,
+      );
+      messages = broadResult.messages;
+      records = broadResult.records;
+      matched = filterRecordsByTopic(records, topicKeywords);
+
+      if (matched.length === 0) {
+        const broadBodyRefined = await refineRecordsWithBodyChecks(
+          accessToken,
+          records,
+          topicKeywords,
+          options.emailTokenBudget.maxBodyChars,
+        );
+        records = broadBodyRefined.records;
+        matched = filterRecordsByTopic(records, topicKeywords);
+        usedBodyCheck = usedBodyCheck || broadBodyRefined.usedBodyCheck;
+        if (broadBodyRefined.usedBodyCheck) {
+          emitToolEvent(options.onToolEvent, {
+            type: "paymentRefineUsedBodyCheck",
+            taskFamily: context.taskFamily,
+            topicKeywords,
+          });
+        }
+      }
+    }
+  }
+
+  if (matched.length === 0) {
+    emitToolEvent(options.onToolEvent, {
+      type: "paymentRefineNoMatch",
+      taskFamily: context.taskFamily,
+      topicKeywords,
+      reason: "no-travel-payment-match",
+    });
+    return {
+      kind: "direct",
+      message:
+        `I searched for travel-related payments linked to ${topicKeywords.join(", ")}, but I could not confidently confirm any visible payment emails as part of that trip.\n` +
+        "Please narrow it by period, merchant, or point me to one specific email body by number.",
+      source: "gmail-context",
+    };
+  }
+
+  const nextContext: ToolTaskContext = {
+    ...context,
+    topicKeywords,
+    lastQueryMode: "topic_filtered_payment_summary",
+    refinedFromFollowUp: true,
+    parsedPaymentRecords: matched,
+    lastMessages: messages,
+    lastSearchQuery: narrowedQuery,
+    lastResultSummary: matched.map((record) => record.subject).join(" | "),
+    lastActivityAt: nowIso(),
+    expiresAt: futureIso(DEFAULT_CONTEXT_TTL_MS),
+  };
+  setTaskContext(contextKey, nextContext);
+  emitToolEvent(options.onToolEvent, {
+    type: "paymentRefineCompleted",
+    taskFamily: context.taskFamily,
+    topicKeywords,
+    matchedCount: matched.length,
+  });
+  return {
+    kind: "direct",
+    message: buildTopicFilteredPaymentSummaryResponse(
+      narrowedQuery,
+      matched,
+      topicKeywords,
+      usedBodyCheck,
+    ),
+    source: "gmail-context",
+  };
 }
 
 function formatPaymentFollowUp(
@@ -976,16 +1420,64 @@ async function runGmailTask(
       source: "gmail",
     };
   }
-  const query = buildPaymentSearchQuery(
-    sourceMessage,
-    !/\ball\b|전체|모두/i.test(sourceMessage),
-  );
-  const listJson = await gmailApiRequest<GmailListResponse>(
+  const topicKeywords =
+    taskFamily === "gmail_payment_summary" ? extractTopicKeywords(sourceMessage) : [];
+  const unreadOnly = !/\ball\b|전체|모두/i.test(sourceMessage);
+  const primaryQuery = buildPaymentSearchQuery(sourceMessage, unreadOnly, topicKeywords);
+  let query = primaryQuery;
+  let { messages, records: paymentRecords } = await fetchPaymentMessages(
     accessToken,
-    `/messages?q=${encodeURIComponent(query)}&maxResults=${options.emailTokenBudget.maxMessages}`,
+    primaryQuery,
+    options.emailTokenBudget.maxMessages,
+    topicKeywords,
   );
-  const ids = listJson.messages?.map((item) => item.id) ?? [];
-  const messages = await Promise.all(ids.map((id) => fetchMessageSummary(accessToken, id)));
+  let usedBodyCheck = false;
+
+  if (taskFamily === "gmail_payment_summary" && topicKeywords.length > 0) {
+    let matchedTravelRecords = filterRecordsByTopic(paymentRecords, topicKeywords);
+
+    if (matchedTravelRecords.length === 0) {
+      const bodyRefined = await refineRecordsWithBodyChecks(
+        accessToken,
+        paymentRecords,
+        topicKeywords,
+        options.emailTokenBudget.maxBodyChars,
+      );
+      paymentRecords = bodyRefined.records;
+      matchedTravelRecords = filterRecordsByTopic(paymentRecords, topicKeywords);
+      usedBodyCheck = bodyRefined.usedBodyCheck;
+    }
+
+    if (matchedTravelRecords.length === 0) {
+      const broadQuery = buildPaymentSearchQuery(sourceMessage, unreadOnly);
+      if (broadQuery !== primaryQuery) {
+        query = broadQuery;
+        const broadResult = await fetchPaymentMessages(
+          accessToken,
+          broadQuery,
+          options.emailTokenBudget.maxMessages,
+          topicKeywords,
+        );
+        messages = broadResult.messages;
+        paymentRecords = broadResult.records;
+        matchedTravelRecords = filterRecordsByTopic(paymentRecords, topicKeywords);
+
+        if (matchedTravelRecords.length === 0) {
+          const broadBodyRefined = await refineRecordsWithBodyChecks(
+            accessToken,
+            paymentRecords,
+            topicKeywords,
+            options.emailTokenBudget.maxBodyChars,
+          );
+          paymentRecords = broadBodyRefined.records;
+          matchedTravelRecords = filterRecordsByTopic(paymentRecords, topicKeywords);
+          usedBodyCheck = usedBodyCheck || broadBodyRefined.usedBodyCheck;
+        }
+      }
+    }
+
+    paymentRecords = matchedTravelRecords;
+  }
 
   setSearchContext(contextKey, {
     messages,
@@ -993,19 +1485,16 @@ async function runGmailTask(
     createdAt: nowIso(),
   });
 
-  const paymentRecords =
-    taskFamily === "gmail_payment_summary"
-      ? messages
-          .map((summary) => buildPaymentRecord(summary))
-          .filter((record): record is ParsedPaymentRecord => Boolean(record))
-      : [];
-
   const taskContext: ToolTaskContext = {
     status: "active",
     taskFamily,
     sourceChoice: "gmail",
     canonicalGoal: sourceMessage,
     lastSearchQuery: query,
+    topicKeywords,
+    lastQueryMode:
+      topicKeywords.length > 0 ? "topic_filtered_payment_summary" : "payment_summary",
+    refinedFromFollowUp: false,
     parsedPaymentRecords: paymentRecords,
     lastMessages: messages,
     lastResultSummary: messages.map((item) => item.subject).join(" | "),
@@ -1025,7 +1514,9 @@ async function runGmailTask(
     return {
       kind: "direct",
       message:
-        messages.length === 0
+        topicKeywords.length > 0
+          ? `I searched for travel-related payments linked to ${topicKeywords.join(", ")}, but I could not confidently match any visible payment emails to that trip. Please narrow it by period, merchant, or ask me to inspect one specific email body.`
+          : messages.length === 0
           ? "I did not find payment-related Gmail messages in the visible window. Please narrow it by period, sender, or card issuer."
           : "I found candidate Gmail messages, but I could not extract reliable payment amounts from the visible headers/snippets. Please narrow it by sender, period, or ask me to open one specific email body.",
       source: "gmail-fallback",
@@ -1036,7 +1527,14 @@ async function runGmailTask(
     kind: "direct",
     message:
       taskFamily === "gmail_payment_summary"
-        ? buildPaymentSummaryResponse(query, messages, paymentRecords)
+        ? topicKeywords.length > 0
+          ? buildTopicFilteredPaymentSummaryResponse(
+              query,
+              paymentRecords,
+              topicKeywords,
+              usedBodyCheck,
+            )
+          : buildPaymentSummaryResponse(query, messages, paymentRecords)
         : `${messages.length === 0 ? "I did not find matching Gmail messages." : `I checked Gmail headers-first with query "${query}" and inspected ${messages.length} message(s).`}\n\n${buildEvidenceList(messages)}`,
     source: "gmail",
   };
@@ -1080,7 +1578,7 @@ function buildAdvisorInput(
 }
 
 function isClearlyUnrelated(message: string): boolean {
-  return !looksLikePaymentQuestion(message) && !isExplicitGmailMessage(message) && !isPaymentFollowUp(message) && !isBodyRequest(message);
+  return !looksLikePaymentQuestion(message) && !isExplicitGmailMessage(message) && !isPaymentFollowUp(message) && !isBodyRequest(message) && !TRAVEL_REFINEMENT_PATTERN.test(message) && extractTopicKeywords(message).length === 0;
 }
 
 async function handleAwaitingSourceContext(
@@ -1250,6 +1748,9 @@ async function handleActiveTaskContext(
       taskFamily: context.taskFamily,
       sourceChoice: context.sourceChoice,
     });
+    if (isTopicRefinementFollowUp(trimmed)) {
+      return refineActivePaymentContextByTopic(contextKey, nextContext, options);
+    }
     return formatPaymentFollowUp(
       nextContext,
       trimmed,

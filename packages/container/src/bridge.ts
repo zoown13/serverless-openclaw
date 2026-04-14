@@ -149,6 +149,36 @@ function logToolEvent(
         taskFamily: event.taskFamily,
         reason: event.reason,
       });
+      return;
+    case "paymentRefineStarted":
+      logBridgeEvent("bridge.tool.payment.refine.started", {
+        ...logContext,
+        taskFamily: event.taskFamily,
+        topicKeywords: event.topicKeywords,
+      });
+      return;
+    case "paymentRefineUsedBodyCheck":
+      logBridgeEvent("bridge.tool.payment.refine.used_body_check", {
+        ...logContext,
+        taskFamily: event.taskFamily,
+        topicKeywords: event.topicKeywords,
+      });
+      return;
+    case "paymentRefineCompleted":
+      logBridgeEvent("bridge.tool.payment.refine.completed", {
+        ...logContext,
+        taskFamily: event.taskFamily,
+        topicKeywords: event.topicKeywords,
+        matchedCount: event.matchedCount,
+      });
+      return;
+    case "paymentRefineNoMatch":
+      logBridgeEvent("bridge.tool.payment.refine.no_match", {
+        ...logContext,
+        taskFamily: event.taskFamily,
+        topicKeywords: event.topicKeywords,
+        reason: event.reason,
+      });
   }
 }
 

@@ -46,6 +46,7 @@ const PAYMENT_AMOUNT_PATTERNS: RegExp[] = [
   /(amount|total)\s*[:：]?\s*(?:krw\s*)?([0-9][0-9,]*)/gi,
   /([0-9][0-9,]*)\s*원/gi,
 ];
+const TOPIC_REFINEMENT_CANDIDATE_MIN_MESSAGES = 12;
 const CARD_ISSUER_PATTERNS: RegExp[] = [
   /(삼성카드|신한카드|현대카드|KB국민카드|국민카드|우리카드|롯데카드|하나카드|비씨카드|BC카드|NH카드|농협카드|카카오뱅크|토스뱅크)/i,
   /(카드종류|결제기관|카드사)\s*[:：]?\s*([^\n\r,]+)/i,
@@ -504,6 +505,37 @@ function mergeTopicKeywords(...groups: Array<string[] | undefined>): string[] {
   return uniqueStrings(groups.flatMap((group) => group ?? []));
 }
 
+function selectTopicQueryKeywords(topicKeywords: string[]): string[] {
+  const destinationKeyword = topicKeywords.find((keyword) =>
+    /일본|japan|도쿄|tokyo|오사카|osaka|교토|kyoto|후쿠오카|fukuoka|삿포로|sapporo|오키나와|okinawa|나고야|nagoya/i.test(
+      keyword,
+    ),
+  );
+  if (destinationKeyword) {
+    return [destinationKeyword];
+  }
+
+  const productKeyword = topicKeywords.find((keyword) =>
+    /esim|e-sim|항공|flight|호텔|hotel|숙소|stay|jr|rail|공항|airport/i.test(keyword),
+  );
+  if (productKeyword) {
+    return [productKeyword];
+  }
+
+  const travelKeyword = topicKeywords.find((keyword) =>
+    /여행|travel|trip/i.test(keyword),
+  );
+  if (travelKeyword) {
+    return [travelKeyword];
+  }
+
+  return topicKeywords.slice(0, 1);
+}
+
+function resolveTopicCandidateLimit(maxMessages: number): number {
+  return Math.max(maxMessages, TOPIC_REFINEMENT_CANDIDATE_MIN_MESSAGES);
+}
+
 function isTopicRefinementFollowUp(message: string): boolean {
   const extracted = extractTopicKeywords(message);
   return extracted.length > 0 || TRAVEL_REFINEMENT_PATTERN.test(message);
@@ -676,7 +708,7 @@ function buildPaymentSearchQuery(
   }
 
   parts.push(...keywords);
-  parts.push(...topicKeywords);
+  parts.push(...selectTopicQueryKeywords(topicKeywords));
   return parts.join(" ").trim();
 }
 
@@ -1125,6 +1157,10 @@ async function refineActivePaymentContextByTopic(
 
   const unreadOnly = Boolean(context.lastSearchQuery?.includes("is:unread"));
   const narrowedQuery = buildPaymentSearchQuery(context.canonicalGoal, unreadOnly, topicKeywords);
+  const topicCandidateLimit = resolveTopicCandidateLimit(
+    options.emailTokenBudget.maxMessages,
+  );
+  let effectiveQuery = narrowedQuery;
   let { messages, records } = await fetchPaymentMessages(
     accessToken,
     narrowedQuery,
@@ -1156,10 +1192,11 @@ async function refineActivePaymentContextByTopic(
   if (matched.length === 0 && topicKeywords.length > 0) {
     const broadQuery = buildPaymentSearchQuery(context.canonicalGoal, unreadOnly);
     if (broadQuery !== narrowedQuery) {
+      effectiveQuery = broadQuery;
       const broadResult = await fetchPaymentMessages(
         accessToken,
         broadQuery,
-        options.emailTokenBudget.maxMessages,
+        topicCandidateLimit,
         topicKeywords,
       );
       messages = broadResult.messages;
@@ -1210,7 +1247,7 @@ async function refineActivePaymentContextByTopic(
     refinedFromFollowUp: true,
     parsedPaymentRecords: matched,
     lastMessages: messages,
-    lastSearchQuery: narrowedQuery,
+    lastSearchQuery: effectiveQuery,
     lastResultSummary: matched.map((record) => record.subject).join(" | "),
     lastActivityAt: nowIso(),
     expiresAt: futureIso(DEFAULT_CONTEXT_TTL_MS),
@@ -1225,7 +1262,7 @@ async function refineActivePaymentContextByTopic(
   return {
     kind: "direct",
     message: buildTopicFilteredPaymentSummaryResponse(
-      narrowedQuery,
+      effectiveQuery,
       matched,
       topicKeywords,
       usedBodyCheck,
@@ -1422,6 +1459,9 @@ async function runGmailTask(
   }
   const topicKeywords =
     taskFamily === "gmail_payment_summary" ? extractTopicKeywords(sourceMessage) : [];
+  const topicCandidateLimit = resolveTopicCandidateLimit(
+    options.emailTokenBudget.maxMessages,
+  );
   const unreadOnly = !/\ball\b|전체|모두/i.test(sourceMessage);
   const primaryQuery = buildPaymentSearchQuery(sourceMessage, unreadOnly, topicKeywords);
   let query = primaryQuery;
@@ -1436,7 +1476,7 @@ async function runGmailTask(
   if (taskFamily === "gmail_payment_summary" && topicKeywords.length > 0) {
     let matchedTravelRecords = filterRecordsByTopic(paymentRecords, topicKeywords);
 
-    if (matchedTravelRecords.length === 0) {
+    if (matchedTravelRecords.length === 0 && paymentRecords.length > 0) {
       const bodyRefined = await refineRecordsWithBodyChecks(
         accessToken,
         paymentRecords,
@@ -1455,7 +1495,7 @@ async function runGmailTask(
         const broadResult = await fetchPaymentMessages(
           accessToken,
           broadQuery,
-          options.emailTokenBudget.maxMessages,
+          topicCandidateLimit,
           topicKeywords,
         );
         messages = broadResult.messages;

@@ -430,6 +430,7 @@ describe("gmail-tool", () => {
 
     expect(response?.kind).toBe("direct");
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain("%EC%9D%BC%EB%B3%B8");
+    expect(String(fetchMock.mock.calls[2]?.[0])).toContain("maxResults=12");
     expect(response?.message).toContain("travel-related payments linked to: 일본");
     expect(response?.message).toContain("마이리얼트립");
     expect(response?.message).not.toContain("표준 전자금융거래 기본약관");
@@ -481,6 +482,57 @@ describe("gmail-tool", () => {
     expect(followUp?.message).toContain("travel-related payments linked to: 일본");
     expect(followUp?.message).toContain("마이리얼트립");
     expect(followUp?.message).not.toContain("병천순대전문점");
+  });
+
+  it("reruns a broader payment candidate search when travel refinement needs more than the first 5 headers", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m1" }] } }))
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "[네이버페이] 결제하신 내역을 안내해드립니다.",
+          '"네이버페이" <naverpayadmin_noreply@navercorp.com>',
+          "Mon, 13 Apr 2026 03:08:14 +0000",
+          "병천순대전문점 총 결제 금액 35000원 결제수단 카드 간편결제",
+          "m1",
+        ),
+      );
+
+    await maybeHandleCustomGmailRequest({
+      userId: "user-japan-rerun",
+      sessionKey: "session-japan-rerun",
+      message: "이번주 결제한 금액이 어느정도 되려나?",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    fetchMock.mockReset();
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(jsonResponse({ body: { messages: [] } }))
+      .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m2" }] } }))
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "마이리얼트립(일반)의 결제 내역입니다.",
+          '"NHN KCP 발신전용" <pgadmcust@kcp.co.kr>',
+          "Sat, 04 Apr 2026 17:40:51 +0900",
+          "결제금액 9215 원 카드종류 삼성카드 주문상품명 [eSIM/로컬] 일본 사이트",
+          "m2",
+        ),
+      );
+
+    const followUp = await maybeHandleCustomGmailRequest({
+      userId: "user-japan-rerun",
+      sessionKey: "session-japan-rerun",
+      message: "일본관련된 것만 가져와야지",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    expect(followUp?.kind).toBe("direct");
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("%EC%9D%BC%EB%B3%B8");
+    expect(String(fetchMock.mock.calls[2]?.[0])).toContain("maxResults=12");
+    expect(followUp?.message).toContain("마이리얼트립");
   });
 
   it("uses at most one or two limited body checks when travel evidence is ambiguous", async () => {

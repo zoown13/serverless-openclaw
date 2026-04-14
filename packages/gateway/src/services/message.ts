@@ -120,6 +120,8 @@ const TOOL_AFFINITY_TTL_MS = 5 * 60 * 1000;
 const TOOL_AFFINITY_CANCEL_PATTERN = /^(?:취소|그만|끝|됐어|done|cancel|stop)$/i;
 const TOOL_AFFINITY_CONTEXTUAL_PATTERN =
   /(?:그거|이거|저거|그럼|그건|이건|더|다시|계속|표|테이블|요약|정리|분석|설명|자세히|상세|본문|내용|열어|읽어|보여|알려|합계|총액|총합|카드사별|결제처별|몇\s*개|개수|건수|limit|that|those|it|them|more|again|continue|summary|breakdown|details?|show|explain)/i;
+const TOOL_AFFINITY_REFINEMENT_PATTERN =
+  /(?:관련된?\s*것만|관련만|쪽만|그거\s*말고|말고|여행|travel|trip|일본|japan|항공|flight|호텔|hotel|숙소|stay|esim|e-sim|jr|rail|해외|국내)/i;
 const TOOL_AFFINITY_OBVIOUS_TOPIC_SWITCH_PATTERN =
   /^(?:안녕|안녕하세요|hello|hi|hey|고마워|감사|thanks?|thank you|잘가|bye|날씨|weather|번역|translate|농담|joke)(?:$|[!?.,\s])/i;
 const TOOL_AFFINITY_END_MESSAGE = "알겠습니다. 현재 도구 작업 문맥을 종료할게요.";
@@ -264,11 +266,15 @@ function shouldKeepToolAffinity(message: string): boolean {
     return false;
   }
 
+  if (TOOL_AFFINITY_REFINEMENT_PATTERN.test(normalized)) {
+    return true;
+  }
+
   if (TOOL_AFFINITY_CONTEXTUAL_PATTERN.test(normalized)) {
     return true;
   }
 
-  return normalized.length <= 16;
+  return normalized.length <= 24;
 }
 
 function validateLambdaDeliveryTarget(deps: RouteDeps): void {

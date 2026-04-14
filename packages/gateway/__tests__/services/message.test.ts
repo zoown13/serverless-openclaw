@@ -252,6 +252,38 @@ describe("message service", () => {
       expect(body.runtimeClass).toBe("tool-enabled");
     });
 
+    it("should keep an active tool affinity for travel-refinement follow-ups", async () => {
+      const deps = makeDeps({
+        message: "일본관련된 것만 가져와야지",
+        getTaskState: vi.fn().mockResolvedValue({
+          PK: "USER#user-123",
+          status: "Running",
+          publicIp: "1.2.3.4",
+          taskArn: "arn:task",
+          startedAt: "2024-01-01T00:00:00Z",
+          lastActivity: "2024-01-01T00:00:00Z",
+        }),
+        getRoutingContext: vi.fn().mockResolvedValue({
+          channel: "web",
+          connectionId: "conn-1",
+          callbackUrl: "https://cb",
+          createdAt: "2026-04-04T00:00:00Z",
+          lastActivityAt: "2026-04-04T00:00:00Z",
+          expiresAt: "2099-04-04T00:05:00Z",
+          runtimeClass: "tool-enabled",
+        }),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("sent");
+      expect(deps.deleteRoutingContext).not.toHaveBeenCalled();
+      expect(mockFetch).toHaveBeenCalled();
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(body.message).toBe("일본관련된 것만 가져와야지");
+      expect(body.runtimeClass).toBe("tool-enabled");
+    });
+
     it("should clear an active tool affinity on explicit cancel", async () => {
       const deps = makeDeps({
         message: "취소",

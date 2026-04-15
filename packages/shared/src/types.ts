@@ -33,13 +33,15 @@ export interface EmailTokenBudgetPolicy {
 }
 
 /**
- * Minimal Gateway-side affinity state.
+ * Minimal Gateway-side active tool state persisted in Settings:
+ * PK=USER#{userId}, SK=SETTING#active-tool:{channel}
  *
  * Gateway only remembers that the current user/channel is in a tool-capable
  * workflow so follow-up turns can stay on Fargate until they clearly switch
  * topics, are cancelled, or expire.
  */
 export interface ToolRuntimeAffinityState {
+  status: "active";
   channel: Channel;
   runtimeClass: "tool-enabled";
   connectionId: string;
@@ -86,6 +88,7 @@ export interface SettingsItem {
   SK: string; // SETTING#{key}
   value: string | Record<string, unknown>;
   updatedAt: string;
+  ttl?: number;
 }
 
 export interface TaskStateItem {

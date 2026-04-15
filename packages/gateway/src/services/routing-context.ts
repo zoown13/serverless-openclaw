@@ -26,7 +26,7 @@ function routingContextKey(userId: string, channel: Channel): {
 } {
   return {
     PK: `${KEY_PREFIX.USER}${userId}`,
-    SK: `${KEY_PREFIX.SETTING}tool-affinity:${channel}`,
+    SK: `${KEY_PREFIX.SETTING}active-tool:${channel}`,
   };
 }
 
@@ -50,6 +50,7 @@ export async function putRoutingContext(
   userId: string,
   state: ToolRuntimeAffinityState,
 ): Promise<void> {
+  const expiresAtMs = Date.parse(state.expiresAt);
   await send(
     new PutCommand({
       TableName: TABLE_NAMES.SETTINGS,
@@ -57,6 +58,9 @@ export async function putRoutingContext(
         ...routingContextKey(userId, state.channel),
         value: state,
         updatedAt: new Date().toISOString(),
+        ttl: Number.isFinite(expiresAtMs)
+          ? Math.floor(expiresAtMs / 1000)
+          : undefined,
       },
     }),
   );

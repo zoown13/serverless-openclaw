@@ -163,6 +163,7 @@ describe("message service", () => {
       expect(deps.putRoutingContext).toHaveBeenCalledWith(
         "user-123",
         expect.objectContaining({
+          status: "active",
           runtimeClass: "tool-enabled",
           channel: "web",
         }),
@@ -195,6 +196,7 @@ describe("message service", () => {
           lastActivity: "2024-01-01T00:00:00Z",
         }),
         getRoutingContext: vi.fn().mockResolvedValue({
+          status: "active",
           channel: "web",
           connectionId: "conn-1",
           callbackUrl: "https://cb",
@@ -211,6 +213,7 @@ describe("message service", () => {
       expect(deps.putRoutingContext).toHaveBeenCalledWith(
         "user-123",
         expect.objectContaining({
+          status: "active",
           runtimeClass: "tool-enabled",
         }),
       );
@@ -233,6 +236,7 @@ describe("message service", () => {
           lastActivity: "2024-01-01T00:00:00Z",
         }),
         getRoutingContext: vi.fn().mockResolvedValue({
+          status: "active",
           channel: "web",
           connectionId: "conn-1",
           callbackUrl: "https://cb",
@@ -264,6 +268,7 @@ describe("message service", () => {
           lastActivity: "2024-01-01T00:00:00Z",
         }),
         getRoutingContext: vi.fn().mockResolvedValue({
+          status: "active",
           channel: "web",
           connectionId: "conn-1",
           callbackUrl: "https://cb",
@@ -288,6 +293,7 @@ describe("message service", () => {
       const deps = makeDeps({
         message: "취소",
         getRoutingContext: vi.fn().mockResolvedValue({
+          status: "active",
           channel: "web",
           connectionId: "conn-1",
           callbackUrl: "https://cb",
@@ -315,6 +321,7 @@ describe("message service", () => {
         invokeLambdaAgent: mockInvokeLambda,
         lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
         getRoutingContext: vi.fn().mockResolvedValue({
+          status: "active",
           channel: "web",
           connectionId: "conn-1",
           callbackUrl: "https://cb",
@@ -344,6 +351,7 @@ describe("message service", () => {
         invokeLambdaAgent: mockInvokeLambda,
         lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
         getRoutingContext: vi.fn().mockResolvedValue({
+          status: "active",
           channel: "web",
           connectionId: "conn-1",
           callbackUrl: "https://cb",

@@ -152,6 +152,16 @@ describe("CDK Stacks E2E — synth all stacks", () => {
       });
     });
 
+    it("Settings table enables TTL for coarse tool affinity state", () => {
+      storageTemplate.hasResourceProperties("AWS::DynamoDB::Table", {
+        TableName: "serverless-openclaw-Settings",
+        TimeToLiveSpecification: {
+          AttributeName: "ttl",
+          Enabled: true,
+        },
+      });
+    });
+
     it("S3 data bucket with BlockPublicAccess", () => {
       storageTemplate.resourceCountIs("AWS::S3::Bucket", 1);
       storageTemplate.hasResourceProperties("AWS::S3::Bucket", {

@@ -1661,6 +1661,53 @@ function buildDeterministicDecision(
   return "generic_openclaw";
 }
 
+function shouldPreferPaymentSummaryTask(
+  message: string,
+  activeContext?: ToolTaskContext,
+): boolean {
+  if (isBodyRequest(message) || isAttachmentRequest(message)) {
+    return false;
+  }
+
+  if (
+    looksLikePaymentQuestion(message) ||
+    isPaymentFollowUp(message) ||
+    isTopicRefinementFollowUp(message)
+  ) {
+    return true;
+  }
+
+  if (!activeContext) {
+    return false;
+  }
+
+  if (activeContext.taskFamily === "gmail_payment_summary") {
+    return true;
+  }
+
+  return Boolean(
+    activeContext.parsedPaymentRecords?.length ||
+      looksLikePaymentQuestion(activeContext.canonicalGoal) ||
+      isTopicRefinementFollowUp(activeContext.canonicalGoal),
+  );
+}
+
+function normalizeTaskFamilyForMessage(
+  action: ToolIntentAdvisorAction,
+  taskFamily: ToolTaskFamily,
+  message: string,
+  activeContext?: ToolTaskContext,
+): ToolTaskFamily {
+  if (
+    (action === "gmail" || action === "continue_active_task") &&
+    taskFamily === "gmail_search" &&
+    shouldPreferPaymentSummaryTask(message, activeContext)
+  ) {
+    return "gmail_payment_summary";
+  }
+  return taskFamily;
+}
+
 function buildAdvisorInput(
   message: string,
   gmailReady: boolean,
@@ -1800,7 +1847,25 @@ async function handleActiveTaskContext(
     };
   }
 
-  if (context.taskFamily === "gmail_payment_summary" && context.sourceChoice === "gmail") {
+  let effectiveContext = context;
+  if (
+    context.taskFamily === "gmail_search" &&
+    context.sourceChoice === "gmail" &&
+    shouldPreferPaymentSummaryTask(trimmed, context)
+  ) {
+    effectiveContext = {
+      ...context,
+      taskFamily: "gmail_payment_summary",
+      lastActivityAt: nowIso(),
+      expiresAt: futureIso(DEFAULT_CONTEXT_TTL_MS),
+    };
+    setTaskContext(contextKey, effectiveContext);
+  }
+
+  if (
+    effectiveContext.taskFamily === "gmail_payment_summary" &&
+    effectiveContext.sourceChoice === "gmail"
+  ) {
     if (isBodyRequest(trimmed) || isAttachmentRequest(trimmed)) {
       const credentials = await loadGmailCredentials();
       if (!credentials) {
@@ -1811,15 +1876,15 @@ async function handleActiveTaskContext(
         };
       }
       const nextContext: ToolTaskContext = {
-        ...context,
+        ...effectiveContext,
         lastActivityAt: nowIso(),
         expiresAt: futureIso(DEFAULT_CONTEXT_TTL_MS),
       };
       setTaskContext(contextKey, nextContext);
       emitToolEvent(options.onToolEvent, {
         type: "contextReused",
-        taskFamily: context.taskFamily,
-        sourceChoice: context.sourceChoice,
+        taskFamily: nextContext.taskFamily,
+        sourceChoice: nextContext.sourceChoice,
       });
       return runGmailTask(
         contextKey,
@@ -1834,22 +1899,22 @@ async function handleActiveTaskContext(
       clearTaskContext(contextKey);
       emitToolEvent(options.onToolEvent, {
         type: "contextCleared",
-        taskFamily: context.taskFamily,
+        taskFamily: effectiveContext.taskFamily,
         reason: "topic-switch",
       });
       return undefined;
     }
 
     const nextContext: ToolTaskContext = {
-      ...context,
+      ...effectiveContext,
       lastActivityAt: nowIso(),
       expiresAt: futureIso(DEFAULT_CONTEXT_TTL_MS),
     };
     setTaskContext(contextKey, nextContext);
     emitToolEvent(options.onToolEvent, {
       type: "contextReused",
-      taskFamily: context.taskFamily,
-      sourceChoice: context.sourceChoice,
+      taskFamily: nextContext.taskFamily,
+      sourceChoice: nextContext.sourceChoice,
     });
     if (isTopicRefinementFollowUp(trimmed)) {
       return refineActivePaymentContextByTopic(contextKey, nextContext, options);
@@ -1913,6 +1978,12 @@ export async function maybeHandleCustomGmailRequest(
       ? "gmail_payment_summary"
       : "gmail_search",
   };
+  finalDecision.taskFamily = normalizeTaskFamilyForMessage(
+    finalDecision.action,
+    finalDecision.taskFamily,
+    options.message,
+    refreshedContext,
+  );
 
   if (!advisorDecision) {
     emitToolEvent(options.onToolEvent, {

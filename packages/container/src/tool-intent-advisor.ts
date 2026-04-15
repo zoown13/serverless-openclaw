@@ -59,6 +59,7 @@ function promptFor(input: DecideToolIntentInput): string {
     "Allowed sourceChoice values: gmail, general, null.",
     "If gmailReady is false, never choose gmail.",
     "Prefer gmail for payment, receipt, statement, billing, or spending questions that likely need the user's own inbox history when gmailReady is true, even if the user did not explicitly mention Gmail.",
+    "When the message asks for payment histories, spending totals, card issuer breakdowns, merchant breakdowns, or trip-related expenses, choose taskFamily gmail_payment_summary rather than gmail_search.",
     "Choose clarify_source only when both Gmail lookup and general reasoning are plausible and you cannot safely choose one source.",
     "Choose continue_active_task when the message looks like a follow-up to the active task context, even if it is short or does not repeat the original payment keywords.",
     "Respond with JSON: {\"action\":...,\"taskFamily\":...,\"sourceChoice\":...,\"confidence\":0-1}",

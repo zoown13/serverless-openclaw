@@ -27,12 +27,6 @@ export function patchConfig(configPath: string, options?: PatchOptions): void {
   // Remove Telegram section entirely (webhook-only, configured via env)
   delete config.telegram;
 
-  // Disable Bedrock model discovery — model is set explicitly, discovery scans ~56s
-  config.models = {
-    ...config.models,
-    bedrockDiscovery: { enabled: false },
-  };
-
   if (options?.aiProvider === "bedrock") {
     // Signal that AWS credentials are available via SDK chain (EC2/Fargate IAM role)
     process.env.AWS_PROFILE = "default";

@@ -205,6 +205,9 @@ describe("gmail-tool", () => {
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain(
       "after%3A2026%2F03%2F01%20before%3A2026%2F04%2F01%20%EC%B9%B4%EB%93%9C%20%EB%AA%85%EC%84%B8%EC%84%9C",
     );
+    expect(String(fetchMock.mock.calls[2]?.[0])).toContain(
+      "fields=id,threadId,snippet,payload/headers",
+    );
   });
 
   it("confirms Gmail and then reuses parsed payment records for follow-up summaries", async () => {
@@ -430,7 +433,8 @@ describe("gmail-tool", () => {
 
     expect(response?.kind).toBe("direct");
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain("%EC%9D%BC%EB%B3%B8");
-    expect(String(fetchMock.mock.calls[2]?.[0])).toContain("maxResults=12");
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("maxResults=10");
+    expect(String(fetchMock.mock.calls[2]?.[0])).toContain("maxResults=15");
     expect(response?.message).toContain("travel-related payments linked to: 일본");
     expect(response?.message).toContain("마이리얼트립");
     expect(response?.message).not.toContain("표준 전자금융거래 기본약관");
@@ -531,7 +535,8 @@ describe("gmail-tool", () => {
 
     expect(followUp?.kind).toBe("direct");
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain("%EC%9D%BC%EB%B3%B8");
-    expect(String(fetchMock.mock.calls[2]?.[0])).toContain("maxResults=12");
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("maxResults=10");
+    expect(String(fetchMock.mock.calls[2]?.[0])).toContain("maxResults=15");
     expect(followUp?.message).toContain("마이리얼트립");
   });
 

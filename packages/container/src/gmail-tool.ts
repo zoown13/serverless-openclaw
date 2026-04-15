@@ -46,7 +46,9 @@ const PAYMENT_AMOUNT_PATTERNS: RegExp[] = [
   /(amount|total)\s*[:：]?\s*(?:krw\s*)?([0-9][0-9,]*)/gi,
   /([0-9][0-9,]*)\s*원/gi,
 ];
-const TOPIC_REFINEMENT_CANDIDATE_MIN_MESSAGES = 12;
+const DEFAULT_TOPIC_CANDIDATE_MESSAGES = 10;
+const EXPANDED_TOPIC_CANDIDATE_MESSAGES = 15;
+const MAX_TOPIC_BODY_CHECKS = 2;
 const CARD_ISSUER_PATTERNS: RegExp[] = [
   /(삼성카드|신한카드|현대카드|KB국민카드|국민카드|우리카드|롯데카드|하나카드|비씨카드|BC카드|NH카드|농협카드|카카오뱅크|토스뱅크)/i,
   /(카드종류|결제기관|카드사)\s*[:：]?\s*([^\n\r,]+)/i,
@@ -63,6 +65,7 @@ interface ToolTaskContext {
   topicKeywords?: string[];
   lastQueryMode?: "payment_summary" | "topic_filtered_payment_summary";
   refinedFromFollowUp?: boolean;
+  lastCandidateCount?: number;
   parsedPaymentRecords?: ParsedPaymentRecord[];
   lastMessages?: GmailMessageSummary[];
   lastResultSummary?: string;
@@ -205,17 +208,21 @@ export type ToolEvent =
       reason: string;
       taskFamily?: ToolTaskFamily;
     }
-  | {
-      type:
+    | {
+        type:
         | "paymentRefineStarted"
         | "paymentRefineUsedBodyCheck"
         | "paymentRefineCompleted"
         | "paymentRefineNoMatch";
-      taskFamily?: ToolTaskFamily;
-      topicKeywords?: string[];
-      matchedCount?: number;
-      reason?: string;
-    };
+        taskFamily?: ToolTaskFamily;
+        topicKeywords?: string[];
+        matchedCount?: number;
+        candidateCount?: number;
+        filteredCount?: number;
+        bodyCheckedCount?: number;
+        queryMode?: string;
+        reason?: string;
+      };
 
 function emitToolEvent(
   callback: MaybeHandleCustomGmailRequestOptions["onToolEvent"],
@@ -532,8 +539,12 @@ function selectTopicQueryKeywords(topicKeywords: string[]): string[] {
   return topicKeywords.slice(0, 1);
 }
 
-function resolveTopicCandidateLimit(maxMessages: number): number {
-  return Math.max(maxMessages, TOPIC_REFINEMENT_CANDIDATE_MIN_MESSAGES);
+function resolveInitialTopicCandidateLimit(maxMessages: number): number {
+  return Math.max(maxMessages, DEFAULT_TOPIC_CANDIDATE_MESSAGES);
+}
+
+function resolveExpandedTopicCandidateLimit(maxMessages: number): number {
+  return Math.max(maxMessages, EXPANDED_TOPIC_CANDIDATE_MESSAGES);
 }
 
 function isTopicRefinementFollowUp(message: string): boolean {
@@ -798,7 +809,7 @@ async function fetchMessageSummary(
 ): Promise<GmailMessageSummary> {
   const json = await gmailApiRequest<GmailMessageResponse>(
     accessToken,
-    `/messages/${messageId}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`,
+    `/messages/${messageId}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date&fields=id,threadId,snippet,payload/headers`,
   );
 
   return {
@@ -1038,6 +1049,7 @@ async function fetchPaymentMessages(
   maxMessages: number,
   topicKeywords: string[] = [],
 ): Promise<{
+  candidateCount: number;
   messages: GmailMessageSummary[];
   records: ParsedPaymentRecord[];
 }> {
@@ -1051,7 +1063,11 @@ async function fetchPaymentMessages(
     .map((summary) => buildPaymentRecord(summary, topicKeywords))
     .filter((record): record is ParsedPaymentRecord => Boolean(record));
 
-  return { messages, records };
+  return {
+    candidateCount: messages.length,
+    messages,
+    records,
+  };
 }
 
 async function refineRecordsWithBodyChecks(
@@ -1062,15 +1078,16 @@ async function refineRecordsWithBodyChecks(
 ): Promise<{
   records: ParsedPaymentRecord[];
   usedBodyCheck: boolean;
+  bodyCheckedCount: number;
 }> {
   const refined = records.map((record) => ({ ...record }));
   const candidates = refined
     .filter((record) => !record.isTravelRelated)
     .filter((record) => Boolean(record.amount || record.merchant))
-    .slice(0, 2);
+    .slice(0, MAX_TOPIC_BODY_CHECKS);
 
   if (candidates.length === 0) {
-    return { records: refined, usedBodyCheck: false };
+    return { records: refined, usedBodyCheck: false, bodyCheckedCount: 0 };
   }
 
   for (const candidate of candidates) {
@@ -1087,7 +1104,112 @@ async function refineRecordsWithBodyChecks(
     }
   }
 
-  return { records: refined, usedBodyCheck: candidates.length > 0 };
+  return {
+    records: refined,
+    usedBodyCheck: candidates.length > 0,
+    bodyCheckedCount: candidates.length,
+  };
+}
+
+async function searchTopicAwarePaymentCandidates(
+  accessToken: string,
+  message: string,
+  unreadOnly: boolean,
+  topicKeywords: string[],
+  emailTokenBudget: EmailTokenBudgetPolicy,
+): Promise<{
+  query: string;
+  candidateCount: number;
+  filteredCount: number;
+  bodyCheckedCount: number;
+  queryMode: "topic-filtered" | "broad-fallback";
+  messages: GmailMessageSummary[];
+  records: ParsedPaymentRecord[];
+  usedBodyCheck: boolean;
+}> {
+  const initialCandidateLimit = resolveInitialTopicCandidateLimit(
+    emailTokenBudget.maxMessages,
+  );
+  const expandedCandidateLimit = resolveExpandedTopicCandidateLimit(
+    initialCandidateLimit,
+  );
+  const narrowedQuery = buildPaymentSearchQuery(message, unreadOnly, topicKeywords);
+  let query = narrowedQuery;
+  let queryMode: "topic-filtered" | "broad-fallback" = "topic-filtered";
+  let candidateCount = 0;
+  let filteredCount = 0;
+  let bodyCheckedCount = 0;
+  let usedBodyCheck = false;
+
+  const narrowedResult = await fetchPaymentMessages(
+    accessToken,
+    narrowedQuery,
+    initialCandidateLimit,
+    topicKeywords,
+  );
+  candidateCount = narrowedResult.candidateCount;
+  let messages = narrowedResult.messages;
+  let records = narrowedResult.records;
+  let matched = filterRecordsByTopic(records, topicKeywords);
+  filteredCount = matched.length;
+
+  if (matched.length === 0 && records.length > 0) {
+    const bodyRefined = await refineRecordsWithBodyChecks(
+      accessToken,
+      records,
+      topicKeywords,
+      emailTokenBudget.maxBodyChars,
+    );
+    records = bodyRefined.records;
+    matched = filterRecordsByTopic(records, topicKeywords);
+    filteredCount = matched.length;
+    bodyCheckedCount += bodyRefined.bodyCheckedCount;
+    usedBodyCheck = bodyRefined.usedBodyCheck;
+  }
+
+  if (matched.length === 0) {
+    const broadQuery = buildPaymentSearchQuery(message, unreadOnly);
+    if (broadQuery !== narrowedQuery) {
+      query = broadQuery;
+      queryMode = "broad-fallback";
+      const broadResult = await fetchPaymentMessages(
+        accessToken,
+        broadQuery,
+        expandedCandidateLimit,
+        topicKeywords,
+      );
+      candidateCount = broadResult.candidateCount;
+      messages = broadResult.messages;
+      records = broadResult.records;
+      matched = filterRecordsByTopic(records, topicKeywords);
+      filteredCount = matched.length;
+
+      if (matched.length === 0 && records.length > 0) {
+        const broadBodyRefined = await refineRecordsWithBodyChecks(
+          accessToken,
+          records,
+          topicKeywords,
+          emailTokenBudget.maxBodyChars,
+        );
+        records = broadBodyRefined.records;
+        matched = filterRecordsByTopic(records, topicKeywords);
+        filteredCount = matched.length;
+        bodyCheckedCount += broadBodyRefined.bodyCheckedCount;
+        usedBodyCheck = usedBodyCheck || broadBodyRefined.usedBodyCheck;
+      }
+    }
+  }
+
+  return {
+    query,
+    candidateCount,
+    filteredCount,
+    bodyCheckedCount,
+    queryMode,
+    messages,
+    records: matched,
+    usedBodyCheck,
+  };
 }
 
 async function refineActivePaymentContextByTopic(
@@ -1104,6 +1226,8 @@ async function refineActivePaymentContextByTopic(
     type: "paymentRefineStarted",
     taskFamily: context.taskFamily,
     topicKeywords,
+    candidateCount: context.lastCandidateCount,
+    filteredCount: context.parsedPaymentRecords?.length ?? 0,
   });
 
   const currentMatches = filterRecordsByTopic(context.parsedPaymentRecords ?? [], topicKeywords);
@@ -1119,12 +1243,16 @@ async function refineActivePaymentContextByTopic(
       expiresAt: futureIso(DEFAULT_CONTEXT_TTL_MS),
     };
     setTaskContext(contextKey, nextContext);
-    emitToolEvent(options.onToolEvent, {
-      type: "paymentRefineCompleted",
-      taskFamily: context.taskFamily,
-      topicKeywords,
-      matchedCount: currentMatches.length,
-    });
+      emitToolEvent(options.onToolEvent, {
+        type: "paymentRefineCompleted",
+        taskFamily: context.taskFamily,
+        topicKeywords,
+        candidateCount: context.lastCandidateCount ?? currentMatches.length,
+        filteredCount: currentMatches.length,
+        matchedCount: currentMatches.length,
+        bodyCheckedCount: 0,
+        queryMode: "cached-context",
+      });
     return {
       kind: "direct",
       message: buildTopicFilteredPaymentSummaryResponse(
@@ -1156,79 +1284,35 @@ async function refineActivePaymentContextByTopic(
   }
 
   const unreadOnly = Boolean(context.lastSearchQuery?.includes("is:unread"));
-  const narrowedQuery = buildPaymentSearchQuery(context.canonicalGoal, unreadOnly, topicKeywords);
-  const topicCandidateLimit = resolveTopicCandidateLimit(
-    options.emailTokenBudget.maxMessages,
-  );
-  let effectiveQuery = narrowedQuery;
-  let { messages, records } = await fetchPaymentMessages(
+  const searchResult = await searchTopicAwarePaymentCandidates(
     accessToken,
-    narrowedQuery,
-    options.emailTokenBudget.maxMessages,
+    context.canonicalGoal,
+    unreadOnly,
     topicKeywords,
+    options.emailTokenBudget,
   );
-  let matched = filterRecordsByTopic(records, topicKeywords);
-  let usedBodyCheck = false;
 
-  if (matched.length === 0) {
-    const bodyRefined = await refineRecordsWithBodyChecks(
-      accessToken,
-      records,
+  if (searchResult.usedBodyCheck) {
+    emitToolEvent(options.onToolEvent, {
+      type: "paymentRefineUsedBodyCheck",
+      taskFamily: context.taskFamily,
       topicKeywords,
-      options.emailTokenBudget.maxBodyChars,
-    );
-    records = bodyRefined.records;
-    matched = filterRecordsByTopic(records, topicKeywords);
-    usedBodyCheck = bodyRefined.usedBodyCheck;
-    if (usedBodyCheck) {
-      emitToolEvent(options.onToolEvent, {
-        type: "paymentRefineUsedBodyCheck",
-        taskFamily: context.taskFamily,
-        topicKeywords,
-      });
-    }
+      candidateCount: searchResult.candidateCount,
+      filteredCount: searchResult.filteredCount,
+      bodyCheckedCount: searchResult.bodyCheckedCount,
+      queryMode: searchResult.queryMode,
+    });
   }
 
-  if (matched.length === 0 && topicKeywords.length > 0) {
-    const broadQuery = buildPaymentSearchQuery(context.canonicalGoal, unreadOnly);
-    if (broadQuery !== narrowedQuery) {
-      effectiveQuery = broadQuery;
-      const broadResult = await fetchPaymentMessages(
-        accessToken,
-        broadQuery,
-        topicCandidateLimit,
-        topicKeywords,
-      );
-      messages = broadResult.messages;
-      records = broadResult.records;
-      matched = filterRecordsByTopic(records, topicKeywords);
-
-      if (matched.length === 0) {
-        const broadBodyRefined = await refineRecordsWithBodyChecks(
-          accessToken,
-          records,
-          topicKeywords,
-          options.emailTokenBudget.maxBodyChars,
-        );
-        records = broadBodyRefined.records;
-        matched = filterRecordsByTopic(records, topicKeywords);
-        usedBodyCheck = usedBodyCheck || broadBodyRefined.usedBodyCheck;
-        if (broadBodyRefined.usedBodyCheck) {
-          emitToolEvent(options.onToolEvent, {
-            type: "paymentRefineUsedBodyCheck",
-            taskFamily: context.taskFamily,
-            topicKeywords,
-          });
-        }
-      }
-    }
-  }
-
-  if (matched.length === 0) {
+  if (searchResult.records.length === 0) {
     emitToolEvent(options.onToolEvent, {
       type: "paymentRefineNoMatch",
       taskFamily: context.taskFamily,
       topicKeywords,
+      candidateCount: searchResult.candidateCount,
+      filteredCount: 0,
+      bodyCheckedCount: searchResult.bodyCheckedCount,
+      queryMode: searchResult.queryMode,
       reason: "no-travel-payment-match",
     });
     return {
@@ -1242,34 +1326,39 @@ async function refineActivePaymentContextByTopic(
 
   const nextContext: ToolTaskContext = {
     ...context,
-    topicKeywords,
-    lastQueryMode: "topic_filtered_payment_summary",
-    refinedFromFollowUp: true,
-    parsedPaymentRecords: matched,
-    lastMessages: messages,
-    lastSearchQuery: effectiveQuery,
-    lastResultSummary: matched.map((record) => record.subject).join(" | "),
-    lastActivityAt: nowIso(),
-    expiresAt: futureIso(DEFAULT_CONTEXT_TTL_MS),
-  };
-  setTaskContext(contextKey, nextContext);
-  emitToolEvent(options.onToolEvent, {
-    type: "paymentRefineCompleted",
-    taskFamily: context.taskFamily,
-    topicKeywords,
-    matchedCount: matched.length,
-  });
-  return {
-    kind: "direct",
-    message: buildTopicFilteredPaymentSummaryResponse(
-      effectiveQuery,
-      matched,
       topicKeywords,
-      usedBodyCheck,
-    ),
-    source: "gmail-context",
-  };
-}
+      lastQueryMode: "topic_filtered_payment_summary",
+      refinedFromFollowUp: true,
+      lastCandidateCount: searchResult.candidateCount,
+      parsedPaymentRecords: searchResult.records,
+      lastMessages: searchResult.messages,
+      lastSearchQuery: searchResult.query,
+      lastResultSummary: searchResult.records.map((record) => record.subject).join(" | "),
+      lastActivityAt: nowIso(),
+      expiresAt: futureIso(DEFAULT_CONTEXT_TTL_MS),
+    };
+  setTaskContext(contextKey, nextContext);
+    emitToolEvent(options.onToolEvent, {
+      type: "paymentRefineCompleted",
+      taskFamily: context.taskFamily,
+      topicKeywords,
+      candidateCount: searchResult.candidateCount,
+      filteredCount: searchResult.filteredCount,
+      matchedCount: searchResult.records.length,
+      bodyCheckedCount: searchResult.bodyCheckedCount,
+      queryMode: searchResult.queryMode,
+    });
+    return {
+      kind: "direct",
+      message: buildTopicFilteredPaymentSummaryResponse(
+        searchResult.query,
+        searchResult.records,
+        topicKeywords,
+        searchResult.usedBodyCheck,
+      ),
+      source: "gmail-context",
+    };
+  }
 
 function formatPaymentFollowUp(
   context: ToolTaskContext,
@@ -1459,64 +1548,37 @@ async function runGmailTask(
   }
   const topicKeywords =
     taskFamily === "gmail_payment_summary" ? extractTopicKeywords(sourceMessage) : [];
-  const topicCandidateLimit = resolveTopicCandidateLimit(
-    options.emailTokenBudget.maxMessages,
-  );
   const unreadOnly = !/\ball\b|전체|모두/i.test(sourceMessage);
   const primaryQuery = buildPaymentSearchQuery(sourceMessage, unreadOnly, topicKeywords);
   let query = primaryQuery;
-  let { messages, records: paymentRecords } = await fetchPaymentMessages(
-    accessToken,
-    primaryQuery,
-    options.emailTokenBudget.maxMessages,
-    topicKeywords,
-  );
+  let candidateCount = options.emailTokenBudget.maxMessages;
+  let messages: GmailMessageSummary[] = [];
+  let paymentRecords: ParsedPaymentRecord[] = [];
   let usedBodyCheck = false;
 
   if (taskFamily === "gmail_payment_summary" && topicKeywords.length > 0) {
-    let matchedTravelRecords = filterRecordsByTopic(paymentRecords, topicKeywords);
-
-    if (matchedTravelRecords.length === 0 && paymentRecords.length > 0) {
-      const bodyRefined = await refineRecordsWithBodyChecks(
-        accessToken,
-        paymentRecords,
-        topicKeywords,
-        options.emailTokenBudget.maxBodyChars,
-      );
-      paymentRecords = bodyRefined.records;
-      matchedTravelRecords = filterRecordsByTopic(paymentRecords, topicKeywords);
-      usedBodyCheck = bodyRefined.usedBodyCheck;
-    }
-
-    if (matchedTravelRecords.length === 0) {
-      const broadQuery = buildPaymentSearchQuery(sourceMessage, unreadOnly);
-      if (broadQuery !== primaryQuery) {
-        query = broadQuery;
-        const broadResult = await fetchPaymentMessages(
-          accessToken,
-          broadQuery,
-          topicCandidateLimit,
-          topicKeywords,
-        );
-        messages = broadResult.messages;
-        paymentRecords = broadResult.records;
-        matchedTravelRecords = filterRecordsByTopic(paymentRecords, topicKeywords);
-
-        if (matchedTravelRecords.length === 0) {
-          const broadBodyRefined = await refineRecordsWithBodyChecks(
-            accessToken,
-            paymentRecords,
-            topicKeywords,
-            options.emailTokenBudget.maxBodyChars,
-          );
-          paymentRecords = broadBodyRefined.records;
-          matchedTravelRecords = filterRecordsByTopic(paymentRecords, topicKeywords);
-          usedBodyCheck = usedBodyCheck || broadBodyRefined.usedBodyCheck;
-        }
-      }
-    }
-
-    paymentRecords = matchedTravelRecords;
+    const searchResult = await searchTopicAwarePaymentCandidates(
+      accessToken,
+      sourceMessage,
+      unreadOnly,
+      topicKeywords,
+      options.emailTokenBudget,
+    );
+    query = searchResult.query;
+    candidateCount = searchResult.candidateCount;
+    messages = searchResult.messages;
+    paymentRecords = searchResult.records;
+    usedBodyCheck = searchResult.usedBodyCheck;
+  } else {
+    const standardResult = await fetchPaymentMessages(
+      accessToken,
+      primaryQuery,
+      options.emailTokenBudget.maxMessages,
+      topicKeywords,
+    );
+    candidateCount = standardResult.candidateCount;
+    messages = standardResult.messages;
+    paymentRecords = standardResult.records;
   }
 
   setSearchContext(contextKey, {
@@ -1535,6 +1597,7 @@ async function runGmailTask(
     lastQueryMode:
       topicKeywords.length > 0 ? "topic_filtered_payment_summary" : "payment_summary",
     refinedFromFollowUp: false,
+    lastCandidateCount: candidateCount,
     parsedPaymentRecords: paymentRecords,
     lastMessages: messages,
     lastResultSummary: messages.map((item) => item.subject).join(" | "),

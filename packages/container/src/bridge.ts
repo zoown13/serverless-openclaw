@@ -155,6 +155,8 @@ function logToolEvent(
         ...logContext,
         taskFamily: event.taskFamily,
         topicKeywords: event.topicKeywords,
+        candidateCount: event.candidateCount,
+        filteredCount: event.filteredCount,
       });
       return;
     case "paymentRefineUsedBodyCheck":
@@ -162,6 +164,10 @@ function logToolEvent(
         ...logContext,
         taskFamily: event.taskFamily,
         topicKeywords: event.topicKeywords,
+        candidateCount: event.candidateCount,
+        filteredCount: event.filteredCount,
+        bodyCheckedCount: event.bodyCheckedCount,
+        queryMode: event.queryMode,
       });
       return;
     case "paymentRefineCompleted":
@@ -170,6 +176,10 @@ function logToolEvent(
         taskFamily: event.taskFamily,
         topicKeywords: event.topicKeywords,
         matchedCount: event.matchedCount,
+        candidateCount: event.candidateCount,
+        filteredCount: event.filteredCount,
+        bodyCheckedCount: event.bodyCheckedCount,
+        queryMode: event.queryMode,
       });
       return;
     case "paymentRefineNoMatch":
@@ -177,6 +187,10 @@ function logToolEvent(
         ...logContext,
         taskFamily: event.taskFamily,
         topicKeywords: event.topicKeywords,
+        candidateCount: event.candidateCount,
+        filteredCount: event.filteredCount,
+        bodyCheckedCount: event.bodyCheckedCount,
+        queryMode: event.queryMode,
         reason: event.reason,
       });
   }

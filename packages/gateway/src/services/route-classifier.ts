@@ -17,6 +17,7 @@ export interface RouteClassificationSignals {
   hasDataLookupAction: boolean;
   hasTravelContext: boolean;
   hasPaymentRecord: boolean;
+  hasHangul: boolean;
 }
 
 const FARGATE_HINTS = ["/heavy", "/fargate"];
@@ -59,6 +60,7 @@ export function getRouteClassificationSignals(
     hasDataLookupAction: DATA_LOOKUP_ACTION_PATTERN.test(normalized),
     hasTravelContext: TRAVEL_CONTEXT_PATTERN.test(normalized),
     hasPaymentRecord: PAYMENT_RECORD_PATTERN.test(normalized),
+    hasHangul: /[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]/u.test(normalized),
   };
 }
 

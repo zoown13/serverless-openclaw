@@ -154,6 +154,7 @@ describe("getRouteClassificationSignals", () => {
       hasFinanceLookup: true,
       hasPaymentRecord: true,
       hasDataLookupAction: true,
+      hasHangul: true,
     });
   });
 });

@@ -140,6 +140,15 @@ function normalizeMessage(value: string): string {
   return value.normalize("NFKC").replace(/\s+/g, " ").trim();
 }
 
+function getMessageCodePointSample(value: string): string[] {
+  return Array.from(normalizeMessage(value))
+    .slice(0, 8)
+    .map((char) => {
+      const codePoint = char.codePointAt(0);
+      return codePoint === undefined ? "unknown" : `U+${codePoint.toString(16).toUpperCase()}`;
+    });
+}
+
 function parsePositiveInteger(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(value ?? "", 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -227,6 +236,26 @@ function buildRouteLogPayload(
     sessionId: deps.sessionId ?? `session-${deps.userId}`,
     messageLength: deps.message.length,
     ...(classifierSignals ? { classifierSignals } : {}),
+  };
+}
+
+function buildClassifierLogPayload(
+  deps: RouteDeps,
+  runtimeClass: RuntimeClass,
+  routeDecision: RouteDecision,
+  taskState: TaskStateItem | null,
+  classifierSignals: RouteClassificationSignals,
+): Record<string, unknown> {
+  return {
+    ...buildRouteLogPayload(
+      deps,
+      runtimeClass,
+      routeDecision,
+      taskState,
+      false,
+      classifierSignals,
+    ),
+    messageCodePointSample: getMessageCodePointSample(deps.message),
   };
 }
 
@@ -584,14 +613,7 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
     const classifierSignals = getRouteClassificationSignals(deps.message);
     logRouteEvent(
       "route.classified",
-      buildRouteLogPayload(
-        deps,
-        runtimeClass,
-        "lambda",
-        null,
-        false,
-        classifierSignals,
-      ),
+      buildClassifierLogPayload(deps, runtimeClass, "lambda", null, classifierSignals),
     );
     return invokeLambdaRoute(deps, deps.message, runtimeClass, "lambda", null);
   }
@@ -609,12 +631,11 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
     const routedMessage = stripRouteHint(deps.message);
     logRouteEvent(
       "route.classified",
-      buildRouteLogPayload(
+      buildClassifierLogPayload(
         deps,
         runtimeClass,
         decision,
         taskState,
-        false,
         classifierSignals,
       ),
     );
@@ -691,12 +712,11 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
   });
   logRouteEvent(
     "route.classified",
-    buildRouteLogPayload(
+    buildClassifierLogPayload(
       deps,
       runtimeClass,
       routeDecision,
       taskState,
-      false,
       classifierSignals,
     ),
   );

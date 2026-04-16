@@ -22,8 +22,10 @@ import type { InvokeLambdaAgentParams } from "./lambda-agent.js";
 import {
   classifyRoute,
   classifyRouteRuntimeClass,
+  getRouteClassificationSignals,
   stripRouteHint,
 } from "./route-classifier.js";
+import type { RouteClassificationSignals } from "./route-classifier.js";
 import { publishGatewayCountMetric } from "./metrics.js";
 
 type FetchFn = (url: string, init: RequestInit) => Promise<{ ok: boolean; status: number; statusText: string }>;
@@ -212,6 +214,7 @@ function buildRouteLogPayload(
   routeDecision: RouteDecision,
   taskState: TaskStateItem | null,
   pendingQueued: boolean,
+  classifierSignals?: RouteClassificationSignals,
 ): Record<string, unknown> {
   return {
     traceId: deps.traceId,
@@ -223,6 +226,7 @@ function buildRouteLogPayload(
     pendingQueued,
     sessionId: deps.sessionId ?? `session-${deps.userId}`,
     messageLength: deps.message.length,
+    ...(classifierSignals ? { classifierSignals } : {}),
   };
 }
 
@@ -577,9 +581,17 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
     deps.lambdaAgentFunctionArn
   ) {
     const runtimeClass = classifyRouteRuntimeClass(deps.message);
+    const classifierSignals = getRouteClassificationSignals(deps.message);
     logRouteEvent(
       "route.classified",
-      buildRouteLogPayload(deps, runtimeClass, "lambda", null, false),
+      buildRouteLogPayload(
+        deps,
+        runtimeClass,
+        "lambda",
+        null,
+        false,
+        classifierSignals,
+      ),
     );
     return invokeLambdaRoute(deps, deps.message, runtimeClass, "lambda", null);
   }
@@ -592,11 +604,19 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
   ) {
     const taskState = await deps.getTaskState(deps.userId);
     const runtimeClass = classifyRouteRuntimeClass(deps.message);
+    const classifierSignals = getRouteClassificationSignals(deps.message);
     const decision = classifyRoute({ message: deps.message, taskState });
     const routedMessage = stripRouteHint(deps.message);
     logRouteEvent(
       "route.classified",
-      buildRouteLogPayload(deps, runtimeClass, decision, taskState, false),
+      buildRouteLogPayload(
+        deps,
+        runtimeClass,
+        decision,
+        taskState,
+        false,
+        classifierSignals,
+      ),
     );
 
     if (runtimeClass === "tool-enabled") {
@@ -659,6 +679,7 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
     taskState?.status === "Running" && taskState.publicIp
       ? "fargate-reuse"
       : "fargate-new";
+  const classifierSignals = getRouteClassificationSignals(deps.message);
   await deps.putRoutingContext(
     deps.userId,
     buildToolRuntimeAffinityState(deps),
@@ -676,6 +697,7 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
       routeDecision,
       taskState,
       false,
+      classifierSignals,
     ),
   );
   return routeFargate(deps, taskState, runtimeClass, routeDecision);

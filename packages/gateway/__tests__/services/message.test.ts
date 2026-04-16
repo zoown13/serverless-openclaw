@@ -879,6 +879,9 @@ describe("message service", () => {
         expect.stringContaining("\"event\":\"route.classified\""),
       );
       expect(infoSpy).toHaveBeenCalledWith(
+        expect.stringContaining("\"classifierSignals\""),
+      );
+      expect(infoSpy).toHaveBeenCalledWith(
         expect.stringContaining("\"event\":\"route.lambda.invoked\""),
       );
       expect(publishGatewayCountMetricMock).toHaveBeenCalledWith("RouteToLambda", {

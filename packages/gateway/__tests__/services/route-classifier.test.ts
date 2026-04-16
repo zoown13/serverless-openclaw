@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   classifyRoute,
   classifyRouteRuntimeClass,
+  getRouteClassificationSignals,
   stripRouteHint,
 } from "../../src/services/route-classifier.js";
 import type { TaskStateItem } from "@serverless-openclaw/shared";
@@ -140,6 +141,20 @@ describe("classifyRouteRuntimeClass", () => {
     expect(classifyRouteRuntimeClass("여행 경비 카드사별로 보여줘")).toBe(
       "tool-enabled",
     );
+  });
+});
+
+describe("getRouteClassificationSignals", () => {
+  it("captures travel and payment signals for travel payment lookup questions", () => {
+    expect(
+      getRouteClassificationSignals("일본 여행가는데 결제한 내역들 알려줘"),
+    ).toMatchObject({
+      hasFargateHint: false,
+      hasTravelContext: true,
+      hasFinanceLookup: true,
+      hasPaymentRecord: true,
+      hasDataLookupAction: true,
+    });
   });
 });
 

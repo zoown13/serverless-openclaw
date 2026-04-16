@@ -9,6 +9,16 @@ export interface ClassifyRouteParams {
   taskState: TaskStateItem | null;
 }
 
+export interface RouteClassificationSignals {
+  hasFargateHint: boolean;
+  hasPrivateDataTarget: boolean;
+  hasPrivateDataAction: boolean;
+  hasFinanceLookup: boolean;
+  hasDataLookupAction: boolean;
+  hasTravelContext: boolean;
+  hasPaymentRecord: boolean;
+}
+
 const FARGATE_HINTS = ["/heavy", "/fargate"];
 const PRIVATE_DATA_TARGET_PATTERN =
   /(?:\bgmail\b|\bemails?\b|\be-mails?\b|\bmailbox\b|\binbox\b|\bunread\b|\battachments?\b|\bmessages?\b|\bbrowser\b|\bweb(?:site)?\b|\bsite\b|\bpage\b|\burl\b|\blink\b|\btool\b|\bfiles?\b|\bprivate data\b|지메일|이메일|메일(?:함)?|수신함|받은편지함|편지함|안 읽은|읽지 않은|첨부파일|메시지|브라우저|웹|사이트|페이지|주소|링크|도구|파일|개인\s*데이터)/i;
@@ -37,26 +47,41 @@ function hasFargateHint(message: string): boolean {
   return false;
 }
 
-export function classifyRouteRuntimeClass(message: string): RuntimeClass {
+export function getRouteClassificationSignals(
+  message: string,
+): RouteClassificationSignals {
   const normalized = normalizeIntentMessage(message);
+  return {
+    hasFargateHint: hasFargateHint(normalized),
+    hasPrivateDataTarget: PRIVATE_DATA_TARGET_PATTERN.test(normalized),
+    hasPrivateDataAction: PRIVATE_DATA_ACTION_PATTERN.test(normalized),
+    hasFinanceLookup: FINANCE_LOOKUP_PATTERN.test(normalized),
+    hasDataLookupAction: DATA_LOOKUP_ACTION_PATTERN.test(normalized),
+    hasTravelContext: TRAVEL_CONTEXT_PATTERN.test(normalized),
+    hasPaymentRecord: PAYMENT_RECORD_PATTERN.test(normalized),
+  };
+}
 
-  if (hasFargateHint(normalized)) {
+export function classifyRouteRuntimeClass(message: string): RuntimeClass {
+  const signals = getRouteClassificationSignals(message);
+
+  if (signals.hasFargateHint) {
     return "tool-enabled";
   }
 
-  if (PRIVATE_DATA_TARGET_PATTERN.test(normalized) && PRIVATE_DATA_ACTION_PATTERN.test(normalized)) {
+  if (signals.hasPrivateDataTarget && signals.hasPrivateDataAction) {
     return "tool-enabled";
   }
 
   if (
-    TRAVEL_CONTEXT_PATTERN.test(normalized) &&
-    FINANCE_LOOKUP_PATTERN.test(normalized) &&
-    (DATA_LOOKUP_ACTION_PATTERN.test(normalized) || PAYMENT_RECORD_PATTERN.test(normalized))
+    signals.hasTravelContext &&
+    signals.hasFinanceLookup &&
+    (signals.hasDataLookupAction || signals.hasPaymentRecord)
   ) {
     return "tool-enabled";
   }
 
-  if (FINANCE_LOOKUP_PATTERN.test(normalized) && DATA_LOOKUP_ACTION_PATTERN.test(normalized)) {
+  if (signals.hasFinanceLookup && signals.hasDataLookupAction) {
     return "tool-enabled";
   }
 

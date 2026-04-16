@@ -323,8 +323,8 @@ describe("gmail-tool", () => {
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(followUp?.kind).toBe("direct");
-    expect(followUp?.message).toContain("삼성카드");
-    expect(followUp?.message).toContain("현대카드");
+    expect(followUp?.message).toContain("- 삼성카드: KRW 12,300 (1건)");
+    expect(followUp?.message).toContain("- 현대카드: KRW 45,000 (1건)");
   });
 
   it("reuses the active payment context for generic contextual follow-ups", async () => {
@@ -435,8 +435,8 @@ describe("gmail-tool", () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(followUp?.kind).toBe("direct");
     expect(followUp?.message).toContain("card-issuer breakdown");
-    expect(followUp?.message).toContain("삼성카드");
-    expect(followUp?.message).toContain("현대카드");
+    expect(followUp?.message).toContain("- 삼성카드: KRW 12,300 (1건)");
+    expect(followUp?.message).toContain("- 현대카드: KRW 45,000 (1건)");
   });
 
   it("explains the headers-first cap for payment coverage follow-ups without refetching", async () => {
@@ -558,7 +558,9 @@ describe("gmail-tool", () => {
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain("maxResults=10");
     expect(String(fetchMock.mock.calls[2]?.[0])).toContain("maxResults=15");
     expect(response?.message).toContain("travel-related payments linked to: 일본");
-    expect(response?.message).toContain("마이리얼트립");
+    expect(response?.message).toContain("Merchant: 마이리얼트립(일반)");
+    expect(response?.message).toContain("Card: 삼성카드");
+    expect(response?.message).toContain("Evidence: matched by");
     expect(response?.message).not.toContain("표준 전자금융거래 기본약관");
   });
 
@@ -606,7 +608,7 @@ describe("gmail-tool", () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(followUp?.kind).toBe("direct");
     expect(followUp?.message).toContain("travel-related payments linked to: 일본");
-    expect(followUp?.message).toContain("마이리얼트립");
+    expect(followUp?.message).toContain("Merchant: 마이리얼트립(일반)");
     expect(followUp?.message).not.toContain("병천순대전문점");
   });
 
@@ -659,7 +661,7 @@ describe("gmail-tool", () => {
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain("%EC%9D%BC%EB%B3%B8");
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain("maxResults=10");
     expect(String(fetchMock.mock.calls[2]?.[0])).toContain("maxResults=15");
-    expect(followUp?.message).toContain("마이리얼트립");
+    expect(followUp?.message).toContain("Merchant: 마이리얼트립(일반)");
   });
 
   it("uses at most one or two limited body checks when travel evidence is ambiguous", async () => {
@@ -693,7 +695,7 @@ describe("gmail-tool", () => {
     expect(bodyCalls).toHaveLength(1);
     expect(response?.kind).toBe("direct");
     expect(response?.message).toContain("opened up to 2 short email bodies");
-    expect(response?.message).toContain("matched by body");
+    expect(response?.message).toContain("Evidence: matched by body");
   });
 
   it("opens one selected body from the last search context", async () => {

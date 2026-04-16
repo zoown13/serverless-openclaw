@@ -514,7 +514,7 @@ function cleanMerchantValue(value: string | undefined): string | undefined {
   }
 
   const cleaned = normalizeWhitespace(value)
-    .replace(/^["'[\]()\s]+|["'[\]()\s]+$/g, "")
+    .replace(/^["'[\]\s]+|["'[\]\s]+$/g, "")
     .replace(
       /\s*(총\s*결제\s*금액|최종결제금액|최종\s*결제\s*금액|상품금액|결제수단|결제\s*내역은|주문상품명|주문번호|승인번호|할부기간|ㄴ\s*상품금액|영수증\s*출력|english\s*receipt|-+\s*결제\s*내역은).*/i,
       "",
@@ -1057,9 +1057,19 @@ function buildTopicFilteredPaymentSummaryResponse(
     .map((record, index) => {
       const merchant = record.merchant ?? record.subject;
       const amount = record.amount ? formatCurrency(record.amount) : "amount unavailable";
-      const issuer = record.cardIssuer ? `, ${record.cardIssuer}` : "";
-      const matchedBy = record.matchedBy ? `, matched by ${record.matchedBy}` : "";
-      return `${index + 1}. ${merchant} - ${amount}${issuer}${matchedBy} (${record.date})`;
+      const issuer = record.cardIssuer ?? "Unknown issuer";
+      const evidenceBits = [
+        record.matchedBy ? `matched by ${record.matchedBy}` : undefined,
+        record.topicTags && record.topicTags.length > 0 ? record.topicTags.join(", ") : undefined,
+      ].filter(Boolean);
+      const evidence = evidenceBits.length > 0 ? evidenceBits.join(" · ") : "travel context";
+      return [
+        `${index + 1}. Merchant: ${merchant}`,
+        `   Amount: ${amount}`,
+        `   Card: ${issuer}`,
+        `   Date: ${record.date}`,
+        `   Evidence: ${evidence}`,
+      ].join("\n");
     });
 
   return [
@@ -1429,14 +1439,20 @@ function formatPaymentFollowUp(
   }
 
   if (/카드사|issuer/i.test(normalized)) {
-    const grouped = new Map<string, number>();
+    const grouped = new Map<string, { total: number; count: number }>();
     for (const record of records) {
       const key = record.cardIssuer ?? "Unknown";
-      grouped.set(key, (grouped.get(key) ?? 0) + (record.amount ?? 0));
+      const current = grouped.get(key) ?? { total: 0, count: 0 };
+      current.total += record.amount ?? 0;
+      current.count += 1;
+      grouped.set(key, current);
     }
     const lines = [...grouped.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .map(([issuer, amount]) => `- ${issuer}: ${formatCurrency(amount)}`);
+      .sort((a, b) => b[1].total - a[1].total)
+      .map(
+        ([issuer, value]) =>
+          `- ${issuer}: ${formatCurrency(value.total)} (${value.count}건)`,
+      );
     return {
       kind: "direct",
       message: `Within the current Gmail payment context, here is the card-issuer breakdown:\n${lines.join("\n")}`,

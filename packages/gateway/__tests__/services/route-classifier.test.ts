@@ -129,6 +129,18 @@ describe("classifyRouteRuntimeClass", () => {
   it("classifies compact Korean payment summary questions as tool-enabled", () => {
     expect(classifyRouteRuntimeClass("이번주 카드값이 얼마나 나왔을까")).toBe("tool-enabled");
   });
+
+  it("classifies Korean travel payment lookup questions as tool-enabled", () => {
+    expect(
+      classifyRouteRuntimeClass("일본 여행가는데 결제한 내역들 알려줘"),
+    ).toBe("tool-enabled");
+  });
+
+  it("classifies Korean travel payment breakdown questions as tool-enabled", () => {
+    expect(classifyRouteRuntimeClass("여행 경비 카드사별로 보여줘")).toBe(
+      "tool-enabled",
+    );
+  });
 });
 
 describe("classifyRoute payment routing", () => {
@@ -144,6 +156,15 @@ describe("classifyRoute payment routing", () => {
   it("routes compact Korean payment summary questions to tool-enabled compute", () => {
     const result = classifyRoute({
       message: "이번주 카드값이 얼마나 나왔을까",
+      taskState: runningTask,
+    });
+
+    expect(result).toBe("fargate-reuse");
+  });
+
+  it("routes Korean travel payment lookup questions to tool-enabled compute", () => {
+    const result = classifyRoute({
+      message: "일본 여행가는데 결제한 내역들 알려줘",
       taskState: runningTask,
     });
 

@@ -214,6 +214,32 @@ describe("gmail-tool", () => {
     expect(response?.message).toContain("Observed merchants: 스타벅스.");
   });
 
+  it("cleans merchant names before rendering payment summaries", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m1" }] } }))
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "[네이버페이] 결제하신 내역을 안내해드립니다.",
+          '"네이버페이" <naverpayadmin_noreply@navercorp.com>',
+          "Tue, 14 Apr 2026 00:32:32 +0000",
+          "결제정보 가맹점명 주식회사 굿플레이스 총 결제 금액 4460원 ㄴ 상품금액 4460원 결제수단 카드 간편결제 최종결제금액 4460원",
+        ),
+      );
+
+    const response = await maybeHandleCustomGmailRequest({
+      userId: "user-clean-merchant",
+      sessionKey: "session-clean-merchant",
+      message: "이번주 결제한 금액이 어느정도 되려나?",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    expect(response?.kind).toBe("direct");
+    expect(response?.message).toContain("Observed merchants: 주식회사 굿플레이스.");
+    expect(response?.message).toContain("Snippet: 결제정보 가맹점명 주식회사 굿플레이스 총 결제 금액 4460원");
+  });
+
   it("runs an explicit Gmail search in headers-first mode", async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))

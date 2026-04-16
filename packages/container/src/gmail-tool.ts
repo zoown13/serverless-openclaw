@@ -508,6 +508,31 @@ function extractTopicTags(text: string, topicKeywords: string[]): string[] {
   return uniqueStrings([...tags]);
 }
 
+function cleanMerchantValue(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const cleaned = normalizeWhitespace(value)
+    .replace(/^["'[\]()\s]+|["'[\]()\s]+$/g, "")
+    .replace(
+      /\s*(총\s*결제\s*금액|최종결제금액|최종\s*결제\s*금액|상품금액|결제수단|결제\s*내역은|주문상품명|주문번호|승인번호|할부기간|ㄴ\s*상품금액|영수증\s*출력|english\s*receipt|-+\s*결제\s*내역은).*/i,
+      "",
+    )
+    .replace(/\s+-\s*$/, "")
+    .trim();
+
+  if (!cleaned || cleaned.length < 2) {
+    return undefined;
+  }
+
+  if (/^(결제정보|payment|merchant)$/i.test(cleaned)) {
+    return undefined;
+  }
+
+  return cleaned;
+}
+
 function mergeTopicKeywords(...groups: Array<string[] | undefined>): string[] {
   return uniqueStrings(groups.flatMap((group) => group ?? []));
 }
@@ -845,16 +870,24 @@ function extractMerchant(subject: string, snippet: string): string | undefined {
   const joined = `${subject}\n${snippet}`;
   const directMatch = joined.match(PAYMENT_MERCHANT_PATTERN);
   if (directMatch?.[2]) {
-    return normalizeWhitespace(directMatch[2]);
+    return cleanMerchantValue(directMatch[2]);
   }
 
   const subjectMatch =
     subject.match(/(.+?)에서\s*(?:결제|승인)/) ??
     subject.match(/(.+?)의\s*(?:결제|승인)\s*내역/);
   if (subjectMatch?.[1]) {
-    return normalizeWhitespace(
+    return cleanMerchantValue(
       subjectMatch[1].replace(/^[["']+/, "").replace(/[\]"']+$/, ""),
     );
+  }
+
+  const merchantHint =
+    snippet.match(/가맹점명\s*([^\n\r]+)/i) ??
+    snippet.match(/구매상점명\s*([^\n\r]+)/i) ??
+    snippet.match(/([^\n\r]+?)\s*(?:총\s*결제\s*금액|결제금액|최종결제금액)/i);
+  if (merchantHint?.[1]) {
+    return cleanMerchantValue(merchantHint[1]);
   }
 
   return undefined;

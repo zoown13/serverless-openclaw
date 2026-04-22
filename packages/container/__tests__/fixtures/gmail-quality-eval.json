@@ -1,0 +1,186 @@
+{
+  "cases": [
+    {
+      "id": "japan_trip_filters_daily_life_noise",
+      "steps": [
+        {
+          "message": "일본 여행가는데 결제한 내역들 알려줘",
+          "listResults": [
+            [],
+            ["m1", "m2", "m3"]
+          ],
+          "messages": [
+            {
+              "id": "m1",
+              "subject": "마이리얼트립(일반)의 결제 내역입니다.",
+              "from": "\"NHN KCP 발신전용\" <pgadmcust@kcp.co.kr>",
+              "date": "Sat, 04 Apr 2026 17:40:51 +0900",
+              "snippet": "결제금액 9215 원 카드종류 삼성카드 주문상품명 [eSIM/로컬] 일본 사이트"
+            },
+            {
+              "id": "m2",
+              "subject": "[네이버페이] 결제하신 내역을 안내해드립니다.",
+              "from": "\"네이버페이\" <naverpayadmin_noreply@navercorp.com>",
+              "date": "Tue, 14 Apr 2026 00:28:43 +0000",
+              "snippet": "결제정보 가맹점명 현대엔지니어링 베이커리 총 결제 금액 4460원 결제수단 카드 간편결제"
+            },
+            {
+              "id": "m3",
+              "subject": "[하나카드] 표준 전자금융거래 기본약관 외 6종 개정 안내",
+              "from": "\"하나카드\" <hanacard@hanacard.co.kr>",
+              "date": "Tue, 14 Apr 2026 11:09:11 +0900",
+              "snippet": "하나카드 표준 전자금융거래 기본약관 외 6종 약관 개정 안내"
+            }
+          ],
+          "expectIncludes": [
+            "travel-related payments linked to: 일본",
+            "Merchant: 마이리얼트립(일반)",
+            "KRW 9,215 across 1 matched payment message(s)"
+          ],
+          "expectExcludes": [
+            "현대엔지니어링 베이커리",
+            "표준 전자금융거래 기본약관"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "destination_specific_osaka_booking",
+      "steps": [
+        {
+          "message": "오사카 여행 결제 내역 알려줘",
+          "listResults": [
+            ["m1"]
+          ],
+          "messages": [
+            {
+              "id": "m1",
+              "subject": "KLOOK 결제 내역입니다.",
+              "from": "\"KLOOK\" <noreply@klook.com>",
+              "date": "Wed, 15 Apr 2026 09:15:00 +0900",
+              "snippet": "결제금액 18400원 카드종류 현대카드 상품명 오사카 주유패스 예약 완료"
+            }
+          ],
+          "expectIncludes": [
+            "Merchant: KLOOK",
+            "KRW 18,400 across 1 matched payment message(s)"
+          ],
+          "expectExcludes": [
+            "I could not confidently match any visible payment emails"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "followup_refines_to_japan_only",
+      "steps": [
+        {
+          "message": "이번주 결제한 금액이 어느정도 되려나?",
+          "listResults": [
+            ["m1", "m2"]
+          ],
+          "messages": [
+            {
+              "id": "m1",
+              "subject": "마이리얼트립(일반)의 결제 내역입니다.",
+              "from": "\"NHN KCP 발신전용\" <pgadmcust@kcp.co.kr>",
+              "date": "Sat, 04 Apr 2026 17:40:51 +0900",
+              "snippet": "결제금액 9215 원 카드종류 삼성카드 주문상품명 [eSIM/로컬] 일본 사이트"
+            },
+            {
+              "id": "m2",
+              "subject": "[네이버페이] 결제하신 내역을 안내해드립니다.",
+              "from": "\"네이버페이\" <naverpayadmin_noreply@navercorp.com>",
+              "date": "Mon, 13 Apr 2026 03:08:14 +0000",
+              "snippet": "병천순대전문점 총 결제 금액 35000원 결제수단 카드 간편결제"
+            }
+          ],
+          "expectIncludes": [
+            "KRW 44,215"
+          ]
+        },
+        {
+          "message": "일본관련된 것만 가져와야지",
+          "expectNoAdditionalFetch": true,
+          "expectIncludes": [
+            "travel-related payments linked to: 일본",
+            "Merchant: 마이리얼트립(일반)"
+          ],
+          "expectExcludes": [
+            "병천순대전문점"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "followup_card_issuer_breakdown_stays_in_context",
+      "steps": [
+        {
+          "message": "일본 여행가는데 결제한 내역들 알려줘",
+          "listResults": [
+            [],
+            ["m1", "m2"]
+          ],
+          "messages": [
+            {
+              "id": "m1",
+              "subject": "마이리얼트립(일반)의 결제 내역입니다.",
+              "from": "\"NHN KCP 발신전용\" <pgadmcust@kcp.co.kr>",
+              "date": "Sat, 04 Apr 2026 17:40:51 +0900",
+              "snippet": "결제금액 9215 원 카드종류 삼성카드 주문상품명 [eSIM/로컬] 일본 사이트"
+            },
+            {
+              "id": "m2",
+              "subject": "KLOOK 결제 내역입니다.",
+              "from": "\"KLOOK\" <noreply@klook.com>",
+              "date": "Wed, 15 Apr 2026 09:15:00 +0900",
+              "snippet": "결제금액 18400원 카드종류 현대카드 상품명 오사카 주유패스 예약 완료"
+            }
+          ],
+          "expectIncludes": [
+            "travel-related payments linked to:"
+          ]
+        },
+        {
+          "message": "카드사별로 보여줘",
+          "expectNoAdditionalFetch": true,
+          "expectIncludes": [
+            "card-issuer breakdown",
+            "- 현대카드: KRW 18,400 (1건)",
+            "- 삼성카드: KRW 9,215 (1건)"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ambiguous_travel_signal_can_use_limited_body_check",
+      "steps": [
+        {
+          "message": "일본 여행가는데 결제한 내역들 알려줘",
+          "listResults": [
+            ["m1"]
+          ],
+          "messages": [
+            {
+              "id": "m1",
+              "subject": "온라인 결제 내역입니다.",
+              "from": "\"NHN KCP 발신전용\" <pgadmcust@kcp.co.kr>",
+              "date": "Sat, 04 Apr 2026 17:40:51 +0900",
+              "snippet": "결제금액 9215 원 카드종류 삼성카드 주문상품명 데이터 상품"
+            }
+          ],
+          "fullBodies": [
+            {
+              "id": "m1",
+              "body": "주문상품명 [eSIM/로컬] 일본 사이트 결제금액 9215원 삼성카드"
+            }
+          ],
+          "expectIncludes": [
+            "Evidence: matched by body",
+            "KRW 9,215 across 1 matched payment message(s)"
+          ]
+        }
+      ]
+    }
+  ]
+}

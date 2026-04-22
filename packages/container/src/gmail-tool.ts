@@ -34,11 +34,17 @@ const POLICY_NOTICE_PATTERN =
 const TRAVEL_REFINEMENT_PATTERN =
   /(관련된\s*것만|관련만|쪽만|만\s*(?:가져|보여|알려|정리)|여행\s*관련|일본\s*관련|travel|trip)/i;
 const TRAVEL_SIGNAL_PATTERN =
-  /(일본|japan|여행|travel|trip|항공|flight|호텔|hotel|숙소|stay|esim|e-sim|jr|rail|공항|airport|마이리얼트립|myrealtrip)/i;
+  /(일본|japan|여행|travel|trip|해외|overseas|항공|flight|호텔|hotel|숙소|stay|esim|e-sim|jr|rail|공항|airport|마이리얼트립|myrealtrip|투어|tour|예약|booking|아고다|agoda|airbnb)/i;
 const ORDER_ONLY_PATTERN =
   /(주문하신 내역|주문배송조회|구매내역|배송상태|배송정보|주문번호|주문하신)/i;
 const PAYMENT_SIGNAL_PATTERN =
   /(결제|승인|카드|결제금액|최종결제금액|총 결제 금액|payment|receipt|statement|invoice)/i;
+const TRAVEL_POSITIVE_PATTERN =
+  /(마이리얼트립|myrealtrip|trip\.com|agoda|booking\.com|airbnb|야놀자|여기어때|호텔|hotel|숙소|stay|항공|flight|airline|jr|rail|공항|airport|e\s*-?sim|sim\b|여행|travel|trip|투어|tour|패스|pass|해외|overseas|일본|japan|도쿄|tokyo|오사카|osaka|교토|kyoto|후쿠오카|fukuoka|삿포로|sapporo|오키나와|okinawa|나리타|narita|하네다|haneda|간사이|kansai)/i;
+const TRAVEL_NEGATIVE_PATTERN =
+  /(약관|정책|개정|안내|베이커리|편의점|카페|마트|식당|분식|오프라인|푸드|치킨|순대|약국|스타벅스|이마트24|쿠팡|배달|굿플레이스|병천순대|현대엔지니어링\s*베이커리)/i;
+const LOCAL_LIFE_MERCHANT_PATTERN =
+  /(베이커리|편의점|카페|마트|식당|분식|오프라인|푸드|치킨|순대|약국|슈퍼|커피|빵집|로컬\s*푸드)/i;
 const PAYMENT_MERCHANT_PATTERN =
   /(가맹점명|구매상점명|상호명|merchant)\s*[:：]?\s*([^\n\r,]+)/i;
 const PAYMENT_AMOUNT_PATTERNS: RegExp[] = [
@@ -419,13 +425,22 @@ function extractTopicKeywords(message: string): string[] {
       "여행",
       "travel",
       "trip",
+      "해외",
+      "overseas",
       "항공",
       "flight",
       "호텔",
       "hotel",
       "숙소",
       "esim",
+      "예약",
+      "booking",
     ]) {
+      keywords.add(keyword);
+    }
+  }
+  if (/해외|overseas/i.test(normalized)) {
+    for (const keyword of ["해외", "overseas", "여행", "travel"]) {
       keywords.add(keyword);
     }
   }
@@ -441,6 +456,11 @@ function extractTopicKeywords(message: string): string[] {
   }
   if (/esim|e-sim/i.test(normalized)) {
     for (const keyword of ["esim", "eSIM"]) {
+      keywords.add(keyword);
+    }
+  }
+  if (/예약|booking|agoda|airbnb/i.test(normalized)) {
+    for (const keyword of ["예약", "booking", "호텔"]) {
       keywords.add(keyword);
     }
   }
@@ -506,6 +526,90 @@ function extractTopicTags(text: string, topicKeywords: string[]): string[] {
   }
 
   return uniqueStrings([...tags]);
+}
+
+function buildTravelEvidenceText(record: ParsedPaymentRecord): string {
+  return [record.subject, record.from, record.snippet, record.merchant]
+    .filter((value): value is string => Boolean(value))
+    .join(" ");
+}
+
+function scoreTravelRecord(
+  record: ParsedPaymentRecord,
+  topicKeywords: string[],
+): { score: number; tags: string[]; confident: boolean } {
+  const evidenceText = buildTravelEvidenceText(record);
+  const tags = mergeTopicKeywords(record.topicTags, extractTopicTags(evidenceText, topicKeywords));
+  let score = 0;
+
+  if (POLICY_NOTICE_PATTERN.test(evidenceText)) {
+    score -= 6;
+  }
+  if (ORDER_ONLY_PATTERN.test(evidenceText)) {
+    score -= 2;
+  }
+  if (TRAVEL_POSITIVE_PATTERN.test(evidenceText)) {
+    score += 4;
+  }
+  if (TRAVEL_NEGATIVE_PATTERN.test(evidenceText)) {
+    score -= 3;
+  }
+  if (LOCAL_LIFE_MERCHANT_PATTERN.test(record.merchant ?? record.subject)) {
+    score -= 3;
+  }
+  if (topicKeywords.length > 0) {
+    score += Math.min(tags.length, 3) * 2;
+  }
+  if (record.matchedBy === "body" || record.source === "body") {
+    score += 1;
+  }
+  if (!record.amount) {
+    score -= 1;
+  }
+
+  return { score, tags, confident: score >= 2 };
+}
+
+function refineTravelPaymentRecords(
+  records: ParsedPaymentRecord[],
+  topicKeywords: string[],
+): ParsedPaymentRecord[] {
+  return records
+    .map((record) => {
+      const evaluation = scoreTravelRecord(record, topicKeywords);
+      return {
+        record: {
+          ...record,
+          topicTags: evaluation.tags,
+          isTravelRelated: evaluation.confident,
+        },
+        score: evaluation.score,
+        confident: evaluation.confident,
+      };
+    })
+    .filter((entry) => entry.confident)
+    .sort((left, right) => {
+      if (right.score !== left.score) {
+        return right.score - left.score;
+      }
+      if ((right.record.amount ?? 0) !== (left.record.amount ?? 0)) {
+        return (right.record.amount ?? 0) - (left.record.amount ?? 0);
+      }
+      return right.record.date.localeCompare(left.record.date);
+    })
+    .map((entry) => entry.record);
+}
+
+function filterMessagesByRecords(
+  messages: GmailMessageSummary[],
+  records: ParsedPaymentRecord[],
+): GmailMessageSummary[] {
+  if (records.length === 0) {
+    return [];
+  }
+
+  const ids = new Set(records.map((record) => record.messageId));
+  return messages.filter((message) => ids.has(message.id));
 }
 
 function cleanMerchantValue(value: string | undefined): string | undefined {
@@ -1628,6 +1732,11 @@ async function runGmailTask(
     candidateCount = standardResult.candidateCount;
     messages = standardResult.messages;
     paymentRecords = standardResult.records;
+  }
+
+  if (taskFamily === "gmail_payment_summary" && topicKeywords.length > 0) {
+    paymentRecords = refineTravelPaymentRecords(paymentRecords, topicKeywords);
+    messages = filterMessagesByRecords(messages, paymentRecords);
   }
 
   setSearchContext(contextKey, {

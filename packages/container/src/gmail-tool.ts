@@ -33,14 +33,18 @@ const POLICY_NOTICE_PATTERN =
   /(약관|개정\s*안내|기본약관|이용약관|정책\s*안내|표준\s*전자금융거래|전자금융거래\s*기본약관|terms?|policy)/i;
 const TRAVEL_REFINEMENT_PATTERN =
   /(관련된\s*것만|관련만|쪽만|만\s*(?:가져|보여|알려|정리)|여행\s*관련|일본\s*관련|travel|trip)/i;
+const TRAVEL_DESTINATION_PATTERN =
+  /(일본|japan|도쿄|tokyo|오사카|osaka|교토|kyoto|후쿠오카|fukuoka|삿포로|sapporo|오키나와|okinawa|나고야|nagoya|나리타|narita|하네다|haneda|간사이|kansai)/i;
+const TRAVEL_PLATFORM_PATTERN =
+  /(마이리얼트립|myrealtrip|trip\.com|tripcom|아고다|agoda|booking\.com|booking|airbnb|klook|kkday|스카이스캐너|skyscanner|익스피디아|expedia|호텔스닷컴|hotels\.com)/i;
 const TRAVEL_SIGNAL_PATTERN =
-  /(일본|japan|여행|travel|trip|해외|overseas|항공|flight|호텔|hotel|숙소|stay|esim|e-sim|jr|rail|공항|airport|마이리얼트립|myrealtrip|투어|tour|예약|booking|아고다|agoda|airbnb)/i;
+  /(일본|japan|도쿄|tokyo|오사카|osaka|교토|kyoto|후쿠오카|fukuoka|삿포로|sapporo|오키나와|okinawa|나고야|nagoya|나리타|narita|하네다|haneda|간사이|kansai|여행|travel|trip|해외|overseas|항공|flight|호텔|hotel|숙소|stay|esim|e-sim|jr|rail|공항|airport|마이리얼트립|myrealtrip|trip\.com|tripcom|아고다|agoda|airbnb|klook|kkday|투어|tour|예약|booking|익스피디아|expedia|호텔스닷컴|hotels\.com)/i;
 const ORDER_ONLY_PATTERN =
   /(주문하신 내역|주문배송조회|구매내역|배송상태|배송정보|주문번호|주문하신)/i;
 const PAYMENT_SIGNAL_PATTERN =
   /(결제|승인|카드|결제금액|최종결제금액|총 결제 금액|payment|receipt|statement|invoice)/i;
 const TRAVEL_POSITIVE_PATTERN =
-  /(마이리얼트립|myrealtrip|trip\.com|agoda|booking\.com|airbnb|야놀자|여기어때|호텔|hotel|숙소|stay|항공|flight|airline|jr|rail|공항|airport|e\s*-?sim|sim\b|여행|travel|trip|투어|tour|패스|pass|해외|overseas|일본|japan|도쿄|tokyo|오사카|osaka|교토|kyoto|후쿠오카|fukuoka|삿포로|sapporo|오키나와|okinawa|나리타|narita|하네다|haneda|간사이|kansai)/i;
+  /(마이리얼트립|myrealtrip|trip\.com|tripcom|agoda|booking\.com|booking|airbnb|klook|kkday|익스피디아|expedia|호텔스닷컴|hotels\.com|야놀자|여기어때|호텔|hotel|숙소|stay|항공|flight|airline|jr|rail|공항|airport|e\s*-?sim|sim\b|여행|travel|trip|투어|tour|패스|pass|해외|overseas|일본|japan|도쿄|tokyo|오사카|osaka|교토|kyoto|후쿠오카|fukuoka|삿포로|sapporo|오키나와|okinawa|나고야|nagoya|나리타|narita|하네다|haneda|간사이|kansai)/i;
 const TRAVEL_NEGATIVE_PATTERN =
   /(약관|정책|개정|안내|베이커리|편의점|카페|마트|식당|분식|오프라인|푸드|치킨|순대|약국|스타벅스|이마트24|쿠팡|배달|굿플레이스|병천순대|현대엔지니어링\s*베이커리)/i;
 const LOCAL_LIFE_MERCHANT_PATTERN =
@@ -420,6 +424,36 @@ function extractTopicKeywords(message: string): string[] {
       keywords.add(keyword);
     }
   }
+  if (TRAVEL_DESTINATION_PATTERN.test(normalized)) {
+    for (const keyword of [
+      "일본",
+      "japan",
+      "도쿄",
+      "tokyo",
+      "오사카",
+      "osaka",
+      "교토",
+      "kyoto",
+      "후쿠오카",
+      "fukuoka",
+      "삿포로",
+      "sapporo",
+      "오키나와",
+      "okinawa",
+      "나고야",
+      "nagoya",
+      "나리타",
+      "narita",
+      "하네다",
+      "haneda",
+      "간사이",
+      "kansai",
+    ]) {
+      if (normalized.includes(keyword)) {
+        keywords.add(keyword);
+      }
+    }
+  }
   if (/여행|travel|trip/i.test(normalized)) {
     for (const keyword of [
       "여행",
@@ -462,6 +496,26 @@ function extractTopicKeywords(message: string): string[] {
   if (/예약|booking|agoda|airbnb/i.test(normalized)) {
     for (const keyword of ["예약", "booking", "호텔"]) {
       keywords.add(keyword);
+    }
+  }
+  if (TRAVEL_PLATFORM_PATTERN.test(normalized)) {
+    for (const keyword of [
+      "마이리얼트립",
+      "myrealtrip",
+      "trip.com",
+      "아고다",
+      "agoda",
+      "booking",
+      "airbnb",
+      "klook",
+      "kkday",
+      "익스피디아",
+      "expedia",
+      "호텔스닷컴",
+    ]) {
+      if (normalized.includes(keyword.toLowerCase())) {
+        keywords.add(keyword);
+      }
     }
   }
   if (/jr|rail/i.test(normalized)) {
@@ -548,11 +602,20 @@ function scoreTravelRecord(
   if (ORDER_ONLY_PATTERN.test(evidenceText)) {
     score -= 2;
   }
+  if (TRAVEL_DESTINATION_PATTERN.test(evidenceText)) {
+    score += 3;
+  }
+  if (TRAVEL_PLATFORM_PATTERN.test(evidenceText)) {
+    score += 3;
+  }
   if (TRAVEL_POSITIVE_PATTERN.test(evidenceText)) {
     score += 4;
   }
   if (TRAVEL_NEGATIVE_PATTERN.test(evidenceText)) {
     score -= 3;
+  }
+  if (record.merchant && TRAVEL_PLATFORM_PATTERN.test(record.merchant)) {
+    score += 2;
   }
   if (LOCAL_LIFE_MERCHANT_PATTERN.test(record.merchant ?? record.subject)) {
     score -= 3;

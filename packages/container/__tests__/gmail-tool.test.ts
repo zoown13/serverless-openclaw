@@ -614,6 +614,34 @@ describe("gmail-tool", () => {
     expect(response?.message).toContain("KRW 9,215 across 1 matched payment message(s)");
   });
 
+  it("keeps destination-specific travel records such as Osaka bookings", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m1" }] } }))
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "KLOOK 결제 내역입니다.",
+          '"KLOOK" <noreply@klook.com>',
+          "Wed, 15 Apr 2026 09:15:00 +0900",
+          "결제금액 18400원 카드종류 현대카드 상품명 오사카 주유패스 예약 완료",
+          "m1",
+        ),
+      );
+
+    const response = await maybeHandleCustomGmailRequest({
+      userId: "user-osaka-travel",
+      sessionKey: "session-osaka-travel",
+      message: "오사카 여행 결제 내역 알려줘",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    expect(response?.kind).toBe("direct");
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("%EC%98%A4%EC%82%AC%EC%B9%B4");
+    expect(response?.message).toContain("Merchant: KLOOK");
+    expect(response?.message).toContain("KRW 18,400 across 1 matched payment message(s)");
+  });
+
   it("refines an active payment context to Japan-related records without falling back", async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))

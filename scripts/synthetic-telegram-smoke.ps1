@@ -6,7 +6,7 @@ param(
   [Parameter(Mandatory = $true)]
   [long]$ChatId,
   [long]$TelegramId,
-  [ValidateSet("PaymentFollowUp")]
+  [ValidateSet("PaymentFollowUp", "TravelPaymentFollowUp")]
   [string]$Scenario = "PaymentFollowUp",
   [int]$PauseSeconds = 10,
   [switch]$TailLogs
@@ -71,6 +71,13 @@ function Get-ScenarioMessages {
         "그거 표로 보여줘"
       )
     }
+    "TravelPaymentFollowUp" {
+      return @(
+        "일본 여행가는데 결제한 내역들 알려줘",
+        "일본관련된 것만 가져와야지",
+        "카드사별로 보여줘"
+      )
+    }
     default {
       throw "Unsupported scenario: $SelectedScenario"
     }
@@ -116,29 +123,31 @@ function Send-TelegramWebhookEvent {
     [Parameter(Mandatory = $true)][string]$JsonBody
   )
 
-  $handler = [System.Net.Http.HttpClientHandler]::new()
-  $client = [System.Net.Http.HttpClient]::new($handler)
-  try {
-    $request = [System.Net.Http.HttpRequestMessage]::new(
-      [System.Net.Http.HttpMethod]::Post,
-      $Uri
-    )
-    $request.Headers.Add("X-Telegram-Bot-Api-Secret-Token", $Secret)
-    $request.Content = [System.Net.Http.ByteArrayContent]::new(
-      [System.Text.Encoding]::UTF8.GetBytes($JsonBody)
-    )
-    $request.Content.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse(
-      "application/json; charset=utf-8"
-    )
+  $tempPath = Join-Path `
+    ([System.IO.Path]::GetTempPath()) `
+    ("telegram-webhook-{0}.json" -f [Guid]::NewGuid().ToString("N"))
 
-    $response = $client.Send($request)
-    if (-not $response.IsSuccessStatusCode) {
-      $body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
-      throw "Webhook returned HTTP $([int]$response.StatusCode): $body"
+  try {
+    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+    [System.IO.File]::WriteAllText($tempPath, $JsonBody, $utf8NoBom)
+
+    $response = & curl.exe `
+      --silent `
+      --show-error `
+      --fail `
+      --request POST `
+      --header "X-Telegram-Bot-Api-Secret-Token: $Secret" `
+      --header "Content-Type: application/json; charset=utf-8" `
+      --data-binary "@$tempPath" `
+      $Uri 2>&1
+
+    if ($LASTEXITCODE -ne 0) {
+      throw "Webhook POST failed: $response"
     }
   } finally {
-    $client.Dispose()
-    $handler.Dispose()
+    if (Test-Path -LiteralPath $tempPath) {
+      Remove-Item -LiteralPath $tempPath -Force
+    }
   }
 }
 

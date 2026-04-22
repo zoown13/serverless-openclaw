@@ -22,8 +22,11 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Install OpenClaw CLI (version configurable via build arg)
+# OpenClaw 2026.4.x loads the Telegram extension on startup and expects grammy
+# to be present in the global runtime even when webhook delivery is handled by
+# our own Gateway layer.
 ARG OPENCLAW_VERSION=2026.2.13
-RUN npm install -g openclaw@${OPENCLAW_VERSION} && \
+RUN npm install -g openclaw@${OPENCLAW_VERSION} grammy@1.42.0 && \
     npm cache clean --force
 
 # Create non-root user

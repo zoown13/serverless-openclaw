@@ -293,6 +293,76 @@
           ]
         }
       ]
+    },
+    {
+      "id": "airport_transfer_is_treated_as_travel_payment",
+      "steps": [
+        {
+          "message": "공항 이동 결제 내역 알려줘",
+          "listResults": [
+            ["m1", "m2"]
+          ],
+          "messages": [
+            {
+              "id": "m1",
+              "subject": "공항 리무진 결제 내역입니다.",
+              "from": "\"공항리무진\" <noreply@airportlimousine.com>",
+              "date": "Sun, 19 Apr 2026 08:05:00 +0900",
+              "snippet": "가맹점명 공항 리무진 결제금액 17000원 카드종류 하나카드 후쿠오카 공항 이동 예약 완료"
+            },
+            {
+              "id": "m2",
+              "subject": "[네이버페이] 결제하신 내역을 안내해드립니다.",
+              "from": "\"네이버페이\" <naverpayadmin_noreply@navercorp.com>",
+              "date": "Sun, 19 Apr 2026 08:06:00 +0900",
+              "snippet": "가맹점명 카페 총 결제 금액 4500원 결제수단 카드 간편결제"
+            }
+          ],
+          "expectIncludes": [
+            "Merchant: 공항 리무진",
+            "Card: 하나카드",
+            "KRW 17,000 across 1 matched payment message(s)"
+          ],
+          "expectExcludes": [
+            "카페"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "lodging_booking_is_treated_as_travel_payment",
+      "steps": [
+        {
+          "message": "숙소 예약 결제 내역 알려줘",
+          "listResults": [
+            ["m1", "m2"]
+          ],
+          "messages": [
+            {
+              "id": "m1",
+              "subject": "Airbnb 결제 내역입니다.",
+              "from": "\"Airbnb\" <noreply@airbnb.com>",
+              "date": "Mon, 20 Apr 2026 09:15:00 +0900",
+              "snippet": "가맹점명 Airbnb 결제금액 214500원 카드종류 삼성카드 교토 게스트하우스 숙박 예약 완료"
+            },
+            {
+              "id": "m2",
+              "subject": "[네이버페이] 결제하신 내역을 안내해드립니다.",
+              "from": "\"네이버페이\" <naverpayadmin_noreply@navercorp.com>",
+              "date": "Mon, 20 Apr 2026 09:20:00 +0900",
+              "snippet": "가맹점명 편의점 총 결제 금액 2700원 결제수단 카드 간편결제"
+            }
+          ],
+          "expectIncludes": [
+            "Merchant: Airbnb",
+            "Card: 삼성카드",
+            "KRW 214,500 across 1 matched payment message(s)"
+          ],
+          "expectExcludes": [
+            "편의점"
+          ]
+        }
+      ]
     }
   ]
 }

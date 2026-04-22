@@ -32,6 +32,25 @@ interface TelegramUpdate {
   };
 }
 
+function normalizeDiagnosticText(value: string): string {
+  return value.normalize("NFKC").replace(/\s+/g, " ").trim();
+}
+
+function getMessageCodePointSample(value: string): string[] {
+  return Array.from(normalizeDiagnosticText(value))
+    .slice(0, 8)
+    .map((char) => {
+      const codePoint = char.codePointAt(0);
+      return codePoint === undefined ? "unknown" : `U+${codePoint.toString(16).toUpperCase()}`;
+    });
+}
+
+function hasHangulCharacters(value: string): boolean {
+  return /[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]/u.test(
+    normalizeDiagnosticText(value),
+  );
+}
+
 export async function handler(event: {
   headers: Record<string, string | undefined>;
   body?: string;
@@ -78,7 +97,13 @@ export async function handler(event: {
   const botToken = secrets.get(process.env.SSM_TELEGRAM_BOT_TOKEN!) ?? "";
   const text = update.message.text;
 
-  console.log("[telegram] received message", { chatId, telegramId, textLength: text.length });
+  console.log("[telegram] received message", {
+    chatId,
+    telegramId,
+    textLength: text.length,
+    hasHangul: hasHangulCharacters(text),
+    messageCodePointSample: getMessageCodePointSample(text),
+  });
 
   // Handle /link command
   if (text.startsWith("/link ")) {

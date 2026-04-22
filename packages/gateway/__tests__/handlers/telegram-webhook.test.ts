@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { handler } from "../../src/handlers/telegram-webhook.js";
 import type { APIGatewayProxyEventV2 } from "aws-lambda";
 
@@ -83,8 +83,11 @@ function makeEvent(
 }
 
 describe("telegram-webhook handler", () => {
+  let logSpy: ReturnType<typeof vi.spyOn>;
+
   beforeEach(() => {
     vi.clearAllMocks();
+    logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
     vi.stubEnv("SSM_TELEGRAM_SECRET_TOKEN", "/serverless-openclaw/secrets/telegram-webhook-secret");
     vi.stubEnv("SSM_TELEGRAM_BOT_TOKEN", "/serverless-openclaw/secrets/telegram-bot-token");
     vi.stubEnv("ECS_CLUSTER_ARN", "arn:cluster");
@@ -101,6 +104,10 @@ describe("telegram-webhook handler", () => {
     mockGetPendingClarification.mockResolvedValue(null);
     mockPutPendingClarification.mockResolvedValue(undefined);
     mockDeletePendingClarification.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
   });
 
   it("should return 403 for invalid secret token", async () => {
@@ -414,5 +421,28 @@ describe("telegram-webhook handler", () => {
 
     expect(mockSendTelegramMessage).not.toHaveBeenCalled();
     expect(mockRouteMessage).toHaveBeenCalled();
+  });
+
+  it("should log Hangul diagnostics for Korean messages", async () => {
+    const event = makeEvent(
+      {
+        message: {
+          chat: { id: 12345 },
+          from: { id: 67890 },
+          text: "일본 여행가는데 결제한 내역들 알려줘",
+        },
+      },
+      "my-secret",
+    );
+
+    await handler(event);
+
+    expect(logSpy).toHaveBeenCalledWith(
+      "[telegram] received message",
+      expect.objectContaining({
+        hasHangul: true,
+        messageCodePointSample: expect.arrayContaining(["U+C77C", "U+BCF8"]),
+      }),
+    );
   });
 });

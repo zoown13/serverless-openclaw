@@ -206,11 +206,26 @@ export async function startContainer(opts: StartContainerOptions): Promise<void>
               case "intentDecided":
                 logBridgeEvent("bridge.tool.intent.decided", {
                   ...logContext,
+                  decisionSource: event.decisionSource,
                   action: event.action,
                   taskFamily: event.taskFamily,
                   sourceChoice: event.sourceChoice,
+                  followUpIntent: event.followUpIntent,
                   confidence: event.confidence,
+                  slmBackend: event.slmBackend,
                 });
+                if (event.decisionSource === "slm") {
+                  logBridgeEvent("bridge.slm.classified", {
+                    ...logContext,
+                    decisionSource: event.decisionSource,
+                    action: event.action,
+                    taskFamily: event.taskFamily,
+                    sourceChoice: event.sourceChoice,
+                    followUpIntent: event.followUpIntent,
+                    confidence: event.confidence,
+                    slmBackend: event.slmBackend,
+                  });
+                }
                 return;
               case "contextCreated":
               case "contextReused":
@@ -239,6 +254,57 @@ export async function startContainer(opts: StartContainerOptions): Promise<void>
                   taskFamily: event.taskFamily,
                   reason: event.reason,
                 });
+                logBridgeEvent("bridge.slm.fallback", {
+                  ...logContext,
+                  taskFamily: event.taskFamily,
+                  reason: event.reason,
+                  slmBackend: event.slmBackend,
+                });
+                return;
+              case "paymentRefineStarted":
+                logBridgeEvent("bridge.tool.payment.refine.started", {
+                  ...logContext,
+                  taskFamily: event.taskFamily,
+                  topicKeywords: event.topicKeywords,
+                  candidateCount: event.candidateCount,
+                  filteredCount: event.filteredCount,
+                });
+                return;
+              case "paymentRefineUsedBodyCheck":
+                logBridgeEvent("bridge.tool.payment.refine.used_body_check", {
+                  ...logContext,
+                  taskFamily: event.taskFamily,
+                  topicKeywords: event.topicKeywords,
+                  candidateCount: event.candidateCount,
+                  filteredCount: event.filteredCount,
+                  bodyCheckedCount: event.bodyCheckedCount,
+                  queryMode: event.queryMode,
+                });
+                return;
+              case "paymentRefineCompleted":
+                logBridgeEvent("bridge.tool.payment.refine.completed", {
+                  ...logContext,
+                  taskFamily: event.taskFamily,
+                  topicKeywords: event.topicKeywords,
+                  matchedCount: event.matchedCount,
+                  candidateCount: event.candidateCount,
+                  filteredCount: event.filteredCount,
+                  bodyCheckedCount: event.bodyCheckedCount,
+                  queryMode: event.queryMode,
+                });
+                return;
+              case "paymentRefineNoMatch":
+                logBridgeEvent("bridge.tool.payment.refine.no_match", {
+                  ...logContext,
+                  taskFamily: event.taskFamily,
+                  topicKeywords: event.topicKeywords,
+                  candidateCount: event.candidateCount,
+                  filteredCount: event.filteredCount,
+                  bodyCheckedCount: event.bodyCheckedCount,
+                  queryMode: event.queryMode,
+                  reason: event.reason,
+                });
+                return;
             }
           },
         });

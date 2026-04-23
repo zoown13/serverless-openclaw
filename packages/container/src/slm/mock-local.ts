@@ -177,6 +177,7 @@ function classifyFreshMessage(input: SlmClassificationInput): SlmTaskDecision | 
 
 export function createMockLocalSlmClassifier(): SlmClassifier {
   return {
+    backendKind: "mock-local",
     async classify(input: SlmClassificationInput): Promise<SlmTaskDecision | null> {
       return classifyActiveFollowUp(input) ?? classifyFreshMessage(input);
     },

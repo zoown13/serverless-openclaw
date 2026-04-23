@@ -49,6 +49,7 @@ describe("slm/classifier", () => {
       taskFamily: "gmail_payment_summary",
       sourceChoice: "gmail",
       confidence: 0.9,
+      slmBackend: "mock-local",
       reason: "mock-local payment summary",
     });
   });
@@ -69,6 +70,7 @@ describe("slm/classifier", () => {
       sourceChoice: "gmail",
       followUpIntent: "issuer_breakdown",
       confidence: 0.96,
+      slmBackend: "mock-local",
       reason: "mock-local issuer breakdown",
     });
   });

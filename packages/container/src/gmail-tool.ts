@@ -14,7 +14,7 @@ import {
   type DecideToolIntentInput,
   type ToolIntentDecision,
 } from "./tool-intent-advisor.js";
-import type { ToolFollowUpIntent } from "./slm/index.js";
+import type { SlmBackendKind, ToolFollowUpIntent } from "./slm/index.js";
 
 const DEFAULT_CONTEXT_TTL_MS = 5 * 60 * 1000;
 const SUMMARY_FOLLOW_UP_PATTERN =
@@ -204,6 +204,7 @@ export type ToolEvent =
       sourceChoice?: ToolSourceChoice | null;
       followUpIntent?: ToolFollowUpIntent;
       confidence?: number;
+      slmBackend?: SlmBackendKind;
     }
   | {
       type: "contextCreated" | "contextReused" | "contextCleared" | "contextExpired";
@@ -220,6 +221,7 @@ export type ToolEvent =
       type: "handlerFallback";
       reason: string;
       taskFamily?: ToolTaskFamily;
+      slmBackend?: SlmBackendKind;
     }
     | {
         type:
@@ -2229,6 +2231,7 @@ export async function maybeHandleCustomGmailRequest(
         type: "handlerFallback",
         reason: "advisor-unavailable",
         taskFamily: refreshedContext.taskFamily,
+        slmBackend: undefined,
       });
     }
     emitToolEvent(options.onToolEvent, {
@@ -2238,6 +2241,7 @@ export async function maybeHandleCustomGmailRequest(
       sourceChoice: advisorDecision?.sourceChoice ?? refreshedContext.sourceChoice,
       followUpIntent: advisorDecision?.followUpIntent,
       confidence: advisorDecision?.confidence,
+      slmBackend: advisorDecision?.slmBackend,
     });
     const handled = await handleActiveTaskContext(
       contextKey,
@@ -2280,6 +2284,7 @@ export async function maybeHandleCustomGmailRequest(
       type: "handlerFallback",
       reason: "advisor-unavailable",
       taskFamily: refreshedContext?.taskFamily,
+      slmBackend: undefined,
     });
   }
 
@@ -2290,6 +2295,7 @@ export async function maybeHandleCustomGmailRequest(
     sourceChoice: finalDecision.sourceChoice,
     followUpIntent: advisorDecision?.followUpIntent,
     confidence: finalDecision.confidence,
+    slmBackend: advisorDecision?.slmBackend,
   });
 
   if (finalDecision.action === "continue_active_task" && refreshedContext) {

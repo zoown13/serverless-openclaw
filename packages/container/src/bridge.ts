@@ -124,6 +124,7 @@ function logToolEvent(
         sourceChoice: event.sourceChoice,
         followUpIntent: event.followUpIntent,
         confidence: event.confidence,
+        slmBackend: event.slmBackend,
       });
       if (event.action !== "deterministic") {
         logBridgeEvent("bridge.slm.classified", {
@@ -133,6 +134,7 @@ function logToolEvent(
           sourceChoice: event.sourceChoice,
           followUpIntent: event.followUpIntent,
           confidence: event.confidence,
+          slmBackend: event.slmBackend,
         });
       }
       return;
@@ -164,6 +166,7 @@ function logToolEvent(
         ...logContext,
         taskFamily: event.taskFamily,
         reason: event.reason,
+        slmBackend: event.slmBackend,
       });
       return;
     case "paymentRefineStarted":

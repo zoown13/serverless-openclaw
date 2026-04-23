@@ -249,6 +249,7 @@ describe("Bridge HTTP Server", () => {
           sourceChoice: null,
           followUpIntent: "refine_topic",
           confidence: 0.82,
+          slmBackend: "mock-local",
         });
         options.onToolEvent?.({
           type: "contextCreated",
@@ -292,6 +293,9 @@ describe("Bridge HTTP Server", () => {
         expect.stringContaining("\"event\":\"bridge.slm.classified\""),
       );
       expect(infoSpy).toHaveBeenCalledWith(
+        expect.stringContaining("\"slmBackend\":\"mock-local\""),
+      );
+      expect(infoSpy).toHaveBeenCalledWith(
         expect.stringContaining("\"event\":\"bridge.tool.clarification.sent\""),
       );
       expect(publishCountMetricMock).toHaveBeenCalledWith("DeliverySuccess", {
@@ -307,6 +311,7 @@ describe("Bridge HTTP Server", () => {
           type: "handlerFallback",
           taskFamily: "gmail_payment_summary",
           reason: "advisor-unavailable",
+          slmBackend: "mock-local",
         });
         options.onToolEvent?.({
           type: "intentDecided",
@@ -343,6 +348,9 @@ describe("Bridge HTTP Server", () => {
           expect.stringContaining("\"event\":\"bridge.slm.fallback\""),
         );
       });
+      expect(infoSpy).toHaveBeenCalledWith(
+        expect.stringContaining("\"slmBackend\":\"mock-local\""),
+      );
     });
 
     it("should record delivery failure when callback delivery throws", async () => {

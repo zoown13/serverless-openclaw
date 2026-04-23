@@ -23,9 +23,11 @@ export interface SlmTaskDecision {
   sourceChoice?: ToolSourceChoice | null;
   followUpIntent?: ToolFollowUpIntent;
   confidence: number;
+  slmBackend?: SlmBackendKind;
   reason?: string;
 }
 
 export interface SlmClassifier {
+  readonly backendKind: SlmBackendKind;
   classify(input: SlmClassificationInput): Promise<SlmTaskDecision | null>;
 }

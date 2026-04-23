@@ -153,6 +153,7 @@ async function decideViaAnthropic(prompt: string): Promise<string | null> {
 
 function createRemoteApiSlmClassifier(): SlmClassifier {
   return {
+    backendKind: "remote-api",
     async classify(input: SlmClassificationInput): Promise<SlmTaskDecision | null> {
       const prompt = promptFor(input);
       const decisionPromise =
@@ -182,10 +183,18 @@ export function createDefaultSlmClassifier(kind = resolveSlmBackendKind()): SlmC
   let backendPromise: Promise<SlmClassifier> | null = null;
 
   return {
+    backendKind: kind,
     async classify(input: SlmClassificationInput): Promise<SlmTaskDecision | null> {
       backendPromise ??= loadClassifierBackend(kind);
       const backend = await backendPromise;
-      return backend.classify(input);
+      const decision = await backend.classify(input);
+      if (!decision) {
+        return null;
+      }
+      return {
+        ...decision,
+        slmBackend: backend.backendKind,
+      };
     },
   };
 }

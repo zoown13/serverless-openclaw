@@ -1,11 +1,16 @@
 import { ConverseCommand, BedrockRuntimeClient } from "@aws-sdk/client-bedrock-runtime";
 
 import { isToolFollowUpIntent, isToolIntentAdvisorAction, isToolSourceChoice, isToolTaskFamily } from "./taxonomy.js";
-import type { SlmClassificationInput, SlmClassifier, SlmTaskDecision } from "./types.js";
+import { createMockLocalSlmClassifier } from "./mock-local.js";
+import type { SlmBackendKind, SlmClassificationInput, SlmClassifier, SlmTaskDecision } from "./types.js";
 
 const MAX_CLASSIFIER_CHARS = 600;
 export const MIN_TOOL_INTENT_CONFIDENCE = 0.72;
 const TIMEOUT_MS = 3500;
+
+export function resolveSlmBackendKind(value = process.env.TOOL_SLM_BACKEND): SlmBackendKind {
+  return value === "mock-local" ? "mock-local" : "remote-api";
+}
 
 function provider(): "anthropic" | "bedrock" {
   return process.env.AI_PROVIDER === "bedrock" ? "bedrock" : "anthropic";
@@ -146,7 +151,7 @@ async function decideViaAnthropic(prompt: string): Promise<string | null> {
   return json.content?.find((item) => item.type === "text")?.text ?? null;
 }
 
-export function createDefaultSlmClassifier(): SlmClassifier {
+function createRemoteApiSlmClassifier(): SlmClassifier {
   return {
     async classify(input: SlmClassificationInput): Promise<SlmTaskDecision | null> {
       const prompt = promptFor(input);
@@ -162,6 +167,25 @@ export function createDefaultSlmClassifier(): SlmClassifier {
       }
 
       return parseSlmClassifierResponse(text);
+    },
+  };
+}
+
+async function loadClassifierBackend(kind: SlmBackendKind): Promise<SlmClassifier> {
+  if (kind === "mock-local") {
+    return createMockLocalSlmClassifier();
+  }
+  return createRemoteApiSlmClassifier();
+}
+
+export function createDefaultSlmClassifier(kind = resolveSlmBackendKind()): SlmClassifier {
+  let backendPromise: Promise<SlmClassifier> | null = null;
+
+  return {
+    async classify(input: SlmClassificationInput): Promise<SlmTaskDecision | null> {
+      backendPromise ??= loadClassifierBackend(kind);
+      const backend = await backendPromise;
+      return backend.classify(input);
     },
   };
 }

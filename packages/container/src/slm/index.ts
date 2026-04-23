@@ -1,4 +1,4 @@
-export type { SlmClassificationInput, SlmClassifier, SlmTaskDecision } from "./types.js";
+export type { SlmBackendKind, SlmClassificationInput, SlmClassifier, SlmTaskDecision } from "./types.js";
 export type { ToolFollowUpIntent } from "./taxonomy.js";
 export {
   TOOL_FOLLOW_UP_INTENTS,
@@ -10,4 +10,9 @@ export {
   isToolSourceChoice,
   isToolTaskFamily,
 } from "./taxonomy.js";
-export { MIN_TOOL_INTENT_CONFIDENCE, createDefaultSlmClassifier, parseSlmClassifierResponse } from "./classifier.js";
+export {
+  MIN_TOOL_INTENT_CONFIDENCE,
+  createDefaultSlmClassifier,
+  parseSlmClassifierResponse,
+  resolveSlmBackendKind,
+} from "./classifier.js";

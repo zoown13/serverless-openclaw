@@ -6,6 +6,8 @@ import type {
 
 import type { ToolFollowUpIntent } from "./taxonomy.js";
 
+export type SlmBackendKind = "remote-api" | "mock-local";
+
 export interface SlmClassificationInput {
   message: string;
   gmailReady: boolean;

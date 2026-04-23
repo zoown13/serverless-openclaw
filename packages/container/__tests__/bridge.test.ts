@@ -247,6 +247,7 @@ describe("Bridge HTTP Server", () => {
           action: "clarify_source",
           taskFamily: "gmail_payment_summary",
           sourceChoice: null,
+          followUpIntent: "refine_topic",
           confidence: 0.82,
         });
         options.onToolEvent?.({
@@ -288,12 +289,59 @@ describe("Bridge HTTP Server", () => {
         );
       });
       expect(infoSpy).toHaveBeenCalledWith(
+        expect.stringContaining("\"event\":\"bridge.slm.classified\""),
+      );
+      expect(infoSpy).toHaveBeenCalledWith(
         expect.stringContaining("\"event\":\"bridge.tool.clarification.sent\""),
       );
       expect(publishCountMetricMock).toHaveBeenCalledWith("DeliverySuccess", {
         channel: "web",
         runtime: "fargate",
         deliveryType: "websocket",
+      });
+    });
+
+    it("should log slm fallback telemetry when the classifier falls back", async () => {
+      gmailToolMock.mockImplementation(async (options: { onToolEvent?: (event: unknown) => void }) => {
+        options.onToolEvent?.({
+          type: "handlerFallback",
+          taskFamily: "gmail_payment_summary",
+          reason: "advisor-unavailable",
+        });
+        options.onToolEvent?.({
+          type: "intentDecided",
+          action: "deterministic",
+          taskFamily: "gmail_payment_summary",
+          sourceChoice: "gmail",
+          confidence: 0.5,
+        });
+        return {
+          kind: "direct",
+          message: "Fallback result",
+          source: "gmail-context",
+        };
+      });
+
+      const res = await request(app)
+        .post("/message")
+        .set("Authorization", "Bearer test-secret-token")
+        .send({
+          userId: "user-1",
+          message: "이번주 결제한 금액이 어느정도 되려나?",
+          channel: "web",
+          connectionId: "conn-123",
+          callbackUrl: "https://example.com/prod",
+          runtimeClass: "tool-enabled",
+          traceId: "trace-slm-fallback",
+          routeDecision: "fargate-new",
+        });
+
+      expect(res.status).toBe(202);
+
+      await vi.waitFor(() => {
+        expect(infoSpy).toHaveBeenCalledWith(
+          expect.stringContaining("\"event\":\"bridge.slm.fallback\""),
+        );
       });
     });
 

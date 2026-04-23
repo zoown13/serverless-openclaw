@@ -439,6 +439,67 @@ describe("gmail-tool", () => {
     expect(followUp?.message).toContain("- 현대카드: KRW 45,000 (1건)");
   });
 
+  it("uses followUpIntent to route short active-context replies into the specialized payment handler", async () => {
+    decideToolIntentMock
+      .mockResolvedValueOnce({
+        action: "gmail",
+        taskFamily: "gmail_payment_summary",
+        sourceChoice: "gmail",
+        confidence: 0.95,
+      })
+      .mockResolvedValueOnce({
+        action: "continue_active_task",
+        taskFamily: "gmail_payment_summary",
+        sourceChoice: "gmail",
+        followUpIntent: "issuer_breakdown",
+        confidence: 0.95,
+      });
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m1" }, { id: "m2" }] } }))
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "카드 결제 알림",
+          "Card Co <billing@example.com>",
+          "Fri, 03 Apr 2026 09:00:00 +0000",
+          "결제금액 12,300원 카드종류 삼성카드 가맹점명 스타벅스",
+        ),
+      )
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "카드 결제 알림",
+          "Card Co <billing@example.com>",
+          "Thu, 02 Apr 2026 09:00:00 +0000",
+          "결제금액 45,000원 카드종류 현대카드 가맹점명 쿠팡",
+        ),
+      );
+
+    await maybeHandleCustomGmailRequest({
+      userId: "user-followup-intent",
+      sessionKey: "session-followup-intent",
+      message: "이번주 결제한 금액이 어느정도 되려나?",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    fetchMock.mockReset();
+
+    const followUp = await maybeHandleCustomGmailRequest({
+      userId: "user-followup-intent",
+      sessionKey: "session-followup-intent",
+      message: "그걸로 부탁해",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(followUp?.kind).toBe("direct");
+    expect(followUp?.message).toContain("card-issuer breakdown");
+    expect(followUp?.message).toContain("- 삼성카드: KRW 12,300 (1건)");
+    expect(followUp?.message).toContain("- 현대카드: KRW 45,000 (1건)");
+  });
+
   it("explains the headers-first cap for payment coverage follow-ups without refetching", async () => {
     decideToolIntentMock.mockResolvedValueOnce({
       action: "gmail",

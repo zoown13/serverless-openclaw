@@ -4,7 +4,7 @@ import type {
   ToolTaskFamily,
 } from "@serverless-openclaw/shared";
 import { MIN_TOOL_INTENT_CONFIDENCE, createDefaultSlmClassifier, parseSlmClassifierResponse } from "./slm/index.js";
-import type { SlmClassificationInput } from "./slm/index.js";
+import type { SlmClassificationInput, ToolFollowUpIntent } from "./slm/index.js";
 
 export interface DecideToolIntentInput {
   message: string;
@@ -15,6 +15,11 @@ export interface DecideToolIntentInput {
     canonicalGoal?: string;
     lastResultSummary?: string;
   };
+}
+
+export interface ToolIntentDecision extends ToolIntentAdvisorResult {
+  followUpIntent?: ToolFollowUpIntent;
+  reason?: string;
 }
 
 const slmClassifier = createDefaultSlmClassifier();
@@ -45,7 +50,7 @@ export function parseToolIntentAdvisorResponse(text: string): ToolIntentAdvisorR
 
 export async function decideToolIntent(
   input: DecideToolIntentInput,
-): Promise<ToolIntentAdvisorResult | null> {
+): Promise<ToolIntentDecision | null> {
   const decision = await slmClassifier.classify(toSlmInput(input));
   if (!decision) {
     return null;
@@ -60,6 +65,8 @@ export async function decideToolIntent(
     action: decision.action,
     taskFamily: decision.taskFamily,
     sourceChoice: decision.sourceChoice,
+    followUpIntent: decision.followUpIntent,
     confidence: decision.confidence,
+    reason: decision.reason,
   };
 }

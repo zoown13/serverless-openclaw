@@ -122,8 +122,19 @@ function logToolEvent(
         action: event.action,
         taskFamily: event.taskFamily,
         sourceChoice: event.sourceChoice,
+        followUpIntent: event.followUpIntent,
         confidence: event.confidence,
       });
+      if (event.action !== "deterministic") {
+        logBridgeEvent("bridge.slm.classified", {
+          ...logContext,
+          action: event.action,
+          taskFamily: event.taskFamily,
+          sourceChoice: event.sourceChoice,
+          followUpIntent: event.followUpIntent,
+          confidence: event.confidence,
+        });
+      }
       return;
     case "contextCreated":
     case "contextReused":
@@ -145,6 +156,11 @@ function logToolEvent(
       return;
     case "handlerFallback":
       logBridgeEvent("bridge.tool.handler.fallback", {
+        ...logContext,
+        taskFamily: event.taskFamily,
+        reason: event.reason,
+      });
+      logBridgeEvent("bridge.slm.fallback", {
         ...logContext,
         taskFamily: event.taskFamily,
         reason: event.reason,

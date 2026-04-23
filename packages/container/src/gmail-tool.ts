@@ -12,7 +12,9 @@ import type {
 import {
   decideToolIntent,
   type DecideToolIntentInput,
+  type ToolIntentDecision,
 } from "./tool-intent-advisor.js";
+import type { ToolFollowUpIntent } from "./slm/index.js";
 
 const DEFAULT_CONTEXT_TTL_MS = 5 * 60 * 1000;
 const SUMMARY_FOLLOW_UP_PATTERN =
@@ -200,6 +202,7 @@ export type ToolEvent =
       action: ToolIntentAdvisorAction | "deterministic";
       taskFamily?: ToolTaskFamily;
       sourceChoice?: ToolSourceChoice | null;
+      followUpIntent?: ToolFollowUpIntent;
       confidence?: number;
     }
   | {
@@ -1600,6 +1603,7 @@ function formatPaymentFollowUp(
   context: ToolTaskContext,
   message: string,
   maxMessages: number,
+  followUpIntent?: ToolFollowUpIntent,
 ): ToolHandlerResult | undefined {
   const records = context.parsedPaymentRecords ?? [];
   if (records.length === 0) {
@@ -1614,7 +1618,7 @@ function formatPaymentFollowUp(
   const total = records.reduce((sum, record) => sum + (record.amount ?? 0), 0);
   const normalized = message.toLowerCase();
 
-  if (/더\s*(있|찾|보)|밖에\s*없|몇\s*개|개수|건수|limit/i.test(normalized)) {
+  if (followUpIntent === "coverage_check" || /더\s*(있|찾|보)|밖에\s*없|몇\s*개|개수|건수|limit/i.test(normalized)) {
     const inspectedCount = context.lastMessages?.length ?? records.length;
     const hitSafetyCap = inspectedCount >= maxMessages;
     const capMessage = hitSafetyCap
@@ -1631,7 +1635,7 @@ function formatPaymentFollowUp(
     };
   }
 
-  if (/카드사|issuer/i.test(normalized)) {
+  if (followUpIntent === "issuer_breakdown" || /카드사|issuer/i.test(normalized)) {
     const grouped = new Map<string, { total: number; count: number }>();
     for (const record of records) {
       const key = record.cardIssuer ?? "Unknown";
@@ -1653,7 +1657,7 @@ function formatPaymentFollowUp(
     };
   }
 
-  if (/결제처|가맹점|merchant/i.test(normalized)) {
+  if (followUpIntent === "merchant_breakdown" || /결제처|가맹점|merchant/i.test(normalized)) {
     const grouped = new Map<string, number>();
     for (const record of records) {
       const key = record.merchant ?? "Unknown merchant";
@@ -1669,7 +1673,7 @@ function formatPaymentFollowUp(
     };
   }
 
-  if (/합계|총액|sum|total/i.test(normalized)) {
+  if (followUpIntent === "amount_summary" || /합계|총액|sum|total/i.test(normalized)) {
     return {
       kind: "direct",
       message: `Within the current Gmail payment context, the visible headers-first total is ${formatCurrency(total)} across ${records.length} payment message(s).`,
@@ -1695,6 +1699,19 @@ function formatPaymentFollowUp(
       `Top matched payments:\n${topRecords.join("\n")}`,
     source: "gmail-context",
   };
+}
+
+function shouldKeepPaymentContextByIntent(followUpIntent?: ToolFollowUpIntent): boolean {
+  return [
+    "continue_active_task",
+    "refine_topic",
+    "refine_date",
+    "issuer_breakdown",
+    "merchant_breakdown",
+    "amount_summary",
+    "coverage_check",
+    "open_body",
+  ].includes(followUpIntent ?? "");
 }
 
 function parseBodySelector(message: string, searchContext?: SearchContext): GmailMessageSummary[] {
@@ -2078,6 +2095,7 @@ async function handleActiveTaskContext(
   contextKey: string,
   context: ToolTaskContext,
   options: MaybeHandleCustomGmailRequestOptions,
+  followUpIntent?: ToolFollowUpIntent,
 ): Promise<ToolHandlerResult | undefined> {
   const trimmed = normalizeWhitespace(options.message);
   if (CANCEL_PATTERN.test(trimmed)) {
@@ -2113,7 +2131,7 @@ async function handleActiveTaskContext(
     effectiveContext.taskFamily === "gmail_payment_summary" &&
     effectiveContext.sourceChoice === "gmail"
   ) {
-    if (isBodyRequest(trimmed) || isAttachmentRequest(trimmed)) {
+    if (followUpIntent === "open_body" || isBodyRequest(trimmed) || isAttachmentRequest(trimmed)) {
       const credentials = await loadGmailCredentials();
       if (!credentials) {
         return {
@@ -2142,7 +2160,7 @@ async function handleActiveTaskContext(
       );
     }
 
-    if (isClearlyUnrelated(trimmed)) {
+    if (!shouldKeepPaymentContextByIntent(followUpIntent) && isClearlyUnrelated(trimmed)) {
       clearTaskContext(contextKey);
       emitToolEvent(options.onToolEvent, {
         type: "contextCleared",
@@ -2163,13 +2181,14 @@ async function handleActiveTaskContext(
       taskFamily: nextContext.taskFamily,
       sourceChoice: nextContext.sourceChoice,
     });
-    if (isTopicRefinementFollowUp(trimmed)) {
+    if (followUpIntent === "refine_topic" || isTopicRefinementFollowUp(trimmed)) {
       return refineActivePaymentContextByTopic(contextKey, nextContext, options);
     }
     return formatPaymentFollowUp(
       nextContext,
       trimmed,
       options.emailTokenBudget.maxMessages,
+      followUpIntent,
     );
   }
 
@@ -2200,8 +2219,32 @@ export async function maybeHandleCustomGmailRequest(
   }
 
   const refreshedContext = getTaskContext(contextKey);
+  let advisorDecision: ToolIntentDecision | null = null;
   if (refreshedContext?.status === "active") {
-    const handled = await handleActiveTaskContext(contextKey, refreshedContext, options);
+    advisorDecision = await decideToolIntent(
+      buildAdvisorInput(options.message, options.gmailReady, refreshedContext),
+    );
+    if (!advisorDecision) {
+      emitToolEvent(options.onToolEvent, {
+        type: "handlerFallback",
+        reason: "advisor-unavailable",
+        taskFamily: refreshedContext.taskFamily,
+      });
+    }
+    emitToolEvent(options.onToolEvent, {
+      type: "intentDecided",
+      action: advisorDecision?.action ?? "deterministic",
+      taskFamily: advisorDecision?.taskFamily ?? refreshedContext.taskFamily,
+      sourceChoice: advisorDecision?.sourceChoice ?? refreshedContext.sourceChoice,
+      followUpIntent: advisorDecision?.followUpIntent,
+      confidence: advisorDecision?.confidence,
+    });
+    const handled = await handleActiveTaskContext(
+      contextKey,
+      refreshedContext,
+      options,
+      advisorDecision?.followUpIntent,
+    );
     if (handled) {
       return handled;
     }
@@ -2213,7 +2256,7 @@ export async function maybeHandleCustomGmailRequest(
     refreshedContext,
   );
 
-  const advisorDecision = await decideToolIntent(
+  advisorDecision ??= await decideToolIntent(
     buildAdvisorInput(options.message, options.gmailReady, refreshedContext),
   );
 
@@ -2245,11 +2288,17 @@ export async function maybeHandleCustomGmailRequest(
     action: finalDecision.action,
     taskFamily: finalDecision.taskFamily,
     sourceChoice: finalDecision.sourceChoice,
+    followUpIntent: advisorDecision?.followUpIntent,
     confidence: finalDecision.confidence,
   });
 
   if (finalDecision.action === "continue_active_task" && refreshedContext) {
-    const handled = await handleActiveTaskContext(contextKey, refreshedContext, options);
+    const handled = await handleActiveTaskContext(
+      contextKey,
+      refreshedContext,
+      options,
+      advisorDecision?.followUpIntent,
+    );
     if (handled) {
       return handled;
     }

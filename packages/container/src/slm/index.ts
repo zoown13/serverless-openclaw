@@ -1,4 +1,5 @@
 export type { SlmClassificationInput, SlmClassifier, SlmTaskDecision } from "./types.js";
+export type { ToolFollowUpIntent } from "./taxonomy.js";
 export {
   TOOL_FOLLOW_UP_INTENTS,
   TOOL_INTENT_ADVISOR_ACTIONS,

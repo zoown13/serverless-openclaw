@@ -199,6 +199,7 @@ export type ToolHandlerResult =
 export type ToolEvent =
   | {
       type: "intentDecided";
+      decisionSource?: "slm" | "deterministic";
       action: ToolIntentAdvisorAction | "deterministic";
       taskFamily?: ToolTaskFamily;
       sourceChoice?: ToolSourceChoice | null;
@@ -2236,6 +2237,7 @@ export async function maybeHandleCustomGmailRequest(
     }
     emitToolEvent(options.onToolEvent, {
       type: "intentDecided",
+      decisionSource: advisorDecision ? "slm" : "deterministic",
       action: advisorDecision?.action ?? "deterministic",
       taskFamily: advisorDecision?.taskFamily ?? refreshedContext.taskFamily,
       sourceChoice: advisorDecision?.sourceChoice ?? refreshedContext.sourceChoice,
@@ -2290,6 +2292,7 @@ export async function maybeHandleCustomGmailRequest(
 
   emitToolEvent(options.onToolEvent, {
     type: "intentDecided",
+    decisionSource: advisorDecision ? "slm" : "deterministic",
     action: finalDecision.action,
     taskFamily: finalDecision.taskFamily,
     sourceChoice: finalDecision.sourceChoice,

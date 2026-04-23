@@ -119,6 +119,7 @@ function logToolEvent(
     case "intentDecided":
       logBridgeEvent("bridge.tool.intent.decided", {
         ...logContext,
+        decisionSource: event.decisionSource,
         action: event.action,
         taskFamily: event.taskFamily,
         sourceChoice: event.sourceChoice,
@@ -126,9 +127,10 @@ function logToolEvent(
         confidence: event.confidence,
         slmBackend: event.slmBackend,
       });
-      if (event.action !== "deterministic") {
+      if (event.decisionSource === "slm") {
         logBridgeEvent("bridge.slm.classified", {
           ...logContext,
+          decisionSource: event.decisionSource,
           action: event.action,
           taskFamily: event.taskFamily,
           sourceChoice: event.sourceChoice,

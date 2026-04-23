@@ -244,6 +244,7 @@ describe("Bridge HTTP Server", () => {
       gmailToolMock.mockImplementation(async (options: { onToolEvent?: (event: unknown) => void }) => {
         options.onToolEvent?.({
           type: "intentDecided",
+          decisionSource: "slm",
           action: "clarify_source",
           taskFamily: "gmail_payment_summary",
           sourceChoice: null,
@@ -315,6 +316,7 @@ describe("Bridge HTTP Server", () => {
         });
         options.onToolEvent?.({
           type: "intentDecided",
+          decisionSource: "deterministic",
           action: "deterministic",
           taskFamily: "gmail_payment_summary",
           sourceChoice: "gmail",

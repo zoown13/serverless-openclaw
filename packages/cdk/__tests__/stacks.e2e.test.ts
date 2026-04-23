@@ -222,6 +222,11 @@ describe("CDK Stacks E2E — synth all stacks", () => {
       expect(templateJson).toContain("PENDING_MESSAGE_MAX_RETRY_DELAY_MS");
     });
 
+    it("omits TOOL_SLM_BACKEND unless explicitly configured", () => {
+      const templateJson = JSON.stringify(computeTemplate.toJSON());
+      expect(templateJson).not.toContain("TOOL_SLM_BACKEND");
+    });
+
     it("CloudWatch Log Group", () => {
       computeTemplate.resourceCountIs("AWS::Logs::LogGroup", 1);
     });

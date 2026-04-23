@@ -27,6 +27,7 @@ export interface ComputeStackProps extends cdk.StackProps {
   fargateMemory?: number;
   aiProvider?: string;
   aiModel?: string;
+  toolSlmBackend?: string;
 }
 
 export class ComputeStack extends cdk.Stack {
@@ -112,6 +113,7 @@ export class ComputeStack extends cdk.Stack {
         METRICS_ENABLED: "true",
         AI_PROVIDER: props.aiProvider ?? "anthropic",
         ...(props.aiModel ? { AI_MODEL: props.aiModel } : {}),
+        ...(props.toolSlmBackend ? { TOOL_SLM_BACKEND: props.toolSlmBackend } : {}),
         AWS_REGION: this.region,
         // Pending queue retry tuning stays in env vars so operations can adjust
         // backoff/dead-letter behaviour without rebuilding the Fargate image.

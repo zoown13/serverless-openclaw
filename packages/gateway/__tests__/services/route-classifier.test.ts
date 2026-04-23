@@ -142,6 +142,12 @@ describe("classifyRouteRuntimeClass", () => {
       "tool-enabled",
     );
   });
+
+  it("classifies travel spending lookups with date ranges as tool-enabled", () => {
+    expect(
+      classifyRouteRuntimeClass("4월 18일부터 일본 여행 관련 쓴 돈 정리해줘"),
+    ).toBe("tool-enabled");
+  });
 });
 
 describe("getRouteClassificationSignals", () => {
@@ -154,6 +160,18 @@ describe("getRouteClassificationSignals", () => {
       hasFinanceLookup: true,
       hasPaymentRecord: true,
       hasDataLookupAction: true,
+      hasHangul: true,
+    });
+  });
+
+  it("captures travel spending signals for dated travel spend lookups", () => {
+    expect(
+      getRouteClassificationSignals("4월 18일부터 일본 여행 관련 쓴 돈 정리해줘"),
+    ).toMatchObject({
+      hasTravelContext: true,
+      hasFinanceLookup: true,
+      hasDataLookupAction: true,
+      hasPaymentRecord: true,
       hasHangul: true,
     });
   });
@@ -181,6 +199,15 @@ describe("classifyRoute payment routing", () => {
   it("routes Korean travel payment lookup questions to tool-enabled compute", () => {
     const result = classifyRoute({
       message: "일본 여행가는데 결제한 내역들 알려줘",
+      taskState: runningTask,
+    });
+
+    expect(result).toBe("fargate-reuse");
+  });
+
+  it("routes dated travel spending lookups to tool-enabled compute", () => {
+    const result = classifyRoute({
+      message: "4월 18일부터 일본 여행 관련 쓴 돈 정리해줘",
       taskState: runningTask,
     });
 

@@ -227,7 +227,6 @@ export async function invokeAgentCoreRuntime(
     accept: "application/json",
     "content-type": "application/json",
     host,
-    "x-amz-content-sha256": payloadHash,
     "x-amz-date": amzDate,
     "x-amzn-bedrock-agentcore-runtime-session-id": sessionId,
   };
@@ -256,7 +255,9 @@ export async function invokeAgentCoreRuntime(
   });
 
   if (!resp.ok) {
-    throw new Error(`AgentCore runtime returned ${resp.status}`);
+    const details = await resp.text().catch(() => "");
+    const suffix = details.trim() ? `: ${details.trim().slice(0, 300)}` : "";
+    throw new Error(`AgentCore runtime returned ${resp.status}${suffix}`);
   }
 
   return {

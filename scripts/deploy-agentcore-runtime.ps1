@@ -1,6 +1,6 @@
 param(
   [string]$Region = "ap-northeast-2",
-  [string]$RuntimeName = "serverless-openclaw-tool-runtime",
+  [string]$RuntimeName = "ServerlessOpenClawToolRuntime",
   [string]$RuntimeRoleName = "serverless-openclaw-agentcore-runtime-role",
   [string]$ImageTag = "latest",
   [string]$UserId = "system:agentcore",
@@ -10,6 +10,83 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+function Invoke-JsonCli {
+  param([Parameter(Mandatory = $true)] [scriptblock]$Command)
+
+  $previousErrorActionPreference = $ErrorActionPreference
+  $previousNativePreference = $null
+  if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -Scope Global -ErrorAction SilentlyContinue) {
+    $previousNativePreference = $Global:PSNativeCommandUseErrorActionPreference
+  }
+  try {
+    $ErrorActionPreference = "Continue"
+    if ($null -ne $previousNativePreference) {
+      $Global:PSNativeCommandUseErrorActionPreference = $false
+    }
+    $output = & $Command 2>&1
+    if ($LASTEXITCODE -ne 0) {
+      throw ($output | Out-String)
+    }
+    return $output | ConvertFrom-Json
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+    if ($null -ne $previousNativePreference) {
+      $Global:PSNativeCommandUseErrorActionPreference = $previousNativePreference
+    }
+  }
+}
+
+function Invoke-TextCli {
+  param([Parameter(Mandatory = $true)] [scriptblock]$Command)
+
+  $previousErrorActionPreference = $ErrorActionPreference
+  $previousNativePreference = $null
+  if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -Scope Global -ErrorAction SilentlyContinue) {
+    $previousNativePreference = $Global:PSNativeCommandUseErrorActionPreference
+  }
+  try {
+    $ErrorActionPreference = "Continue"
+    if ($null -ne $previousNativePreference) {
+      $Global:PSNativeCommandUseErrorActionPreference = $false
+    }
+    $output = & $Command 2>&1
+    if ($LASTEXITCODE -ne 0) {
+      throw ($output | Out-String)
+    }
+    return ($output | Out-String).Trim()
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+    if ($null -ne $previousNativePreference) {
+      $Global:PSNativeCommandUseErrorActionPreference = $previousNativePreference
+    }
+  }
+}
+
+function Invoke-UnitCli {
+  param([Parameter(Mandatory = $true)] [scriptblock]$Command)
+
+  $previousErrorActionPreference = $ErrorActionPreference
+  $previousNativePreference = $null
+  if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -Scope Global -ErrorAction SilentlyContinue) {
+    $previousNativePreference = $Global:PSNativeCommandUseErrorActionPreference
+  }
+  try {
+    $ErrorActionPreference = "Continue"
+    if ($null -ne $previousNativePreference) {
+      $Global:PSNativeCommandUseErrorActionPreference = $false
+    }
+    $output = & $Command 2>&1
+    if ($LASTEXITCODE -ne 0) {
+      throw ($output | Out-String)
+    }
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+    if ($null -ne $previousNativePreference) {
+      $Global:PSNativeCommandUseErrorActionPreference = $previousNativePreference
+    }
+  }
+}
 
 function ConvertTo-Utf8JsonFile {
   param(
@@ -25,10 +102,12 @@ function ConvertTo-Utf8JsonFile {
 function Get-StorageOutput {
   param([Parameter(Mandatory = $true)] [string]$Key)
 
-  $stack = aws cloudformation describe-stacks `
-    --stack-name StorageStack `
-    --region $Region `
-    --output json | ConvertFrom-Json
+  $stack = Invoke-JsonCli {
+    aws cloudformation describe-stacks `
+      --stack-name StorageStack `
+      --region $Region `
+      --output json
+  }
   $output = $stack.Stacks[0].Outputs | Where-Object { $_.OutputKey -eq $Key } | Select-Object -First 1
   if (-not $output) {
     throw "StorageStack output not found: $Key"
@@ -57,14 +136,23 @@ function Ensure-AgentCoreRuntimeRole {
     )
   }
 
+  $roleExists = $true
   try {
-    aws iam get-role --role-name $RuntimeRoleName --output json | Out-Null
+    Invoke-UnitCli {
+      aws iam get-role --role-name $RuntimeRoleName --output json
+    }
   } catch {
-    aws iam create-role `
+    $roleExists = $false
+  }
+
+  if (-not $roleExists) {
+    Invoke-UnitCli {
+      aws iam create-role `
       --role-name $RuntimeRoleName `
       --assume-role-policy-document "file://$trustFile" `
       --description "Execution role for Serverless OpenClaw AgentCore tool runtime" `
-      --output json | Out-Null
+      --output json
+    }
   }
 
   ConvertTo-Utf8JsonFile -Path $policyFile -Value @{
@@ -75,7 +163,7 @@ function Ensure-AgentCoreRuntimeRole {
         Effect = "Allow"
         Action = @("ssm:GetParameter")
         Resource = @(
-          "arn:aws:ssm:$Region:$AccountId`:parameter/serverless-openclaw/secrets/*"
+          "arn:aws:ssm:${Region}:${AccountId}:parameter/serverless-openclaw/secrets/*"
         )
       },
       @{
@@ -98,11 +186,11 @@ function Ensure-AgentCoreRuntimeRole {
           "dynamodb:Query"
         )
         Resource = @(
-          "arn:aws:dynamodb:$Region:$AccountId`:table/serverless-openclaw-Conversations",
-          "arn:aws:dynamodb:$Region:$AccountId`:table/serverless-openclaw-Settings",
-          "arn:aws:dynamodb:$Region:$AccountId`:table/serverless-openclaw-TaskState",
-          "arn:aws:dynamodb:$Region:$AccountId`:table/serverless-openclaw-Connections",
-          "arn:aws:dynamodb:$Region:$AccountId`:table/serverless-openclaw-PendingMessages"
+          "arn:aws:dynamodb:${Region}:${AccountId}:table/serverless-openclaw-Conversations",
+          "arn:aws:dynamodb:${Region}:${AccountId}:table/serverless-openclaw-Settings",
+          "arn:aws:dynamodb:${Region}:${AccountId}:table/serverless-openclaw-TaskState",
+          "arn:aws:dynamodb:${Region}:${AccountId}:table/serverless-openclaw-Connections",
+          "arn:aws:dynamodb:${Region}:${AccountId}:table/serverless-openclaw-PendingMessages"
         )
       },
       @{
@@ -140,22 +228,30 @@ function Ensure-AgentCoreRuntimeRole {
     )
   }
 
-  aws iam put-role-policy `
-    --role-name $RuntimeRoleName `
-    --policy-name "serverless-openclaw-agentcore-runtime-policy" `
-    --policy-document "file://$policyFile" | Out-Null
+  Invoke-UnitCli {
+    aws iam put-role-policy `
+      --role-name $RuntimeRoleName `
+      --policy-name "serverless-openclaw-agentcore-runtime-policy" `
+      --policy-document "file://$policyFile"
+  }
 
-  $role = aws iam get-role --role-name $RuntimeRoleName --output json | ConvertFrom-Json
+  $role = Invoke-JsonCli {
+    aws iam get-role --role-name $RuntimeRoleName --output json
+  }
   return $role.Role.Arn
 }
 
-$accountId = aws sts get-caller-identity --query Account --output text
+$accountId = Invoke-TextCli {
+  aws sts get-caller-identity --query Account --output text
+}
 $dataBucketName = Get-StorageOutput -Key "DataBucketName"
 $ecrRepositoryUri = Get-StorageOutput -Key "EcrRepositoryUri"
-$ecrRepository = aws ecr describe-repositories `
-  --repository-names serverless-openclaw `
-  --region $Region `
-  --output json | ConvertFrom-Json
+$ecrRepository = Invoke-JsonCli {
+  aws ecr describe-repositories `
+    --repository-names serverless-openclaw `
+    --region $Region `
+    --output json
+}
 $ecrRepositoryArn = $ecrRepository.repositories[0].repositoryArn
 $imageUri = "$ecrRepositoryUri`:$ImageTag"
 $roleArn = Ensure-AgentCoreRuntimeRole `
@@ -202,30 +298,36 @@ ConvertTo-Utf8JsonFile -Path $runtimeFile -Value @{
   environmentVariables = $environmentVariables
 }
 
-$existingRuntime = aws bedrock-agentcore-control list-agent-runtimes `
-  --region $Region `
-  --output json |
-  ConvertFrom-Json |
+$runtimeList = Invoke-JsonCli {
+  aws bedrock-agentcore-control list-agent-runtimes `
+    --region $Region `
+    --output json
+}
+$existingRuntime = $runtimeList |
   Select-Object -ExpandProperty agentRuntimes -ErrorAction SilentlyContinue |
   Where-Object { $_.agentRuntimeName -eq $RuntimeName } |
   Select-Object -First 1
 
 if ($existingRuntime) {
-  $update = aws bedrock-agentcore-control update-agent-runtime `
-    --region $Region `
-    --agent-runtime-id $existingRuntime.agentRuntimeId `
-    --agent-runtime-artifact "containerConfiguration={containerUri=$imageUri}" `
-    --role-arn $roleArn `
-    --network-configuration "networkMode=PUBLIC" `
-    --protocol-configuration "serverProtocol=HTTP" `
-    --environment-variables ($environmentVariables | ConvertTo-Json -Compress) `
-    --output json | ConvertFrom-Json
+  $update = Invoke-JsonCli {
+    aws bedrock-agentcore-control update-agent-runtime `
+      --region $Region `
+      --agent-runtime-id $existingRuntime.agentRuntimeId `
+      --agent-runtime-artifact "containerConfiguration={containerUri=$imageUri}" `
+      --role-arn $roleArn `
+      --network-configuration "networkMode=PUBLIC" `
+      --protocol-configuration "serverProtocol=HTTP" `
+      --environment-variables ($environmentVariables | ConvertTo-Json -Compress) `
+      --output json
+  }
   $runtime = $update
 } else {
-  $runtime = aws bedrock-agentcore-control create-agent-runtime `
-    --region $Region `
-    --cli-input-json "file://$runtimeFile" `
-    --output json | ConvertFrom-Json
+  $runtime = Invoke-JsonCli {
+    aws bedrock-agentcore-control create-agent-runtime `
+      --region $Region `
+      --cli-input-json "file://$runtimeFile" `
+      --output json
+  }
 }
 
 Write-Host "AgentCore runtime is ready for gateway wiring:"

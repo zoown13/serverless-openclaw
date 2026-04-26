@@ -6,9 +6,11 @@ param(
   [Parameter(Mandatory = $true)]
   [long]$ChatId,
   [long]$TelegramId,
+  [string]$UserId,
   [ValidateSet("PaymentFollowUp", "TravelPaymentFollowUp")]
   [string]$Scenario = "PaymentFollowUp",
   [int]$PauseSeconds = 10,
+  [switch]$SkipStateReset,
   [switch]$TailLogs
 )
 
@@ -17,6 +19,16 @@ $ErrorActionPreference = "Stop"
 
 if (-not $TelegramId) {
   $TelegramId = $ChatId
+}
+
+function Write-Utf8NoBomJson {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$Json
+  )
+
+  $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+  [System.IO.File]::WriteAllText($Path, $Json, $utf8NoBom)
 }
 
 function Resolve-ApiEndpoint {
@@ -58,6 +70,109 @@ function Resolve-WebhookSecret {
   }
 
   return $value
+}
+
+function Resolve-SyntheticUserId {
+  param(
+    [Parameter(Mandatory = $true)][string]$SelectedProfile,
+    [Parameter(Mandatory = $true)][string]$SelectedRegion,
+    [Parameter(Mandatory = $true)][long]$SelectedTelegramId,
+    [string]$ExplicitUserId
+  )
+
+  if ($ExplicitUserId) {
+    return $ExplicitUserId
+  }
+
+  $telegramKey = "telegram:$SelectedTelegramId"
+  $tempPath = Join-Path `
+    ([System.IO.Path]::GetTempPath()) `
+    ("telegram-link-key-{0}.json" -f [Guid]::NewGuid().ToString("N"))
+
+  try {
+    Write-Utf8NoBomJson `
+      -Path $tempPath `
+      -Json "{`"PK`":{`"S`":`"USER#$telegramKey`"},`"SK`":{`"S`":`"SETTING#linked-cognito`"}}"
+
+    $linkedJson = aws dynamodb get-item `
+      --table-name serverless-openclaw-Settings `
+      --key "file://$tempPath" `
+      --output json `
+      --profile $SelectedProfile `
+      --region $SelectedRegion
+
+    if ($LASTEXITCODE -ne 0) {
+      throw "Failed to resolve linked Telegram identity."
+    }
+
+    if ($linkedJson) {
+      $linked = $linkedJson | ConvertFrom-Json
+      $item = if ($linked.PSObject.Properties.Match("Item").Count -gt 0) { $linked.Item } else { $null }
+      $value = if ($item -and $item.PSObject.Properties.Match("value").Count -gt 0) { $item.value } else { $null }
+      $map = if ($value -and $value.PSObject.Properties.Match("M").Count -gt 0) { $value.M } else { $null }
+      $cognito = if ($map -and $map.PSObject.Properties.Match("cognitoUserId").Count -gt 0) { $map.cognitoUserId } else { $null }
+      $cognitoUserId = if ($cognito -and $cognito.PSObject.Properties.Match("S").Count -gt 0) { $cognito.S } else { $null }
+      if ($cognitoUserId) {
+        return $cognitoUserId
+      }
+    }
+  } finally {
+    if (Test-Path -LiteralPath $tempPath) {
+      Remove-Item -LiteralPath $tempPath -Force
+    }
+  }
+
+  return $telegramKey
+}
+
+function Clear-SyntheticRuntimeState {
+  param(
+    [Parameter(Mandatory = $true)][string]$SelectedProfile,
+    [Parameter(Mandatory = $true)][string]$SelectedRegion,
+    [Parameter(Mandatory = $true)][string]$SelectedUserId
+  )
+
+  $taskKeyPath = Join-Path `
+    ([System.IO.Path]::GetTempPath()) `
+    ("taskstate-key-{0}.json" -f [Guid]::NewGuid().ToString("N"))
+  $affinityKeyPath = Join-Path `
+    ([System.IO.Path]::GetTempPath()) `
+    ("active-tool-key-{0}.json" -f [Guid]::NewGuid().ToString("N"))
+
+  try {
+    Write-Utf8NoBomJson `
+      -Path $taskKeyPath `
+      -Json "{`"PK`":{`"S`":`"USER#$SelectedUserId`"}}"
+    Write-Utf8NoBomJson `
+      -Path $affinityKeyPath `
+      -Json "{`"PK`":{`"S`":`"USER#$SelectedUserId`"},`"SK`":{`"S`":`"SETTING#active-tool:telegram`"}}"
+
+    aws dynamodb delete-item `
+      --table-name serverless-openclaw-TaskState `
+      --key "file://$taskKeyPath" `
+      --profile $SelectedProfile `
+      --region $SelectedRegion | Out-Null
+
+    if ($LASTEXITCODE -ne 0) {
+      throw "Failed to clear TaskState."
+    }
+
+    aws dynamodb delete-item `
+      --table-name serverless-openclaw-Settings `
+      --key "file://$affinityKeyPath" `
+      --profile $SelectedProfile `
+      --region $SelectedRegion | Out-Null
+
+    if ($LASTEXITCODE -ne 0) {
+      throw "Failed to clear active tool affinity."
+    }
+  } finally {
+    foreach ($path in @($taskKeyPath, $affinityKeyPath)) {
+      if (Test-Path -LiteralPath $path) {
+        Remove-Item -LiteralPath $path -Force
+      }
+    }
+  }
 }
 
 function Get-ScenarioMessages {
@@ -185,13 +300,27 @@ if (-not $WebhookSecret) {
 $messages = Get-ScenarioMessages -SelectedScenario $Scenario
 $webhookUri = "$ApiEndpoint/telegram"
 $baseUpdateId = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+$resolvedUserId = Resolve-SyntheticUserId `
+  -SelectedProfile $Profile `
+  -SelectedRegion $Region `
+  -SelectedTelegramId $TelegramId `
+  -ExplicitUserId $UserId
+
+if (-not $SkipStateReset) {
+  Clear-SyntheticRuntimeState `
+    -SelectedProfile $Profile `
+    -SelectedRegion $Region `
+    -SelectedUserId $resolvedUserId
+}
 
 Write-Host "Synthetic Telegram smoke"
 Write-Host "  Endpoint : $webhookUri"
 Write-Host "  ChatId   : $ChatId"
 Write-Host "  Telegram : $TelegramId"
+Write-Host "  UserId   : $resolvedUserId"
 Write-Host "  Scenario : $Scenario"
 Write-Host "  Pause(s) : $PauseSeconds"
+Write-Host "  Reset    : $(-not $SkipStateReset)"
 Write-Host ""
 
 for ($index = 0; $index -lt $messages.Count; $index++) {

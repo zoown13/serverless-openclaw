@@ -626,6 +626,14 @@ function hasDestinationSpecificTopic(topicKeywords: string[]): boolean {
   return topicKeywords.some((keyword) => TRAVEL_DESTINATION_PATTERN.test(keyword));
 }
 
+function hasDestinationEvidence(text: string, tags: string[]): boolean {
+  if (TRAVEL_DESTINATION_PATTERN.test(text)) {
+    return true;
+  }
+
+  return tags.some((tag) => TRAVEL_DESTINATION_PATTERN.test(tag));
+}
+
 function hasStrongTravelEvidence(text: string, tags: string[]): boolean {
   if (
     TRAVEL_DESTINATION_PATTERN.test(text) ||
@@ -650,6 +658,7 @@ function scoreTravelRecord(
   const evidenceText = buildTravelEvidenceText(record);
   const tags = mergeTopicKeywords(record.topicTags, extractTopicTags(evidenceText, topicKeywords));
   const destinationScoped = hasDestinationSpecificTopic(topicKeywords);
+  const destinationEvidence = hasDestinationEvidence(evidenceText, tags);
   const strongEvidence = hasStrongTravelEvidence(evidenceText, tags);
   let score = 0;
 
@@ -690,7 +699,9 @@ function scoreTravelRecord(
   return {
     score,
     tags,
-    confident: destinationScoped ? score >= 3 && strongEvidence : score >= 2,
+    confident: destinationScoped
+      ? score >= 3 && destinationEvidence
+      : score >= 2 && (strongEvidence || tags.length > 0),
   };
 }
 

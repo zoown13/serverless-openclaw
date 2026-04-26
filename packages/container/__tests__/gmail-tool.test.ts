@@ -754,7 +754,9 @@ describe("gmail-tool", () => {
   it("does not treat generic overseas payments as Japan-specific refinement evidence", async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
-      .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m1" }, { id: "m2" }] } }))
+      .mockResolvedValueOnce(
+        jsonResponse({ body: { messages: [{ id: "m1" }, { id: "m2" }, { id: "m3" }] } }),
+      )
       .mockResolvedValueOnce(
         metadataResponse(
           "해외 온라인 결제 내역입니다.",
@@ -766,11 +768,20 @@ describe("gmail-tool", () => {
       )
       .mockResolvedValueOnce(
         metadataResponse(
+          "글로벌 eSIM 결제 내역입니다.",
+          '"Travel Data" <billing@example.com>',
+          "Sat, 04 Apr 2026 18:00:00 +0900",
+          "가맹점명 글로벌 eSIM 결제금액 5000원 카드종류 삼성카드",
+          "m2",
+        ),
+      )
+      .mockResolvedValueOnce(
+        metadataResponse(
           "마이리얼트립(일반)의 결제 내역입니다.",
           '"NHN KCP 발신전용" <pgadmcust@kcp.co.kr>',
           "Sat, 04 Apr 2026 17:40:51 +0900",
           "결제금액 9215 원 카드종류 삼성카드 주문상품명 [eSIM/로컬] 일본 사이트",
-          "m2",
+          "m3",
         ),
       );
 
@@ -797,6 +808,7 @@ describe("gmail-tool", () => {
     expect(followUp?.message).toContain("Merchant: 마이리얼트립(일반)");
     expect(followUp?.message).toContain("KRW 9,215 across 1 matched payment message(s)");
     expect(followUp?.message).not.toContain("해외 온라인 몰");
+    expect(followUp?.message).not.toContain("글로벌 eSIM");
   });
 
   it("reruns a broader payment candidate search when travel refinement needs more than the first 5 headers", async () => {

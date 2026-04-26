@@ -423,6 +423,7 @@ describe("CDK Stacks E2E — synth all stacks", () => {
       expect(templateJson).toContain("AGENTCORE_RUNTIME_QUALIFIER");
       expect(templateJson).toContain("DEFAULT");
       expect(templateJson).toContain("bedrock-agentcore:InvokeAgentRuntime");
+      expect(templateJson).toContain(`${agentCoreRuntimeArn}/runtime-endpoint/*`);
     });
   });
 });

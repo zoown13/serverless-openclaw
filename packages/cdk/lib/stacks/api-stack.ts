@@ -303,7 +303,10 @@ export class ApiStack extends cdk.Stack {
         fn.addToRolePolicy(
           new iam.PolicyStatement({
             actions: ["bedrock-agentcore:InvokeAgentRuntime"],
-            resources: [props.agentCoreRuntimeArn],
+            resources: [
+              props.agentCoreRuntimeArn,
+              `${props.agentCoreRuntimeArn}/runtime-endpoint/*`,
+            ],
           }),
         );
       }

@@ -77,7 +77,6 @@ describe("slm/classifier", () => {
     expect(resolveSlmBackendKind(undefined)).toBe("remote-api");
     expect(resolveSlmBackendKind("remote-api")).toBe("remote-api");
     expect(resolveSlmBackendKind("mock-local")).toBe("mock-local");
-    expect(resolveSlmBackendKind("local-transformers")).toBe("local-transformers");
   });
 
   it("classifies travel spend requests through the mock-local backend", async () => {

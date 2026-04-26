@@ -281,6 +281,8 @@ $environmentVariables = @{
 }
 
 $runtimeFile = Join-Path $env:TEMP "serverless-openclaw-agentcore-runtime.json"
+$environmentVariablesFile = Join-Path $env:TEMP "serverless-openclaw-agentcore-env.json"
+ConvertTo-Utf8JsonFile -Path $environmentVariablesFile -Value $environmentVariables
 ConvertTo-Utf8JsonFile -Path $runtimeFile -Value @{
   agentRuntimeName = $RuntimeName
   description = "Serverless OpenClaw tool-capable runtime PoC"
@@ -318,7 +320,7 @@ if ($existingRuntime) {
       --role-arn $roleArn `
       --network-configuration "networkMode=PUBLIC" `
       --protocol-configuration "serverProtocol=HTTP" `
-      --environment-variables ($environmentVariables | ConvertTo-Json -Compress) `
+      --environment-variables "file://$environmentVariablesFile" `
       --output json
   }
   $runtime = $update

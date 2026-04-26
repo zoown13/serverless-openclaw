@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   ddbSendMock: vi.fn(),
   decideToolIntentMock: vi.fn(),
+  documentClientFromMock: vi.fn(),
   parseToolIntentAdvisorResponseMock: vi.fn(),
 }));
 
@@ -14,7 +15,7 @@ vi.mock("@aws-sdk/client-dynamodb", () => ({
 vi.mock("@aws-sdk/lib-dynamodb", () => ({
   DeleteCommand: vi.fn((input: unknown) => ({ input, kind: "DeleteCommand" })),
   DynamoDBDocumentClient: {
-    from: vi.fn(() => ({ send: mocks.ddbSendMock })),
+    from: mocks.documentClientFromMock,
   },
   GetCommand: vi.fn((input: unknown) => ({ input, kind: "GetCommand" })),
   PutCommand: vi.fn((input: unknown) => ({ input, kind: "PutCommand" })),
@@ -38,6 +39,8 @@ describe("durable Gmail tool task context", () => {
   beforeEach(() => {
     mocks.ddbSendMock.mockReset();
     mocks.decideToolIntentMock.mockReset();
+    mocks.documentClientFromMock.mockReset();
+    mocks.documentClientFromMock.mockReturnValue({ send: mocks.ddbSendMock });
     mocks.parseToolIntentAdvisorResponseMock.mockReset();
     vi.unstubAllGlobals();
     delete process.env.TOOL_CONTEXT_STORE;
@@ -105,6 +108,10 @@ describe("durable Gmail tool task context", () => {
     );
     expect(mocks.ddbSendMock).toHaveBeenCalledWith(
       expect.objectContaining({ kind: "PutCommand" }),
+    );
+    expect(mocks.documentClientFromMock).toHaveBeenCalledWith(
+      expect.anything(),
+      { marshallOptions: { removeUndefinedValues: true } },
     );
   });
 });

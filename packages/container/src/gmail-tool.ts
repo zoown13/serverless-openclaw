@@ -364,7 +364,9 @@ function isDurableToolContextEnabled(): boolean {
 }
 
 function getDocumentClient(): DynamoDBDocumentClient {
-  documentClient ??= DynamoDBDocumentClient.from(new DynamoDBClient({}));
+  documentClient ??= DynamoDBDocumentClient.from(new DynamoDBClient({}), {
+    marshallOptions: { removeUndefinedValues: true },
+  });
   return documentClient;
 }
 

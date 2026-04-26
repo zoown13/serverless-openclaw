@@ -751,6 +751,54 @@ describe("gmail-tool", () => {
     expect(followUp?.message).not.toContain("병천순대전문점");
   });
 
+  it("does not treat generic overseas payments as Japan-specific refinement evidence", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m1" }, { id: "m2" }] } }))
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "해외 온라인 결제 내역입니다.",
+          '"Card Co" <billing@example.com>',
+          "Sat, 04 Apr 2026 17:40:51 +0900",
+          "가맹점명 해외 온라인 몰 결제금액 5000원 카드종류 삼성카드",
+          "m1",
+        ),
+      )
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "마이리얼트립(일반)의 결제 내역입니다.",
+          '"NHN KCP 발신전용" <pgadmcust@kcp.co.kr>',
+          "Sat, 04 Apr 2026 17:40:51 +0900",
+          "결제금액 9215 원 카드종류 삼성카드 주문상품명 [eSIM/로컬] 일본 사이트",
+          "m2",
+        ),
+      );
+
+    await maybeHandleCustomGmailRequest({
+      userId: "user-japan-specific-refine",
+      sessionKey: "session-japan-specific-refine",
+      message: "이번주 결제한 금액이 어느정도 되려나?",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    fetchMock.mockReset();
+
+    const followUp = await maybeHandleCustomGmailRequest({
+      userId: "user-japan-specific-refine",
+      sessionKey: "session-japan-specific-refine",
+      message: "일본관련된 것만 가져와야지",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(followUp?.kind).toBe("direct");
+    expect(followUp?.message).toContain("Merchant: 마이리얼트립(일반)");
+    expect(followUp?.message).toContain("KRW 9,215 across 1 matched payment message(s)");
+    expect(followUp?.message).not.toContain("해외 온라인 몰");
+  });
+
   it("reruns a broader payment candidate search when travel refinement needs more than the first 5 headers", async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))

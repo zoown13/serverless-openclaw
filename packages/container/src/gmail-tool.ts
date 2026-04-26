@@ -47,6 +47,8 @@ const PAYMENT_SIGNAL_PATTERN =
   /(결제|승인|카드|결제금액|최종결제금액|총 결제 금액|payment|receipt|statement|invoice)/i;
 const TRAVEL_POSITIVE_PATTERN =
   /(마이리얼트립|myrealtrip|trip\.com|tripcom|agoda|booking\.com|booking|airbnb|klook|kkday|익스피디아|expedia|호텔스닷컴|hotels\.com|rentalcars|rentalcars\.com|rentacar|rent-a-car|toyota\s+rent\s+a\s+car|야놀자|여기어때|호텔|hotel|숙소|stay|숙박|lodging|료칸|ryokan|게스트하우스|guesthouse|리조트|resort|항공|flight|airline|jr|rail|기차|train|전철|철도|지하철|subway|메트로|metro|공항|airport|셔틀|shuttle|리무진|limousine|버스|bus|렌터카|e\s*-?sim|sim\b|여행|travel|trip|투어|tour|페리|ferry|패스|pass|해외|overseas|일본|japan|도쿄|tokyo|오사카|osaka|교토|kyoto|후쿠오카|fukuoka|삿포로|sapporo|오키나와|okinawa|나고야|nagoya|나리타|narita|하네다|haneda|간사이|kansai)/i;
+const STRONG_TRAVEL_EVIDENCE_PATTERN =
+  /(항공|flight|airline|호텔|hotel|숙소|stay|숙박|lodging|료칸|ryokan|게스트하우스|guesthouse|리조트|resort|jr|rail|기차|train|전철|철도|지하철|subway|메트로|metro|공항|airport|셔틀|shuttle|리무진|limousine|렌터카|rental\s*car|rentalcars|rentacar|e\s*-?sim|sim\b|투어|tour|페리|ferry|패스|pass)/i;
 const TRAVEL_NEGATIVE_PATTERN =
   /(약관|정책|개정|안내|베이커리|편의점|카페|마트|식당|분식|오프라인|푸드|치킨|순대|약국|스타벅스|이마트24|쿠팡|배달|굿플레이스|병천순대|현대엔지니어링\s*베이커리)/i;
 const LOCAL_LIFE_MERCHANT_PATTERN =
@@ -620,12 +622,35 @@ function buildTravelEvidenceText(record: ParsedPaymentRecord): string {
     .join(" ");
 }
 
+function hasDestinationSpecificTopic(topicKeywords: string[]): boolean {
+  return topicKeywords.some((keyword) => TRAVEL_DESTINATION_PATTERN.test(keyword));
+}
+
+function hasStrongTravelEvidence(text: string, tags: string[]): boolean {
+  if (
+    TRAVEL_DESTINATION_PATTERN.test(text) ||
+    TRAVEL_PLATFORM_PATTERN.test(text) ||
+    STRONG_TRAVEL_EVIDENCE_PATTERN.test(text)
+  ) {
+    return true;
+  }
+
+  return tags.some(
+    (tag) =>
+      TRAVEL_DESTINATION_PATTERN.test(tag) ||
+      TRAVEL_PLATFORM_PATTERN.test(tag) ||
+      STRONG_TRAVEL_EVIDENCE_PATTERN.test(tag),
+  );
+}
+
 function scoreTravelRecord(
   record: ParsedPaymentRecord,
   topicKeywords: string[],
 ): { score: number; tags: string[]; confident: boolean } {
   const evidenceText = buildTravelEvidenceText(record);
   const tags = mergeTopicKeywords(record.topicTags, extractTopicTags(evidenceText, topicKeywords));
+  const destinationScoped = hasDestinationSpecificTopic(topicKeywords);
+  const strongEvidence = hasStrongTravelEvidence(evidenceText, tags);
   let score = 0;
 
   if (POLICY_NOTICE_PATTERN.test(evidenceText)) {
@@ -662,7 +687,11 @@ function scoreTravelRecord(
     score -= 1;
   }
 
-  return { score, tags, confident: score >= 2 };
+  return {
+    score,
+    tags,
+    confident: destinationScoped ? score >= 3 && strongEvidence : score >= 2,
+  };
 }
 
 function refineTravelPaymentRecords(
@@ -1231,14 +1260,7 @@ function filterRecordsByTopic(
     return records;
   }
 
-  return records.filter((record) => {
-    if (record.isTravelRelated || (record.topicTags?.length ?? 0) > 0) {
-      return true;
-    }
-
-    const haystack = `${record.subject}\n${record.from}\n${record.snippet}\n${record.merchant ?? ""}`;
-    return extractTopicTags(haystack, topicKeywords).length > 0;
-  });
+  return refineTravelPaymentRecords(records, topicKeywords);
 }
 
 function buildTopicFilteredPaymentSummaryResponse(
@@ -1324,7 +1346,7 @@ async function refineRecordsWithBodyChecks(
 }> {
   const refined = records.map((record) => ({ ...record }));
   const candidates = refined
-    .filter((record) => !record.isTravelRelated)
+    .filter((record) => !scoreTravelRecord(record, topicKeywords).confident)
     .filter((record) => Boolean(record.amount || record.merchant))
     .slice(0, MAX_TOPIC_BODY_CHECKS);
 

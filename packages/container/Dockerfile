@@ -29,25 +29,6 @@ ARG OPENCLAW_VERSION=2026.2.13
 RUN npm install -g openclaw@${OPENCLAW_VERSION} grammy@1.42.0 && \
     npm cache clean --force
 
-# Pre-seed OpenClaw bundled runtime dependencies that otherwise install during
-# every on-demand gateway startup. This trades a small image-size increase for a
-# shorter and more deterministic Fargate/AgentCore cold start path.
-RUN npm install --prefix /usr/local/lib/node_modules/openclaw \
-    --omit=dev \
-    --no-audit \
-    --no-fund \
-    @grammyjs/runner@^2.0.3 \
-    @grammyjs/transformer-throttler@^1.2.1 \
-    typebox@1.1.31 \
-    undici@8.1.0 \
-    acpx@0.5.3 \
-    @homebridge/ciao@^1.3.6 \
-    @modelcontextprotocol/sdk@1.29.0 \
-    express@^5.2.1 \
-    playwright-core@1.59.1 \
-    ws@^8.20.0 && \
-    npm cache clean --force
-
 # Create non-root user
 RUN groupadd -r openclaw && useradd -r -g openclaw -m openclaw
 
@@ -55,6 +36,33 @@ RUN groupadd -r openclaw && useradd -r -g openclaw -m openclaw
 RUN mkdir -p /home/openclaw/.openclaw && \
     echo '{"gateway":{"port":18789,"mode":"local"}}' > /home/openclaw/.openclaw/openclaw.json && \
     chown -R openclaw:openclaw /home/openclaw/.openclaw
+
+# Pre-seed OpenClaw bundled runtime dependencies in the external plugin runtime
+# cache used by packaged installs. Installing under the global OpenClaw package
+# root is not sufficient because packaged plugins resolve deps from
+# ~/.openclaw/plugin-runtime-deps/openclaw-<version>-<package-root-hash>.
+RUN set -eux; \
+    package_root="/usr/local/lib/node_modules/openclaw"; \
+    package_version="$(node -p "require('/usr/local/lib/node_modules/openclaw/package.json').version")"; \
+    package_hash="$(node -e "const crypto = require('node:crypto'); const path = require('node:path'); process.stdout.write(crypto.createHash('sha256').update(path.resolve('/usr/local/lib/node_modules/openclaw')).digest('hex').slice(0, 12));")"; \
+    install_root="/home/openclaw/.openclaw/plugin-runtime-deps/openclaw-${package_version}-${package_hash}"; \
+    mkdir -p "${install_root}"; \
+    npm install --prefix "${install_root}" \
+      --omit=dev \
+      --no-audit \
+      --no-fund \
+      @grammyjs/runner@^2.0.3 \
+      @grammyjs/transformer-throttler@^1.2.1 \
+      typebox@1.1.31 \
+      undici@8.1.0 \
+      acpx@0.5.3 \
+      @homebridge/ciao@^1.3.6 \
+      @modelcontextprotocol/sdk@1.29.0 \
+      express@^5.2.1 \
+      playwright-core@1.59.1 \
+      ws@^8.20.0; \
+    chown -R openclaw:openclaw /home/openclaw/.openclaw/plugin-runtime-deps; \
+    npm cache clean --force
 
 WORKDIR /app
 

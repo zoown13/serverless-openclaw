@@ -8,6 +8,10 @@ import {
   PREWARM_USER_ID,
 } from "@serverless-openclaw/shared";
 import type {
+  AgentCoreRuntimeResult,
+  InvokeAgentCoreRuntimeParams,
+} from "./agentcore.js";
+import type {
   BridgeMessageRequest,
   Channel,
   EmailTokenBudgetPolicy,
@@ -15,6 +19,7 @@ import type {
   RouteDecision,
   RuntimeClass,
   TaskStateItem,
+  ToolRuntimeProvider,
   ToolRuntimeAffinityState,
 } from "@serverless-openclaw/shared";
 import type { StartTaskParams } from "./container.js";
@@ -111,12 +116,22 @@ export interface RouteDeps {
   startTaskParams: StartTaskParams;
   /** Lambda agent runtime support (Phase 2) */
   agentRuntime?: "lambda" | "fargate" | "both";
+  toolRuntimeProvider?: ToolRuntimeProvider;
   invokeLambdaAgent?: (params: InvokeLambdaAgentParams) => Promise<{ accepted: true }>;
   lambdaAgentFunctionArn?: string;
+  invokeAgentCoreRuntime?: (params: InvokeAgentCoreRuntimeParams) => Promise<AgentCoreRuntimeResult>;
+  agentCoreRuntimeArn?: string;
+  agentCoreRuntimeQualifier?: string;
   sessionId?: string;
 }
 
-export type RouteResult = "sent" | "queued" | "started" | "lambda" | "clarify";
+export type RouteResult =
+  | "sent"
+  | "queued"
+  | "started"
+  | "lambda"
+  | "agentcore"
+  | "clarify";
 
 const TOOL_AFFINITY_TTL_MS = 5 * 60 * 1000;
 const TOOL_AFFINITY_CANCEL_PATTERN = /^(?:취소|그만|끝|됐어|done|cancel|stop)$/i;
@@ -215,6 +230,10 @@ function buildBridgeMessageRequest(
         ? resolveEmailTokenBudgetPolicy()
         : undefined,
   };
+}
+
+function resolveToolRuntimeProvider(deps: RouteDeps): ToolRuntimeProvider {
+  return deps.toolRuntimeProvider ?? "fargate";
 }
 
 function buildRouteLogPayload(
@@ -437,6 +456,91 @@ async function routeFargate(
   return "queued";
 }
 
+async function routeAgentCore(deps: RouteDeps): Promise<RouteResult> {
+  if (!deps.invokeAgentCoreRuntime || !deps.agentCoreRuntimeArn) {
+    throw new Error("AgentCore tool runtime is not configured");
+  }
+
+  validateLambdaDeliveryTarget(deps);
+  const bridgeMessage = buildBridgeMessageRequest(
+    deps,
+    deps.message,
+    "tool-enabled",
+    "agentcore",
+  );
+  logRouteEvent("agentcore.invoke.started", {
+    ...buildRouteLogPayload(deps, "tool-enabled", "agentcore", null, false),
+    toolRuntimeProvider: "agentcore",
+  });
+  const result = await deps.invokeAgentCoreRuntime({
+    runtimeArn: deps.agentCoreRuntimeArn,
+    qualifier: deps.agentCoreRuntimeQualifier,
+    userId: bridgeMessage.userId,
+    sessionId: deps.sessionId ?? `session-${deps.userId}`,
+    traceId: bridgeMessage.traceId,
+    message: bridgeMessage.message,
+    channel: bridgeMessage.channel,
+    connectionId: bridgeMessage.connectionId,
+    callbackUrl: bridgeMessage.callbackUrl,
+    runtimeClass: "tool-enabled",
+    emailTokenBudget: bridgeMessage.emailTokenBudget,
+  });
+
+  if (result.content) {
+    await deps.sendClarification(result.content);
+  }
+  logRouteEvent("agentcore.invoke.completed", {
+    ...buildRouteLogPayload(deps, "tool-enabled", "agentcore", null, false),
+    toolRuntimeProvider: "agentcore",
+    hasContent: Boolean(result.content),
+  });
+  void publishGatewayCountMetric("RouteToAgentCore", {
+    channel: deps.channel,
+    runtime: "agentcore",
+  });
+  return "agentcore";
+}
+
+async function routeToolRuntime(
+  deps: RouteDeps,
+  taskState: TaskStateItem | null,
+  routeDecision: RouteDecision,
+): Promise<RouteResult> {
+  const provider = resolveToolRuntimeProvider(deps);
+  if (provider === "agentcore") {
+    try {
+      return await routeAgentCore(deps);
+    } catch (err) {
+      const fallbackDecision: RouteDecision =
+        taskState?.status === "Running" && taskState.publicIp
+          ? "fargate-reuse"
+          : "fargate-new";
+      logRouteEvent(
+        "agentcore.invoke.fallback",
+        {
+          ...buildRouteLogPayload(
+            deps,
+            "tool-enabled",
+            fallbackDecision,
+            taskState,
+            false,
+          ),
+          toolRuntimeProvider: "agentcore",
+          error: err instanceof Error ? err.message : String(err),
+        },
+        "warn",
+      );
+      void publishGatewayCountMetric("RouteFallbackToFargate", {
+        channel: deps.channel,
+        runtime: "fargate",
+      });
+      return routeFargate(deps, taskState, "tool-enabled", fallbackDecision);
+    }
+  }
+
+  return routeFargate(deps, taskState, "tool-enabled", routeDecision);
+}
+
 async function invokeLambdaRoute(
   deps: RouteDeps,
   message: string,
@@ -481,17 +585,18 @@ async function routeForcedRuntimeClass(
 
   if (runtimeClass === "tool-enabled") {
     const routeDecision: RouteDecision =
-      taskState?.status === "Running" && taskState.publicIp
-        ? "fargate-reuse"
-        : "fargate-new";
+      resolveToolRuntimeProvider(deps) === "agentcore"
+        ? "agentcore"
+        : taskState?.status === "Running" && taskState.publicIp
+          ? "fargate-reuse"
+          : "fargate-new";
     logRouteEvent(
       "route.classified",
       buildRouteLogPayload(deps, runtimeClass, routeDecision, taskState, false),
     );
-    return routeFargate(
+    return routeToolRuntime(
       { ...deps, message },
       taskState,
-      runtimeClass,
       routeDecision,
     );
   }
@@ -628,13 +733,17 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
     const runtimeClass = classifyRouteRuntimeClass(deps.message);
     const classifierSignals = getRouteClassificationSignals(deps.message);
     const decision = classifyRoute({ message: deps.message, taskState });
+    const toolDecision: RouteDecision =
+      resolveToolRuntimeProvider(deps) === "agentcore" && runtimeClass === "tool-enabled"
+        ? "agentcore"
+        : decision;
     const routedMessage = stripRouteHint(deps.message);
     logRouteEvent(
       "route.classified",
       buildClassifierLogPayload(
         deps,
         runtimeClass,
-        decision,
+        toolDecision,
         taskState,
         classifierSignals,
       ),
@@ -649,12 +758,12 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
         traceId: deps.traceId,
         channel: deps.channel,
         runtimeClass,
+        toolRuntimeProvider: resolveToolRuntimeProvider(deps),
       });
-      return routeFargate(
+      return routeToolRuntime(
         { ...deps, message: routedMessage },
         taskState,
-        runtimeClass,
-        decision,
+        toolDecision,
       );
     }
 
@@ -697,9 +806,11 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
   const taskState = await deps.getTaskState(deps.userId);
   const runtimeClass: RuntimeClass = "tool-enabled";
   const routeDecision: RouteDecision =
-    taskState?.status === "Running" && taskState.publicIp
-      ? "fargate-reuse"
-      : "fargate-new";
+    resolveToolRuntimeProvider(deps) === "agentcore"
+      ? "agentcore"
+      : taskState?.status === "Running" && taskState.publicIp
+        ? "fargate-reuse"
+        : "fargate-new";
   const classifierSignals = getRouteClassificationSignals(deps.message);
   await deps.putRoutingContext(
     deps.userId,
@@ -709,6 +820,7 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
     traceId: deps.traceId,
     channel: deps.channel,
     runtimeClass,
+    toolRuntimeProvider: resolveToolRuntimeProvider(deps),
   });
   logRouteEvent(
     "route.classified",
@@ -720,5 +832,5 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
       classifierSignals,
     ),
   );
-  return routeFargate(deps, taskState, runtimeClass, routeDecision);
+  return routeToolRuntime(deps, taskState, routeDecision);
 }

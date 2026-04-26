@@ -383,6 +383,47 @@ describe("CDK Stacks E2E — synth all stacks", () => {
       expect(dashboardJson).toContain("DeliverySuccess");
       expect(dashboardJson).toContain("DeliveryFailure");
     });
+
+    it("defaults tool runtime provider to Fargate", () => {
+      const templateJson = JSON.stringify(apiTemplate.toJSON());
+      expect(templateJson).toContain("TOOL_RUNTIME_PROVIDER");
+      expect(templateJson).toContain("fargate");
+      expect(templateJson).not.toContain("bedrock-agentcore:InvokeAgentRuntime");
+    });
+  });
+
+  describe("ApiStack with AgentCore tool runtime provider", () => {
+    it("passes AgentCore env vars and grants invoke permission to message handlers only", () => {
+      const agentCoreRuntimeArn = "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/test";
+      const app = new cdk.App();
+      const network = new NetworkStack(app, "AgentCoreNetworkStack");
+      const storage = new StorageStack(app, "AgentCoreStorageStack");
+      const auth = new AuthStack(app, "AgentCoreAuthStack");
+      const api = new ApiStack(app, "AgentCoreApiStack", {
+        vpc: network.vpc,
+        fargateSecurityGroup: network.fargateSecurityGroup,
+        conversationsTable: storage.conversationsTable,
+        settingsTable: storage.settingsTable,
+        taskStateTable: storage.taskStateTable,
+        connectionsTable: storage.connectionsTable,
+        pendingMessagesTable: storage.pendingMessagesTable,
+        userPool: auth.userPool,
+        userPoolClient: auth.userPoolClient,
+        agentRuntime: "both",
+        toolRuntimeProvider: "agentcore",
+        agentCoreRuntimeArn,
+        agentCoreRuntimeQualifier: "DEFAULT",
+      });
+
+      const templateJson = JSON.stringify(Template.fromStack(api).toJSON());
+      expect(templateJson).toContain("TOOL_RUNTIME_PROVIDER");
+      expect(templateJson).toContain("agentcore");
+      expect(templateJson).toContain("AGENTCORE_RUNTIME_ARN");
+      expect(templateJson).toContain(agentCoreRuntimeArn);
+      expect(templateJson).toContain("AGENTCORE_RUNTIME_QUALIFIER");
+      expect(templateJson).toContain("DEFAULT");
+      expect(templateJson).toContain("bedrock-agentcore:InvokeAgentRuntime");
+    });
   });
 });
 

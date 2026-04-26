@@ -19,6 +19,7 @@ import { routeMessage, savePendingMessage } from "../services/message.js";
 import { startTask } from "../services/container.js";
 import { resolveSecrets } from "../services/secrets.js";
 import { invokeLambdaAgent } from "../services/lambda-agent.js";
+import { invokeAgentCoreRuntime } from "../services/agentcore.js";
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ecs = new ECSClient({});
@@ -114,8 +115,12 @@ export async function handler(event: {
         ],
       },
       agentRuntime,
+      toolRuntimeProvider: (process.env.TOOL_RUNTIME_PROVIDER as "fargate" | "agentcore" | undefined) ?? "fargate",
       invokeLambdaAgent,
       lambdaAgentFunctionArn: process.env.LAMBDA_AGENT_FUNCTION_ARN ?? "",
+      invokeAgentCoreRuntime,
+      agentCoreRuntimeArn: process.env.AGENTCORE_RUNTIME_ARN ?? "",
+      agentCoreRuntimeQualifier: process.env.AGENTCORE_RUNTIME_QUALIFIER,
     });
 
     if (result === "lambda") {

@@ -842,6 +842,86 @@ describe("message service", () => {
       );
     });
 
+    it("should route tool-enabled requests to AgentCore when selected", async () => {
+      const mockInvokeLambda = vi.fn();
+      const mockInvokeAgentCore = vi.fn().mockResolvedValue({
+        accepted: true,
+        content: "AgentCore response",
+      });
+      const deps = makeDeps({
+        agentRuntime: "both",
+        toolRuntimeProvider: "agentcore",
+        invokeLambdaAgent: mockInvokeLambda,
+        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+        invokeAgentCoreRuntime: mockInvokeAgentCore,
+        agentCoreRuntimeArn: "arn:aws:bedrock-agentcore:us-east-1:123:runtime/test",
+        message: "please read my latest gmail messages",
+        getTaskState: vi.fn().mockResolvedValue(null),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("agentcore");
+      expect(mockInvokeAgentCore).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runtimeArn: "arn:aws:bedrock-agentcore:us-east-1:123:runtime/test",
+          runtimeClass: "tool-enabled",
+          message: "please read my latest gmail messages",
+        }),
+      );
+      expect(deps.sendClarification).toHaveBeenCalledWith("AgentCore response");
+      expect(mockInvokeLambda).not.toHaveBeenCalled();
+      expect(deps.startTask).not.toHaveBeenCalled();
+    });
+
+    it("should keep normal chat on Lambda when AgentCore is selected for tools", async () => {
+      const mockInvokeLambda = vi.fn().mockResolvedValue({ accepted: true });
+      const mockInvokeAgentCore = vi.fn();
+      const deps = makeDeps({
+        agentRuntime: "both",
+        toolRuntimeProvider: "agentcore",
+        invokeLambdaAgent: mockInvokeLambda,
+        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+        invokeAgentCoreRuntime: mockInvokeAgentCore,
+        agentCoreRuntimeArn: "arn:aws:bedrock-agentcore:us-east-1:123:runtime/test",
+        message: "hello there",
+        getTaskState: vi.fn().mockResolvedValue(null),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("lambda");
+      expect(mockInvokeLambda).toHaveBeenCalled();
+      expect(mockInvokeAgentCore).not.toHaveBeenCalled();
+    });
+
+    it("should fallback to Fargate when AgentCore invoke fails", async () => {
+      const mockInvokeAgentCore = vi.fn().mockRejectedValue(new Error("AgentCore timeout"));
+      const deps = makeDeps({
+        agentRuntime: "both",
+        toolRuntimeProvider: "agentcore",
+        invokeLambdaAgent: vi.fn(),
+        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+        invokeAgentCoreRuntime: mockInvokeAgentCore,
+        agentCoreRuntimeArn: "arn:aws:bedrock-agentcore:us-east-1:123:runtime/test",
+        message: "please read my latest gmail messages",
+        getTaskState: vi.fn().mockResolvedValue(null),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("started");
+      expect(deps.startTask).toHaveBeenCalled();
+      expect(deps.savePendingMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          routeDecision: "fargate-new",
+        }),
+      );
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("\"event\":\"agentcore.invoke.fallback\""),
+      );
+    });
+
     it("should fallback to Fargate when AGENT_RUNTIME=both and Lambda fails", async () => {
       const mockInvokeLambda = vi.fn().mockResolvedValue({
         success: false,

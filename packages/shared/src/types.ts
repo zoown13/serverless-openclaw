@@ -21,7 +21,13 @@ export interface ServerMessage {
 // === Channel ===
 export type Channel = "web" | "telegram";
 export type RuntimeClass = "chat-only" | "tool-enabled";
-export type RouteDecision = "lambda" | "fargate-reuse" | "fargate-new" | "clarify";
+export type ToolRuntimeProvider = "fargate" | "agentcore";
+export type RouteDecision =
+  | "lambda"
+  | "fargate-reuse"
+  | "fargate-new"
+  | "agentcore"
+  | "clarify";
 export type ClarificationKind = "payment_source";
 
 export interface EmailTokenBudgetPolicy {

@@ -11,13 +11,14 @@ const client = new CloudWatchClient({});
 
 export type GatewayMetricName =
   | "RouteToLambda"
+  | "RouteToAgentCore"
   | "RouteToFargate"
   | "RouteFallbackToFargate"
   | "PendingMessagesQueued";
 
 interface GatewayMetricDimensions {
   channel: Channel;
-  runtime: "lambda" | "fargate";
+  runtime: "lambda" | "fargate" | "agentcore";
 }
 
 async function putMetrics(metrics: MetricDatum[]): Promise<void> {

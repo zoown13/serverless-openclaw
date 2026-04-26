@@ -20,6 +20,9 @@ const deployWeb = process.env.DEPLOY_WEB !== "false"; // default: true (deploy w
 const aiProvider = process.env.AI_PROVIDER;
 const aiModel = process.env.AI_MODEL;
 const toolSlmBackend = process.env.TOOL_SLM_BACKEND;
+const toolRuntimeProvider = process.env.TOOL_RUNTIME_PROVIDER;
+const agentCoreRuntimeArn = process.env.AGENTCORE_RUNTIME_ARN;
+const agentCoreRuntimeQualifier = process.env.AGENTCORE_RUNTIME_QUALIFIER;
 
 // Secrets (SSM SecureString parameters)
 const secrets = new SecretsStack(app, "SecretsStack", { aiProvider });
@@ -80,6 +83,9 @@ const api = new ApiStack(app, "ApiStack", {
   userPool: auth.userPool,
   userPoolClient: auth.userPoolClient,
   agentRuntime,
+  toolRuntimeProvider,
+  agentCoreRuntimeArn,
+  agentCoreRuntimeQualifier,
 });
 if (compute) {
   api.addDependency(compute);

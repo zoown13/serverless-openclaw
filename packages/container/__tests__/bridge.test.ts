@@ -393,6 +393,58 @@ describe("Bridge HTTP Server", () => {
     });
   });
 
+  describe("AgentCore HTTP endpoints", () => {
+    it("should expose /ping without bridge auth only when AgentCore HTTP is enabled", async () => {
+      app = createApp({
+        ...deps,
+        agentCoreHttpEnabled: true,
+        runtimeLabel: "agentcore",
+      });
+
+      const res = await request(app).get("/ping");
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ status: "healthy" });
+    });
+
+    it("should process /invocations synchronously without callback delivery", async () => {
+      gmailToolMock.mockResolvedValue({
+        kind: "direct",
+        message: "AgentCore Gmail result",
+        source: "gmail",
+      });
+      app = createApp({
+        ...deps,
+        agentCoreHttpEnabled: true,
+        runtimeLabel: "agentcore",
+      });
+
+      const res = await request(app)
+        .post("/invocations")
+        .send({
+          userId: "user-1",
+          message: "Check my Gmail inbox",
+          channel: "web",
+          connectionId: "conn-agentcore",
+          runtimeClass: "tool-enabled",
+          traceId: "trace-agentcore",
+          routeDecision: "agentcore",
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({
+        content: "AgentCore Gmail result",
+        source: "gmail",
+      });
+      expect(deps.callbackSender.send).not.toHaveBeenCalled();
+      expect(publishCountMetricMock).toHaveBeenCalledWith("DeliverySuccess", {
+        channel: "web",
+        runtime: "agentcore",
+        deliveryType: "websocket",
+      });
+    });
+  });
+
   describe("GET /status", () => {
     it("should return 200 with status info", async () => {
       const res = await request(app)

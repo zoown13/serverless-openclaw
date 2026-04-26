@@ -123,6 +123,7 @@ vi.mock("../src/lifecycle.js", () => ({
 }));
 
 import { startContainer } from "../src/startup.js";
+import { createApp } from "../src/bridge.js";
 
 function defaultOpts() {
   return {
@@ -329,5 +330,26 @@ describe("startContainer - parallel startup", () => {
     await startContainer(defaultOpts());
 
     expect(mockStartPeriodicBackup).toHaveBeenCalledOnce();
+  });
+
+  it("should skip ECS TaskState, IP discovery, and pending queue in AgentCore mode", async () => {
+    await startContainer({
+      ...defaultOpts(),
+      env: {
+        ...defaultOpts().env,
+        CONTAINER_RUNTIME_MODE: "agentcore",
+        AGENTCORE_HTTP_ENABLED: "true",
+      },
+    });
+
+    expect(mockUpdateTaskState).not.toHaveBeenCalled();
+    expect(mockDiscoverPublicIp).not.toHaveBeenCalled();
+    expect(mockConsumePendingMessages).not.toHaveBeenCalled();
+    expect(createApp).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentCoreHttpEnabled: true,
+        runtimeLabel: "agentcore",
+      }),
+    );
   });
 });

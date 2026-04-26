@@ -32,13 +32,15 @@ type Send = (command: unknown) => Promise<unknown>;
 
 export interface StartContainerOptions {
   env: {
-    BRIDGE_AUTH_TOKEN: string;
+    BRIDGE_AUTH_TOKEN?: string;
     OPENCLAW_GATEWAY_TOKEN: string;
     USER_ID: string;
     DATA_BUCKET: string;
-    CALLBACK_URL: string;
+    CALLBACK_URL?: string;
     TELEGRAM_BOT_TOKEN?: string;
     TELEGRAM_CHAT_ID?: string;
+    CONTAINER_RUNTIME_MODE?: string;
+    AGENTCORE_HTTP_ENABLED?: string;
   };
   taskMetadata: { taskArn: string; cluster: string };
   dynamoSend: Send;
@@ -80,6 +82,9 @@ export async function startContainer(opts: StartContainerOptions): Promise<void>
   const { env, taskMetadata, dynamoSend, ecsSend, ec2Send } = opts;
   const { taskArn, cluster } = taskMetadata;
   const userId = env.USER_ID;
+  const agentCoreMode =
+    env.CONTAINER_RUNTIME_MODE === "agentcore" ||
+    env.AGENTCORE_HTTP_ENABLED === "true";
   const telegramChatId = env.TELEGRAM_CHAT_ID ?? getTelegramChatId(userId);
   const channel: Channel = telegramChatId ? "telegram" : "web";
   const gatewayUrl = `ws://localhost:${18789}`;
@@ -114,7 +119,7 @@ export async function startContainer(opts: StartContainerOptions): Promise<void>
   const tGateway = Date.now();
 
   const telegramBotToken = env.TELEGRAM_BOT_TOKEN;
-  const callbackSender = new CallbackSender(env.CALLBACK_URL, telegramBotToken);
+  const callbackSender = new CallbackSender(env.CALLBACK_URL ?? "", telegramBotToken);
   const openclawClient = new OpenClawClient(gatewayUrl, env.OPENCLAW_GATEWAY_TOKEN);
   await openclawClient.waitForReady();
   const tClient = Date.now();
@@ -134,16 +139,19 @@ export async function startContainer(opts: StartContainerOptions): Promise<void>
     s3Bucket: env.DATA_BUCKET,
     s3Prefix: `workspaces/${userId}`,
     workspacePath: "/data/workspace",
+    taskStateEnabled: !agentCoreMode,
   });
 
   // Phase 3: Bridge server start
   const app = createApp({
-    authToken: env.BRIDGE_AUTH_TOKEN,
+    authToken: env.BRIDGE_AUTH_TOKEN ?? "agentcore-runtime-disabled-token",
     openclawClient,
     callbackSender,
     lifecycle,
     processStartTime: t0,
     channel,
+    agentCoreHttpEnabled: agentCoreMode,
+    runtimeLabel: agentCoreMode ? "agentcore" : "fargate",
     onMessageComplete: async (uid: string, userMsg: string, assistantMsg: string, ch: Channel) => {
       await saveMessagePair(dynamoSend, uid, userMsg, assistantMsg, ch);
     },
@@ -158,27 +166,30 @@ export async function startContainer(opts: StartContainerOptions): Promise<void>
     console.log(`Bridge server listening on port ${BRIDGE_PORT}`);
   });
 
-  // Update state to Running immediately (without IP — IP discovered in background)
-  await lifecycle.updateTaskState("Running");
+  let consumed = 0;
 
-  // Phase 4: IP discovery — fire-and-forget (non-blocking)
-  void (async () => {
-    try {
-      const publicIp = await discoverPublicIp(ecsSend, ec2Send, cluster, taskArn);
-      console.log(`Public IP: ${publicIp ?? "not available"}`);
-      if (publicIp) {
-        await lifecycle.updateTaskState("Running", publicIp);
+  if (!agentCoreMode) {
+    // Update state to Running immediately (without IP — IP discovered in background)
+    await lifecycle.updateTaskState("Running");
+
+    // Phase 4: IP discovery — fire-and-forget (non-blocking)
+    void (async () => {
+      try {
+        const publicIp = await discoverPublicIp(ecsSend, ec2Send, cluster, taskArn);
+        console.log(`Public IP: ${publicIp ?? "not available"}`);
+        if (publicIp) {
+          await lifecycle.updateTaskState("Running", publicIp);
+        }
+      } catch (err) {
+        console.warn("IP discovery failed (non-fatal):", err);
       }
-    } catch (err) {
-      console.warn("IP discovery failed (non-fatal):", err);
-    }
-  })();
+    })();
 
-  // Phase 5: Consume pending messages
-  const consumed = await consumePendingMessages({
-    dynamoSend,
-    userId,
-    processMessage: async (msg: PendingMessageItem) => {
+    // Phase 5: Consume pending messages
+    consumed = await consumePendingMessages({
+      dynamoSend,
+      userId,
+      processMessage: async (msg: PendingMessageItem) => {
       const msgStart = new Date(msg.createdAt).getTime();
       const traceId = msg.traceId ?? `pending-${msg.SK}`;
       const deliveryType = msg.channel === "telegram" ? "telegram" : "websocket";
@@ -404,8 +415,9 @@ export async function startContainer(opts: StartContainerOptions): Promise<void>
         });
         throw err;
       }
-    },
-  });
+      },
+    });
+  }
 
   if (consumed > 0) {
     console.log(`Processed ${consumed} pending message(s)`);

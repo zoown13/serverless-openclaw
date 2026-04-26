@@ -11,6 +11,11 @@ GOG_CONFIG_DIR="${OPENCLAW_HOME}/.config/gogcli"
 
 mkdir -p "${DEFAULT_AGENT_DIR}" "${MAIN_AGENT_DIR}" "${CREDENTIALS_DIR}" "${GOG_CONFIG_DIR}"
 
+if [ "${CONTAINER_RUNTIME_MODE:-}" = "agentcore" ] || [ "${AGENTCORE_HTTP_ENABLED:-}" = "true" ]; then
+  echo "[start] Resolving AgentCore runtime secrets from SSM..."
+  eval "$(node /app/dist/resolve-agentcore-env.js)"
+fi
+
 write_secret_file() {
   local raw_value="$1"
   local target_path="$2"

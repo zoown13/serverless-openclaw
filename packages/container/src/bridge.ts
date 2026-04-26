@@ -34,8 +34,15 @@ export interface BridgeDeps {
   };
   processStartTime: number;
   channel: string;
+  agentCoreHttpEnabled?: boolean;
+  runtimeLabel?: string;
   onMessageComplete?: (userId: string, userMsg: string, assistantMsg: string, channel: Channel) => Promise<void>;
   getAndClearHistoryPrefix?: () => string;
+}
+
+interface ProcessedMessageResult {
+  message: string;
+  source: string;
 }
 
 const startTime = Date.now();
@@ -220,8 +227,204 @@ function logToolEvent(
 export function createApp(deps: BridgeDeps): express.Express {
   const app = express();
   let firstResponseSent = false;
+  const runtimeLabel = deps.runtimeLabel ?? "fargate";
 
   app.use(express.json());
+
+  async function processAcceptedMessage(
+    body: Partial<BridgeMessageRequest>,
+    deliveryMode: "callback" | "response",
+  ): Promise<ProcessedMessageResult> {
+    const msgStart = Date.now();
+    const logContext = buildBridgeLogContext(body);
+    const deliveryType = resolveDeliveryType(body.channel);
+    logBridgeEvent("bridge.message.accepted", logContext);
+
+    try {
+      const gmailReady = await isGmailReady();
+      const gmailResponse = await maybeHandleCustomGmailRequest({
+        userId: body.userId!,
+        sessionKey: body.connectionId!,
+        message: body.message!,
+        gmailReady,
+        emailTokenBudget: body.emailTokenBudget ?? defaultEmailTokenBudget(),
+        onToolEvent: (event) => logToolEvent(event, logContext),
+      });
+      if (gmailResponse !== undefined) {
+        if (gmailResponse.kind === "direct") {
+          if (deliveryMode === "callback") {
+            await deps.callbackSender.send(body.connectionId!, {
+              type: "stream_chunk",
+              content: gmailResponse.message,
+              conversationId: undefined,
+            });
+            await deps.callbackSender.send(body.connectionId!, {
+              type: "stream_end",
+            });
+          }
+
+          const latency = Date.now() - msgStart;
+          void publishMessageMetrics({
+            latency,
+            responseLength: gmailResponse.message.length,
+            channel: deps.channel,
+          });
+
+          if (!firstResponseSent) {
+            firstResponseSent = true;
+            void publishFirstResponseTime(Date.now() - deps.processStartTime, deps.channel);
+          }
+
+          if (deps.onMessageComplete) {
+            await deps.onMessageComplete(
+              body.userId!,
+              body.message!,
+              gmailResponse.message,
+              body.channel! as "web" | "telegram",
+            ).catch(() => {});
+          }
+
+          logBridgeEvent("bridge.delivery.success", {
+            ...logContext,
+            deliveryType,
+            source: gmailResponse.source,
+          });
+          void publishCountMetric("DeliverySuccess", {
+            channel: body.channel!,
+            runtime: runtimeLabel,
+            deliveryType,
+          });
+          return {
+            message: gmailResponse.message,
+            source: gmailResponse.source,
+          };
+        }
+
+        body.message = gmailResponse.message;
+      }
+
+      const prefixes: string[] = [];
+      const historyPrefix = deps.getAndClearHistoryPrefix?.();
+      if (historyPrefix) {
+        prefixes.push(historyPrefix.trimEnd());
+      }
+      if (body.channel === "telegram") {
+        prefixes.push("[System: Respond in plain text only. Do not use markdown formatting such as **bold**, *italic*, ```code```, etc.]");
+      }
+      const toolEnabledPrefix = buildToolEnabledPrefix(body);
+      if (toolEnabledPrefix) {
+        prefixes.push(toolEnabledPrefix);
+      }
+      const messageToSend = prefixes.length > 0
+        ? `${prefixes.join("\n")}\n${body.message!}`
+        : body.message!;
+      logBridgeEvent("bridge.openclaw.forwarded", logContext);
+      const generator = deps.openclawClient.sendMessage(
+        body.userId!,
+        messageToSend,
+      );
+      let fullResponse = "";
+      for await (const chunk of generator) {
+        fullResponse += chunk;
+        if (deliveryMode === "callback") {
+          await deps.callbackSender.send(body.connectionId!, {
+            type: "stream_chunk",
+            content: chunk,
+            conversationId: undefined,
+          });
+        }
+      }
+      if (deliveryMode === "callback") {
+        await deps.callbackSender.send(body.connectionId!, {
+          type: "stream_end",
+        });
+      }
+
+      const latency = Date.now() - msgStart;
+      void publishMessageMetrics({
+        latency,
+        responseLength: fullResponse.length,
+        channel: deps.channel,
+      });
+
+      if (!firstResponseSent) {
+        firstResponseSent = true;
+        void publishFirstResponseTime(Date.now() - deps.processStartTime, deps.channel);
+      }
+
+      if (deps.onMessageComplete && fullResponse) {
+        await deps.onMessageComplete(
+          body.userId!,
+          body.message!,
+          fullResponse,
+          body.channel! as "web" | "telegram",
+        ).catch(() => {});
+      }
+
+      logBridgeEvent("bridge.delivery.success", {
+        ...logContext,
+        deliveryType,
+        source: "openclaw",
+      });
+      void publishCountMetric("DeliverySuccess", {
+        channel: body.channel!,
+        runtime: runtimeLabel,
+        deliveryType,
+      });
+      return {
+        message: fullResponse,
+        source: "openclaw",
+      };
+    } catch (err) {
+      if (deliveryMode === "callback") {
+        await deps.callbackSender.send(body.connectionId!, {
+          type: "error",
+          error: err instanceof Error ? err.message : "Unknown error",
+        }).catch(() => {});
+      }
+      logBridgeEvent("bridge.delivery.failure", {
+        ...logContext,
+        deliveryType,
+        error: err instanceof Error ? err.message : String(err),
+      }, "error");
+      void publishCountMetric("DeliveryFailure", {
+        channel: body.channel!,
+        runtime: runtimeLabel,
+        deliveryType,
+      });
+      throw err;
+    }
+  }
+
+  if (deps.agentCoreHttpEnabled) {
+    app.get("/ping", (_req, res) => {
+      res.json({ status: "healthy" });
+    });
+
+    app.post("/invocations", async (req, res) => {
+      const body = req.body as Partial<BridgeMessageRequest>;
+
+      if (!body.userId || !body.message || !body.channel || !body.connectionId) {
+        res.status(400).json({ error: "Missing required fields" });
+        return;
+      }
+
+      deps.lifecycle.updateLastActivity();
+
+      try {
+        const result = await processAcceptedMessage(body, "response");
+        res.json({
+          content: result.message,
+          source: result.source,
+        });
+      } catch {
+        res.status(500).json({
+          error: "AgentCore runtime failed to process the request",
+        });
+      }
+    });
+  }
+
   app.use(createAuthMiddleware(deps.authToken));
 
   app.get("/health", (_req, res) => {
@@ -243,151 +446,7 @@ export function createApp(deps: BridgeDeps): express.Express {
 
     // Fire-and-forget async processing
     void (async () => {
-      const msgStart = Date.now();
-      const logContext = buildBridgeLogContext(body);
-      const deliveryType = resolveDeliveryType(body.channel);
-      logBridgeEvent("bridge.message.accepted", logContext);
-
-      try {
-        const gmailReady = await isGmailReady();
-        const gmailResponse = await maybeHandleCustomGmailRequest({
-          userId: body.userId!,
-          sessionKey: body.connectionId!,
-          message: body.message!,
-          gmailReady,
-          emailTokenBudget: body.emailTokenBudget ?? defaultEmailTokenBudget(),
-          onToolEvent: (event) => logToolEvent(event, logContext),
-        });
-        if (gmailResponse !== undefined) {
-          if (gmailResponse.kind === "direct") {
-            await deps.callbackSender.send(body.connectionId!, {
-              type: "stream_chunk",
-              content: gmailResponse.message,
-              conversationId: undefined,
-            });
-            await deps.callbackSender.send(body.connectionId!, {
-              type: "stream_end",
-            });
-
-            const latency = Date.now() - msgStart;
-            void publishMessageMetrics({
-              latency,
-              responseLength: gmailResponse.message.length,
-              channel: deps.channel,
-            });
-
-            if (!firstResponseSent) {
-              firstResponseSent = true;
-              void publishFirstResponseTime(Date.now() - deps.processStartTime, deps.channel);
-            }
-
-            if (deps.onMessageComplete) {
-              await deps.onMessageComplete(
-                body.userId!,
-                body.message!,
-                gmailResponse.message,
-                body.channel! as "web" | "telegram",
-              ).catch(() => {});
-            }
-
-            logBridgeEvent("bridge.delivery.success", {
-              ...logContext,
-              deliveryType,
-              source: gmailResponse.source,
-            });
-            void publishCountMetric("DeliverySuccess", {
-              channel: body.channel!,
-              runtime: "fargate",
-              deliveryType,
-            });
-            return;
-          }
-
-          body.message = gmailResponse.message;
-        }
-
-        const prefixes: string[] = [];
-        const historyPrefix = deps.getAndClearHistoryPrefix?.();
-        if (historyPrefix) {
-          prefixes.push(historyPrefix.trimEnd());
-        }
-        if (body.channel === "telegram") {
-          prefixes.push("[System: Respond in plain text only. Do not use markdown formatting such as **bold**, *italic*, ```code```, etc.]");
-        }
-        const toolEnabledPrefix = buildToolEnabledPrefix(body);
-        if (toolEnabledPrefix) {
-          prefixes.push(toolEnabledPrefix);
-        }
-        const messageToSend = prefixes.length > 0
-          ? `${prefixes.join("\n")}\n${body.message!}`
-          : body.message!;
-        logBridgeEvent("bridge.openclaw.forwarded", logContext);
-        const generator = deps.openclawClient.sendMessage(
-          body.userId!,
-          messageToSend,
-        );
-        let fullResponse = "";
-        for await (const chunk of generator) {
-          fullResponse += chunk;
-          await deps.callbackSender.send(body.connectionId!, {
-            type: "stream_chunk",
-            content: chunk,
-            conversationId: undefined,
-          });
-        }
-        await deps.callbackSender.send(body.connectionId!, {
-          type: "stream_end",
-        });
-
-        // Publish message metrics
-        const latency = Date.now() - msgStart;
-        void publishMessageMetrics({
-          latency,
-          responseLength: fullResponse.length,
-          channel: deps.channel,
-        });
-
-        if (!firstResponseSent) {
-          firstResponseSent = true;
-          void publishFirstResponseTime(Date.now() - deps.processStartTime, deps.channel);
-        }
-
-        // Save conversation to DynamoDB
-        if (deps.onMessageComplete && fullResponse) {
-          await deps.onMessageComplete(
-            body.userId!,
-            body.message!,
-            fullResponse,
-            body.channel! as "web" | "telegram",
-          ).catch(() => {});
-        }
-
-        logBridgeEvent("bridge.delivery.success", {
-          ...logContext,
-          deliveryType,
-          source: "openclaw",
-        });
-        void publishCountMetric("DeliverySuccess", {
-          channel: body.channel!,
-          runtime: "fargate",
-          deliveryType,
-        });
-      } catch (err) {
-        await deps.callbackSender.send(body.connectionId!, {
-          type: "error",
-          error: err instanceof Error ? err.message : "Unknown error",
-        }).catch(() => {});
-        logBridgeEvent("bridge.delivery.failure", {
-          ...logContext,
-          deliveryType,
-          error: err instanceof Error ? err.message : String(err),
-        }, "error");
-        void publishCountMetric("DeliveryFailure", {
-          channel: body.channel!,
-          runtime: "fargate",
-          deliveryType,
-        });
-      }
+      await processAcceptedMessage(body, "callback").catch(() => {});
     })();
   });
 

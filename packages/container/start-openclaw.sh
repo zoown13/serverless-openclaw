@@ -14,7 +14,7 @@ mkdir -p "${DEFAULT_AGENT_DIR}" "${MAIN_AGENT_DIR}" "${CREDENTIALS_DIR}" "${GOG_
 # mDNS/Bonjour discovery is a LAN convenience feature and has no useful path
 # inside on-demand Fargate/AgentCore containers. Keep it disabled by default so
 # the gateway startup path is not coupled to multicast probing state.
-export CLAWDBOT_DISABLE_BONJOUR="${CLAWDBOT_DISABLE_BONJOUR:-1}"
+export OPENCLAW_DISABLE_BONJOUR="${OPENCLAW_DISABLE_BONJOUR:-1}"
 
 if [ "${CONTAINER_RUNTIME_MODE:-}" = "agentcore" ] || [ "${AGENTCORE_HTTP_ENABLED:-}" = "true" ]; then
   echo "[start] Resolving AgentCore runtime secrets from SSM..."

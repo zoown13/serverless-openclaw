@@ -6,6 +6,8 @@ param(
   [string]$ToolRuntimeProvider = $(if ($env:TOOL_RUNTIME_PROVIDER) { $env:TOOL_RUNTIME_PROVIDER } else { "fargate" }),
   [ValidateSet("ddb", "dynamodb", "memory")]
   [string]$ToolContextStore = $(if ($env:TOOL_CONTEXT_STORE) { $env:TOOL_CONTEXT_STORE } else { "ddb" }),
+  [string]$AgentCoreRuntimeArn = $(if ($env:AGENTCORE_RUNTIME_ARN) { $env:AGENTCORE_RUNTIME_ARN } else { "" }),
+  [string]$AgentCoreRuntimeQualifier = $(if ($env:AGENTCORE_RUNTIME_QUALIFIER) { $env:AGENTCORE_RUNTIME_QUALIFIER } else { "" }),
   [switch]$SkipEnvFile
 )
 
@@ -52,6 +54,22 @@ $env:AGENT_RUNTIME = "both"
 $env:TOOL_RUNTIME_PROVIDER = $ToolRuntimeProvider
 $env:TOOL_CONTEXT_STORE = $ToolContextStore
 
+if ($ToolRuntimeProvider -eq "agentcore") {
+  if ([string]::IsNullOrWhiteSpace($AgentCoreRuntimeArn)) {
+    throw "AGENTCORE_RUNTIME_ARN is required when TOOL_RUNTIME_PROVIDER=agentcore. Run scripts/deploy-agentcore-runtime.ps1 first, then pass -AgentCoreRuntimeArn."
+  }
+
+  $env:AGENTCORE_RUNTIME_ARN = $AgentCoreRuntimeArn.Trim()
+  if (-not [string]::IsNullOrWhiteSpace($AgentCoreRuntimeQualifier)) {
+    $env:AGENTCORE_RUNTIME_QUALIFIER = $AgentCoreRuntimeQualifier.Trim()
+  } else {
+    Remove-Item Env:AGENTCORE_RUNTIME_QUALIFIER -ErrorAction SilentlyContinue
+  }
+} else {
+  Remove-Item Env:AGENTCORE_RUNTIME_ARN -ErrorAction SilentlyContinue
+  Remove-Item Env:AGENTCORE_RUNTIME_QUALIFIER -ErrorAction SilentlyContinue
+}
+
 Write-Host "Deploying Option B tool runtime stacks"
 Write-Host "  AWS_PROFILE           : $env:AWS_PROFILE"
 Write-Host "  AWS_REGION            : $env:AWS_REGION"
@@ -59,6 +77,17 @@ Write-Host "  AI_PROVIDER           : $env:AI_PROVIDER"
 Write-Host "  AGENT_RUNTIME         : $env:AGENT_RUNTIME"
 Write-Host "  TOOL_RUNTIME_PROVIDER : $env:TOOL_RUNTIME_PROVIDER"
 Write-Host "  TOOL_CONTEXT_STORE    : $env:TOOL_CONTEXT_STORE"
+if ($ToolRuntimeProvider -eq "agentcore") {
+  Write-Host "  AGENTCORE_RUNTIME_ARN : $env:AGENTCORE_RUNTIME_ARN"
+  if ($env:AGENTCORE_RUNTIME_QUALIFIER) {
+    Write-Host "  AGENTCORE_QUALIFIER   : $env:AGENTCORE_RUNTIME_QUALIFIER"
+  }
+}
+Write-Host ""
+Write-Host "Safety checks"
+Write-Host "  - Gateway remains coarse-only; semantic routing stays inside the tool runtime."
+Write-Host "  - Lambda remains the default chat path through AGENT_RUNTIME=both."
+Write-Host "  - DynamoDB-backed tool context remains enabled unless explicitly overridden."
 Write-Host ""
 
 Push-Location $cdkDir

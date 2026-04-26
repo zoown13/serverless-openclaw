@@ -340,6 +340,9 @@ Write-Host ""
 Write-Host "Deploy ApiStack with:"
 Write-Host "  `$env:TOOL_RUNTIME_PROVIDER='agentcore'"
 Write-Host "  `$env:AGENTCORE_RUNTIME_ARN='$($runtime.agentRuntimeArn)'"
+Write-Host ""
+Write-Host "Or run:"
+Write-Host "  powershell -File .\scripts\deploy-option-b-tool-runtime.ps1 -ToolRuntimeProvider agentcore -AgentCoreRuntimeArn '$($runtime.agentRuntimeArn)'"
 
 
 

@@ -216,11 +216,12 @@ export async function invokeAgentCoreRuntime(
   const payload = JSON.stringify(body);
   const payloadHash = hashHex(payload);
   const host = `${SERVICE_NAME}.${region}.amazonaws.com`;
-  const canonicalUri = `/runtimes/${encodeURIComponent(runtimeArn)}/invocations`;
+  const requestUri = `/runtimes/${encodeURIComponent(runtimeArn)}/invocations`;
+  const canonicalUri = requestUri.replace(/%/g, "%25");
   const canonicalQueryString = params.qualifier
     ? `qualifier=${encodeQueryValue(params.qualifier)}`
     : "";
-  const url = `https://${host}${canonicalUri}${canonicalQueryString ? `?${canonicalQueryString}` : ""}`;
+  const url = `https://${host}${requestUri}${canonicalQueryString ? `?${canonicalQueryString}` : ""}`;
   const amzDate = toAmzDate(params.now ?? new Date());
   const credentials = getCredentialsFromEnv();
   const signedHeaders: Record<string, string> = {

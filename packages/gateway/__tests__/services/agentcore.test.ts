@@ -89,5 +89,8 @@ describe("agentcore service", () => {
     expect(capturedHeaders.Authorization).toContain(
       "SignedHeaders=accept;content-type;host;x-amz-date;x-amzn-bedrock-agentcore-runtime-session-id",
     );
+    expect(capturedHeaders.Authorization).toContain(
+      "Signature=784d87a4acae0b70fba27d5089c04e329ab47c3c45319e006669b22cad7fc35b",
+    );
   });
 });

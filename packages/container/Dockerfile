@@ -29,6 +29,25 @@ ARG OPENCLAW_VERSION=2026.2.13
 RUN npm install -g openclaw@${OPENCLAW_VERSION} grammy@1.42.0 && \
     npm cache clean --force
 
+# Pre-seed OpenClaw bundled runtime dependencies that otherwise install during
+# every on-demand gateway startup. This trades a small image-size increase for a
+# shorter and more deterministic Fargate/AgentCore cold start path.
+RUN npm install --prefix /usr/local/lib/node_modules/openclaw \
+    --omit=dev \
+    --no-audit \
+    --no-fund \
+    @grammyjs/runner@^2.0.3 \
+    @grammyjs/transformer-throttler@^1.2.1 \
+    typebox@1.1.31 \
+    undici@8.1.0 \
+    acpx@0.5.3 \
+    @homebridge/ciao@^1.3.6 \
+    @modelcontextprotocol/sdk@1.29.0 \
+    express@^5.2.1 \
+    playwright-core@1.59.1 \
+    ws@^8.20.0 && \
+    npm cache clean --force
+
 # Create non-root user
 RUN groupadd -r openclaw && useradd -r -g openclaw -m openclaw
 

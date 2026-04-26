@@ -6,7 +6,7 @@ import type {
 
 import type { ToolFollowUpIntent } from "./taxonomy.js";
 
-export type SlmBackendKind = "remote-api" | "mock-local";
+export type SlmBackendKind = "remote-api" | "mock-local" | "local-transformers";
 
 export interface SlmClassificationInput {
   message: string;

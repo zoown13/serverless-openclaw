@@ -2,6 +2,7 @@ import { ConverseCommand, BedrockRuntimeClient } from "@aws-sdk/client-bedrock-r
 
 import { isToolFollowUpIntent, isToolIntentAdvisorAction, isToolSourceChoice, isToolTaskFamily } from "./taxonomy.js";
 import { createMockLocalSlmClassifier } from "./mock-local.js";
+import { createLocalTransformersSlmClassifier } from "./local-transformers.js";
 import type { SlmBackendKind, SlmClassificationInput, SlmClassifier, SlmTaskDecision } from "./types.js";
 
 const MAX_CLASSIFIER_CHARS = 600;
@@ -23,7 +24,10 @@ export function evaluateSlmDecisionPolicy(decision: Pick<SlmTaskDecision, "actio
 }
 
 export function resolveSlmBackendKind(value = process.env.TOOL_SLM_BACKEND): SlmBackendKind {
-  return value === "mock-local" ? "mock-local" : "remote-api";
+  if (value === "mock-local" || value === "local-transformers") {
+    return value;
+  }
+  return "remote-api";
 }
 
 function provider(): "anthropic" | "bedrock" {
@@ -189,6 +193,9 @@ function createRemoteApiSlmClassifier(): SlmClassifier {
 async function loadClassifierBackend(kind: SlmBackendKind): Promise<SlmClassifier> {
   if (kind === "mock-local") {
     return createMockLocalSlmClassifier();
+  }
+  if (kind === "local-transformers") {
+    return createLocalTransformersSlmClassifier();
   }
   return createRemoteApiSlmClassifier();
 }

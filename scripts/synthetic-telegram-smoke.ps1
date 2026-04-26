@@ -10,7 +10,9 @@ param(
   [ValidateSet("PaymentFollowUp", "TravelPaymentFollowUp")]
   [string]$Scenario = "PaymentFollowUp",
   [int]$PauseSeconds = 10,
+  [int]$BridgeSignalTimeoutSeconds = 180,
   [switch]$SkipStateReset,
+  [switch]$SkipBridgeSignalCheck,
   [switch]$TailLogs
 )
 
@@ -289,6 +291,73 @@ function Show-RecentLogs {
     --region $SelectedRegion
 }
 
+function Wait-BridgeSignals {
+  param(
+    [Parameter(Mandatory = $true)][string]$SelectedProfile,
+    [Parameter(Mandatory = $true)][string]$SelectedRegion,
+    [Parameter(Mandatory = $true)][string]$SelectedScenario,
+    [Parameter(Mandatory = $true)][long]$StartTimeMs,
+    [Parameter(Mandatory = $true)][int]$TimeoutSeconds
+  )
+
+  $requiredSignals = @(
+    "bridge.tool.context.created",
+    "bridge.tool.context.reused",
+    "bridge.delivery.success"
+  )
+
+  if ($SelectedScenario -eq "TravelPaymentFollowUp") {
+    $requiredSignals += @(
+      "bridge.tool.payment.refine.completed",
+      '"followUpIntent":"issuer_breakdown"'
+    )
+  }
+
+  $forbiddenSignals = @(
+    "Failed to persist durable tool context",
+    "missing scope: operator.write",
+    "TaskDefinition is inactive",
+    "CIAO PROBING",
+    "bridge.tool.handler.fallback"
+  )
+
+  $deadline = [DateTimeOffset]::UtcNow.AddSeconds($TimeoutSeconds)
+  $lastMissing = $requiredSignals
+
+  Write-Host ""
+  Write-Host "Waiting for Bridge processing signals..."
+
+  while ([DateTimeOffset]::UtcNow -lt $deadline) {
+    $messages = aws logs filter-log-events `
+      --log-group-name /ecs/serverless-openclaw `
+      --start-time $StartTimeMs `
+      --query "events[].message" `
+      --output text `
+      --profile $SelectedProfile `
+      --region $SelectedRegion
+
+    if ($LASTEXITCODE -ne 0) {
+      throw "Failed to read ECS logs for Bridge signal check."
+    }
+
+    $text = ($messages | Out-String)
+    $forbiddenHit = $forbiddenSignals | Where-Object { $text.Contains($_) } | Select-Object -First 1
+    if ($forbiddenHit) {
+      throw "Bridge signal check failed: found forbidden signal '$forbiddenHit'."
+    }
+
+    $lastMissing = @($requiredSignals | Where-Object { -not $text.Contains($_) })
+    if ($lastMissing.Count -eq 0) {
+      Write-Host "Bridge signal check passed."
+      return
+    }
+
+    Start-Sleep -Seconds 5
+  }
+
+  throw "Bridge signal check timed out after ${TimeoutSeconds}s. Missing: $($lastMissing -join ', ')"
+}
+
 if (-not $ApiEndpoint) {
   $ApiEndpoint = Resolve-ApiEndpoint -SelectedProfile $Profile -SelectedRegion $Region
 }
@@ -300,6 +369,7 @@ if (-not $WebhookSecret) {
 $messages = Get-ScenarioMessages -SelectedScenario $Scenario
 $webhookUri = "$ApiEndpoint/telegram"
 $baseUpdateId = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+$scenarioStartTimeMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 $resolvedUserId = Resolve-SyntheticUserId `
   -SelectedProfile $Profile `
   -SelectedRegion $Region `
@@ -321,6 +391,7 @@ Write-Host "  UserId   : $resolvedUserId"
 Write-Host "  Scenario : $Scenario"
 Write-Host "  Pause(s) : $PauseSeconds"
 Write-Host "  Reset    : $(-not $SkipStateReset)"
+Write-Host "  Signals  : $(-not $SkipBridgeSignalCheck)"
 Write-Host ""
 
 for ($index = 0; $index -lt $messages.Count; $index++) {
@@ -344,7 +415,19 @@ for ($index = 0; $index -lt $messages.Count; $index++) {
 
 Write-Host ""
 Write-Host "Synthetic Telegram smoke complete."
-Write-Host "If you want the paired logs too, re-run with -TailLogs."
+
+if (-not $SkipBridgeSignalCheck) {
+  Wait-BridgeSignals `
+    -SelectedProfile $Profile `
+    -SelectedRegion $Region `
+    -SelectedScenario $Scenario `
+    -StartTimeMs $scenarioStartTimeMs `
+    -TimeoutSeconds $BridgeSignalTimeoutSeconds
+}
+
+if (-not $TailLogs) {
+  Write-Host "If you want the paired logs too, re-run with -TailLogs."
+}
 
 if ($TailLogs) {
   Start-Sleep -Seconds 12

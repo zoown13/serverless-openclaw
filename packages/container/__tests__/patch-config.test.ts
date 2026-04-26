@@ -112,6 +112,41 @@ describe("patchConfig", () => {
     expect(written.gateway.port).toBe(18789);
   });
 
+  it("should disable local mDNS discovery for serverless runtime", () => {
+    mockedFs.readFileSync.mockReturnValue(JSON.stringify(BASE_CONFIG));
+    mockedFs.writeFileSync.mockImplementation(() => {});
+
+    patchConfig("/path/to/openclaw.json");
+
+    const written = JSON.parse(
+      mockedFs.writeFileSync.mock.calls[0][1] as string,
+    );
+    expect(written.discovery.mdns.mode).toBe("off");
+  });
+
+  it("should preserve existing discovery settings while disabling mDNS", () => {
+    const configWithDiscovery = {
+      ...BASE_CONFIG,
+      discovery: {
+        mdns: { mode: "minimal", custom: true },
+        wideArea: { enabled: true, domain: "example.test" },
+      },
+    };
+    mockedFs.readFileSync.mockReturnValue(JSON.stringify(configWithDiscovery));
+    mockedFs.writeFileSync.mockImplementation(() => {});
+
+    patchConfig("/path/to/openclaw.json");
+
+    const written = JSON.parse(
+      mockedFs.writeFileSync.mock.calls[0][1] as string,
+    );
+    expect(written.discovery.mdns).toEqual({ custom: true, mode: "off" });
+    expect(written.discovery.wideArea).toEqual({
+      enabled: true,
+      domain: "example.test",
+    });
+  });
+
   // --- New tests: preserve user-owned config keys ---
 
   it("should preserve mcpServers from existing config", () => {

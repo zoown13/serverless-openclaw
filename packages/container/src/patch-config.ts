@@ -27,6 +27,14 @@ export function patchConfig(configPath: string, options?: PatchOptions): void {
   // Remove Telegram section entirely (webhook-only, configured via env)
   delete config.telegram;
 
+  // Local mDNS discovery is a LAN feature. Serverless containers do not need
+  // multicast gateway discovery, and keeping it off avoids coupling startup to
+  // network probing state.
+  const discovery = (config.discovery ?? {}) as Record<string, unknown>;
+  const mdns = (discovery.mdns ?? {}) as Record<string, unknown>;
+  discovery.mdns = { ...mdns, mode: "off" };
+  config.discovery = discovery;
+
   if (options?.aiProvider === "bedrock") {
     // Signal that AWS credentials are available via SDK chain (EC2/Fargate IAM role)
     process.env.AWS_PROFILE = "default";

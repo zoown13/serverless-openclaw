@@ -3,7 +3,11 @@ import type {
   ToolSourceChoice,
   ToolTaskFamily,
 } from "@serverless-openclaw/shared";
-import { MIN_TOOL_INTENT_CONFIDENCE, createDefaultSlmClassifier, parseSlmClassifierResponse } from "./slm/index.js";
+import {
+  createDefaultSlmClassifier,
+  evaluateSlmDecisionPolicy,
+  parseSlmClassifierResponse,
+} from "./slm/index.js";
 import type { SlmBackendKind, SlmClassificationInput, ToolFollowUpIntent } from "./slm/index.js";
 
 export interface DecideToolIntentInput {
@@ -56,7 +60,8 @@ export async function decideToolIntent(
   if (!decision) {
     return null;
   }
-  if (decision.confidence < MIN_TOOL_INTENT_CONFIDENCE) {
+  const policy = evaluateSlmDecisionPolicy(decision);
+  if (policy === "reject" || policy === "fallback") {
     return null;
   }
   if (!input.gmailReady && decision.action === "gmail") {

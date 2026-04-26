@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   createDefaultSlmClassifier,
+  evaluateSlmDecisionPolicy,
   parseSlmClassifierResponse,
   resolveSlmBackendKind,
 } from "../../src/slm/classifier.js";
@@ -28,6 +29,48 @@ describe("slm/classifier", () => {
         '{"action":"continue_active_task","taskFamily":"gmail_payment_summary","sourceChoice":"gmail","followUpIntent":"invent_new_intent","confidence":0.91}',
       ),
     ).toBeNull();
+  });
+
+  it("accepts high-confidence SLM decisions", () => {
+    expect(
+      evaluateSlmDecisionPolicy({
+        action: "gmail",
+        taskFamily: "gmail_payment_summary",
+        sourceChoice: "gmail",
+        confidence: 0.8,
+      }),
+    ).toBe("accept");
+  });
+
+  it("allows mid-confidence clarification but falls back for source choices", () => {
+    expect(
+      evaluateSlmDecisionPolicy({
+        action: "clarify_source",
+        taskFamily: "gmail_payment_summary",
+        sourceChoice: null,
+        confidence: 0.7,
+      }),
+    ).toBe("clarify");
+
+    expect(
+      evaluateSlmDecisionPolicy({
+        action: "gmail",
+        taskFamily: "gmail_payment_summary",
+        sourceChoice: "gmail",
+        confidence: 0.7,
+      }),
+    ).toBe("fallback");
+  });
+
+  it("rejects very low-confidence SLM decisions", () => {
+    expect(
+      evaluateSlmDecisionPolicy({
+        action: "generic_openclaw",
+        taskFamily: "generic_tool_task",
+        sourceChoice: "general",
+        confidence: 0.54,
+      }),
+    ).toBe("reject");
   });
 
   it("defaults to the remote-api backend unless mock-local is explicitly requested", () => {

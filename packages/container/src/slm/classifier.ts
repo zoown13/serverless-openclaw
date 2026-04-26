@@ -5,8 +5,22 @@ import { createMockLocalSlmClassifier } from "./mock-local.js";
 import type { SlmBackendKind, SlmClassificationInput, SlmClassifier, SlmTaskDecision } from "./types.js";
 
 const MAX_CLASSIFIER_CHARS = 600;
-export const MIN_TOOL_INTENT_CONFIDENCE = 0.72;
+export const SLM_ACCEPT_CONFIDENCE = 0.8;
+export const SLM_FALLBACK_CONFIDENCE = 0.55;
+export const MIN_TOOL_INTENT_CONFIDENCE = SLM_ACCEPT_CONFIDENCE;
 const TIMEOUT_MS = 3500;
+
+export type SlmDecisionPolicy = "accept" | "clarify" | "fallback" | "reject";
+
+export function evaluateSlmDecisionPolicy(decision: Pick<SlmTaskDecision, "action" | "confidence">): SlmDecisionPolicy {
+  if (decision.confidence >= SLM_ACCEPT_CONFIDENCE) {
+    return "accept";
+  }
+  if (decision.confidence < SLM_FALLBACK_CONFIDENCE) {
+    return "reject";
+  }
+  return decision.action === "clarify_source" ? "clarify" : "fallback";
+}
 
 export function resolveSlmBackendKind(value = process.env.TOOL_SLM_BACKEND): SlmBackendKind {
   return value === "mock-local" ? "mock-local" : "remote-api";

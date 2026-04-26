@@ -11,8 +11,11 @@ export {
   isToolTaskFamily,
 } from "./taxonomy.js";
 export {
+  SLM_ACCEPT_CONFIDENCE,
+  SLM_FALLBACK_CONFIDENCE,
   MIN_TOOL_INTENT_CONFIDENCE,
   createDefaultSlmClassifier,
+  evaluateSlmDecisionPolicy,
   parseSlmClassifierResponse,
   resolveSlmBackendKind,
 } from "./classifier.js";

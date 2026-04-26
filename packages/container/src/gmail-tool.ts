@@ -1,12 +1,21 @@
-import { readFile } from "node:fs/promises";
+﻿import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import type {
-  EmailTokenBudgetPolicy,
-  ToolIntentAdvisorAction,
-  ToolSourceChoice,
-  ToolTaskFamily,
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import {
+  DeleteCommand,
+  DynamoDBDocumentClient,
+  GetCommand,
+  PutCommand,
+} from "@aws-sdk/lib-dynamodb";
+import {
+  KEY_PREFIX,
+  TABLE_NAMES,
+  type EmailTokenBudgetPolicy,
+  type ToolIntentAdvisorAction,
+  type ToolSourceChoice,
+  type ToolTaskFamily,
 } from "@serverless-openclaw/shared";
 
 import {
@@ -17,6 +26,7 @@ import {
 import type { SlmBackendKind, ToolFollowUpIntent } from "./slm/index.js";
 
 const DEFAULT_CONTEXT_TTL_MS = 5 * 60 * 1000;
+const TOOL_CONTEXT_SETTING_KEY = "tool-task-context";
 const SUMMARY_FOLLOW_UP_PATTERN =
   /(얼마|합계|총액|정리|요약|카드사|결제처|가맹점|merchant|issuer|sum|summary|breakdown|table|표|테이블|이번주 것만 다시|이번 주 것만 다시|다시|계속|그거|이거|그럼|더\s*있|더\s*찾|더\s*보|밖에\s*없|몇\s*개|개수|건수|limit)/i;
 const PAYMENT_HINT_PATTERN =
@@ -69,6 +79,7 @@ const CARD_ISSUER_PATTERNS: RegExp[] = [
 ];
 const lastSearchContextByUser = new Map<string, SearchContext>();
 const taskContextByUser = new Map<string, ToolTaskContext>();
+let documentClient: DynamoDBDocumentClient | null = null;
 
 interface ToolTaskContext {
   status: "awaiting_source" | "active";
@@ -347,7 +358,39 @@ function isExpired(expiresAt?: string): boolean {
   return !expiresAt || Date.parse(expiresAt) <= Date.now();
 }
 
-function getTaskContext(key: string): ToolTaskContext | undefined {
+function isDurableToolContextEnabled(): boolean {
+  const value = process.env.TOOL_CONTEXT_STORE?.trim().toLowerCase();
+  return value === "ddb" || value === "dynamodb";
+}
+
+function getDocumentClient(): DynamoDBDocumentClient {
+  documentClient ??= DynamoDBDocumentClient.from(new DynamoDBClient({}));
+  return documentClient;
+}
+
+function getToolContextItemKey(contextKey: string): { PK: string; SK: string } {
+  return {
+    PK: `${KEY_PREFIX.USER}${contextKey}`,
+    SK: `${KEY_PREFIX.SETTING}${TOOL_CONTEXT_SETTING_KEY}`,
+  };
+}
+
+function isToolTaskContext(value: unknown): value is ToolTaskContext {
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as Partial<ToolTaskContext>;
+  return (
+    (record.status === "awaiting_source" || record.status === "active") &&
+    typeof record.taskFamily === "string" &&
+    (record.sourceChoice === null || typeof record.sourceChoice === "string") &&
+    typeof record.canonicalGoal === "string" &&
+    typeof record.createdAt === "string" &&
+    typeof record.lastActivityAt === "string" &&
+    typeof record.expiresAt === "string" &&
+    typeof record.clarificationResendCount === "number"
+  );
+}
+
+function getMemoryTaskContext(key: string): ToolTaskContext | undefined {
   const context = taskContextByUser.get(key);
   if (!context) {
     return undefined;
@@ -359,12 +402,78 @@ function getTaskContext(key: string): ToolTaskContext | undefined {
   return context;
 }
 
-function setTaskContext(key: string, context: ToolTaskContext): void {
-  taskContextByUser.set(key, context);
+async function loadTaskContextFromStore(key: string): Promise<ToolTaskContext | undefined> {
+  if (!isDurableToolContextEnabled()) return undefined;
+
+  try {
+    const result = await getDocumentClient().send(
+      new GetCommand({
+        TableName: process.env.SETTINGS_TABLE ?? TABLE_NAMES.SETTINGS,
+        Key: getToolContextItemKey(key),
+      }),
+    );
+    const context = (result.Item as { context?: unknown } | undefined)?.context;
+    if (!isToolTaskContext(context)) return undefined;
+    if (isExpired(context.expiresAt)) {
+      await clearTaskContext(key);
+      return undefined;
+    }
+    taskContextByUser.set(key, context);
+    return context;
+  } catch (err) {
+    console.warn("[gmail-tool] Failed to load durable tool context", {
+      key,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return undefined;
+  }
 }
 
-function clearTaskContext(key: string): void {
+async function getTaskContext(key: string): Promise<ToolTaskContext | undefined> {
+  return getMemoryTaskContext(key) ?? loadTaskContextFromStore(key);
+}
+
+async function setTaskContext(key: string, context: ToolTaskContext): Promise<void> {
+  taskContextByUser.set(key, context);
+  if (!isDurableToolContextEnabled()) return;
+
+  try {
+    await getDocumentClient().send(
+      new PutCommand({
+        TableName: process.env.SETTINGS_TABLE ?? TABLE_NAMES.SETTINGS,
+        Item: {
+          ...getToolContextItemKey(key),
+          context,
+          updatedAt: nowIso(),
+          ttl: Math.floor(Date.parse(context.expiresAt) / 1000),
+        },
+      }),
+    );
+  } catch (err) {
+    console.warn("[gmail-tool] Failed to persist durable tool context", {
+      key,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+async function clearTaskContext(key: string): Promise<void> {
   taskContextByUser.delete(key);
+  if (!isDurableToolContextEnabled()) return;
+
+  try {
+    await getDocumentClient().send(
+      new DeleteCommand({
+        TableName: process.env.SETTINGS_TABLE ?? TABLE_NAMES.SETTINGS,
+        Key: getToolContextItemKey(key),
+      }),
+    );
+  } catch (err) {
+    console.warn("[gmail-tool] Failed to delete durable tool context", {
+      key,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 function setSearchContext(key: string, context: SearchContext): void {
@@ -1517,7 +1626,7 @@ async function refineActivePaymentContextByTopic(
       lastActivityAt: nowIso(),
       expiresAt: futureIso(DEFAULT_CONTEXT_TTL_MS),
     };
-    setTaskContext(contextKey, nextContext);
+    await setTaskContext(contextKey, nextContext);
       emitToolEvent(options.onToolEvent, {
         type: "paymentRefineCompleted",
         taskFamily: context.taskFamily,
@@ -1612,7 +1721,7 @@ async function refineActivePaymentContextByTopic(
       lastActivityAt: nowIso(),
       expiresAt: futureIso(DEFAULT_CONTEXT_TTL_MS),
     };
-  setTaskContext(contextKey, nextContext);
+  await setTaskContext(contextKey, nextContext);
     emitToolEvent(options.onToolEvent, {
       type: "paymentRefineCompleted",
       taskFamily: context.taskFamily,
@@ -1906,7 +2015,7 @@ async function runGmailTask(
     expiresAt: futureIso(DEFAULT_CONTEXT_TTL_MS),
     clarificationResendCount: 0,
   };
-  setTaskContext(contextKey, taskContext);
+  await setTaskContext(contextKey, taskContext);
   emitToolEvent(options.onToolEvent, {
     type: "contextCreated",
     taskFamily,
@@ -2038,7 +2147,7 @@ async function handleAwaitingSourceContext(
 ): Promise<ToolHandlerResult | undefined> {
   const trimmed = normalizeWhitespace(options.message);
   if (CANCEL_PATTERN.test(trimmed)) {
-    clearTaskContext(contextKey);
+    await clearTaskContext(contextKey);
     emitToolEvent(options.onToolEvent, {
       type: "contextCleared",
       taskFamily: context.taskFamily,
@@ -2053,7 +2162,7 @@ async function handleAwaitingSourceContext(
 
   if (GMAIL_CONFIRM_PATTERN.test(trimmed)) {
     if (!options.gmailReady) {
-      clearTaskContext(contextKey);
+      await clearTaskContext(contextKey);
       emitToolEvent(options.onToolEvent, {
         type: "contextCleared",
         taskFamily: context.taskFamily,
@@ -2085,7 +2194,7 @@ async function handleAwaitingSourceContext(
   }
 
   if (GENERAL_CONFIRM_PATTERN.test(trimmed)) {
-    clearTaskContext(contextKey);
+    await clearTaskContext(contextKey);
     emitToolEvent(options.onToolEvent, {
       type: "contextCleared",
       taskFamily: context.taskFamily,
@@ -2105,7 +2214,7 @@ async function handleAwaitingSourceContext(
       lastActivityAt: nowIso(),
       expiresAt: futureIso(DEFAULT_CONTEXT_TTL_MS),
     };
-    setTaskContext(contextKey, nextContext);
+    await setTaskContext(contextKey, nextContext);
     emitToolEvent(options.onToolEvent, {
       type: "clarificationSent",
       taskFamily: context.taskFamily,
@@ -2118,7 +2227,7 @@ async function handleAwaitingSourceContext(
     };
   }
 
-  clearTaskContext(contextKey);
+  await clearTaskContext(contextKey);
   emitToolEvent(options.onToolEvent, {
     type: "contextCleared",
     taskFamily: context.taskFamily,
@@ -2135,7 +2244,7 @@ async function handleActiveTaskContext(
 ): Promise<ToolHandlerResult | undefined> {
   const trimmed = normalizeWhitespace(options.message);
   if (CANCEL_PATTERN.test(trimmed)) {
-    clearTaskContext(contextKey);
+    await clearTaskContext(contextKey);
     emitToolEvent(options.onToolEvent, {
       type: "contextCleared",
       taskFamily: context.taskFamily,
@@ -2160,7 +2269,7 @@ async function handleActiveTaskContext(
       lastActivityAt: nowIso(),
       expiresAt: futureIso(DEFAULT_CONTEXT_TTL_MS),
     };
-    setTaskContext(contextKey, effectiveContext);
+    await setTaskContext(contextKey, effectiveContext);
   }
 
   if (
@@ -2181,7 +2290,7 @@ async function handleActiveTaskContext(
         lastActivityAt: nowIso(),
         expiresAt: futureIso(DEFAULT_CONTEXT_TTL_MS),
       };
-      setTaskContext(contextKey, nextContext);
+      await setTaskContext(contextKey, nextContext);
       emitToolEvent(options.onToolEvent, {
         type: "contextReused",
         taskFamily: nextContext.taskFamily,
@@ -2197,7 +2306,7 @@ async function handleActiveTaskContext(
     }
 
     if (!shouldKeepPaymentContextByIntent(followUpIntent) && isClearlyUnrelated(trimmed)) {
-      clearTaskContext(contextKey);
+      await clearTaskContext(contextKey);
       emitToolEvent(options.onToolEvent, {
         type: "contextCleared",
         taskFamily: effectiveContext.taskFamily,
@@ -2211,7 +2320,7 @@ async function handleActiveTaskContext(
       lastActivityAt: nowIso(),
       expiresAt: futureIso(DEFAULT_CONTEXT_TTL_MS),
     };
-    setTaskContext(contextKey, nextContext);
+    await setTaskContext(contextKey, nextContext);
     emitToolEvent(options.onToolEvent, {
       type: "contextReused",
       taskFamily: nextContext.taskFamily,
@@ -2235,10 +2344,10 @@ export async function maybeHandleCustomGmailRequest(
   options: MaybeHandleCustomGmailRequestOptions,
 ): Promise<ToolHandlerResult | undefined> {
   const contextKey = getContextKey(options.userId, options.sessionKey);
-  const activeContext = getTaskContext(contextKey);
+  const activeContext = await getTaskContext(contextKey);
 
   if (activeContext && isExpired(activeContext.expiresAt)) {
-    clearTaskContext(contextKey);
+    await clearTaskContext(contextKey);
     emitToolEvent(options.onToolEvent, {
       type: "contextExpired",
       taskFamily: activeContext.taskFamily,
@@ -2246,7 +2355,7 @@ export async function maybeHandleCustomGmailRequest(
     });
   }
 
-  const currentContext = getTaskContext(contextKey);
+  const currentContext = await getTaskContext(contextKey);
   if (currentContext?.status === "awaiting_source") {
     const handled = await handleAwaitingSourceContext(contextKey, currentContext, options);
     if (handled) {
@@ -2254,7 +2363,7 @@ export async function maybeHandleCustomGmailRequest(
     }
   }
 
-  const refreshedContext = getTaskContext(contextKey);
+  const refreshedContext = await getTaskContext(contextKey);
   let advisorDecision: ToolIntentDecision | null = null;
   if (refreshedContext?.status === "active") {
     advisorDecision = await decideToolIntent(
@@ -2358,7 +2467,7 @@ export async function maybeHandleCustomGmailRequest(
       expiresAt: futureIso(DEFAULT_CONTEXT_TTL_MS),
       clarificationResendCount: 0,
     };
-    setTaskContext(contextKey, nextContext);
+    await setTaskContext(contextKey, nextContext);
     emitToolEvent(options.onToolEvent, {
       type: "contextCreated",
       taskFamily,
@@ -2407,3 +2516,7 @@ export async function maybeHandleCustomGmailRequest(
     source: "openclaw",
   };
 }
+
+
+
+

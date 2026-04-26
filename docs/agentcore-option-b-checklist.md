@@ -1,4 +1,4 @@
-# AgentCore Option B Progress Checklist
+﻿# AgentCore Option B Progress Checklist
 
 This checklist tracks the B-lite migration from Fargate tool runtime to AgentCore Runtime while keeping Fargate as the safe fallback.
 
@@ -23,7 +23,7 @@ This checklist tracks the B-lite migration from Fargate tool runtime to AgentCor
 - `[~]` Investigate AgentCore same-session follow-up timeout.
 - `[x]` Prevent active AgentCore context from falling back to Fargate and mixing task context.
 - `[x]` Add shorter configurable timeout for AgentCore follow-up turns.
-- `[ ]` Add durable ToolTaskContext storage for AgentCore/Fargate parity.
+- `[x]` Add durable ToolTaskContext storage for AgentCore/Fargate parity. Uses the existing Settings table behind `TOOL_CONTEXT_STORE=ddb` so AgentCore and Fargate can resume the same Gmail/payment task context.
 - `[ ]` Re-test AgentCore-only follow-up flow after durable context work.
 - `[ ]` Compare latency, cost, and answer quality before cutover.
 - `[ ]` Cut over `TOOL_RUNTIME_PROVIDER=agentcore` only after the follow-up flow is stable.
@@ -37,3 +37,5 @@ Production should stay on `TOOL_RUNTIME_PROVIDER=fargate` until AgentCore can pa
 3. Follow-up: `카드사별로 보여줘`
 
 The AgentCore path must complete these turns without falling back to Fargate, leaking internal errors, or losing task context.
+
+

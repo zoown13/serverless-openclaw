@@ -1,4 +1,4 @@
-param(
+﻿param(
   [string]$Region = "ap-northeast-2",
   [string]$RuntimeName = "ServerlessOpenClawToolRuntime",
   [string]$RuntimeRoleName = "serverless-openclaw-agentcore-runtime-role",
@@ -269,6 +269,7 @@ $environmentVariables = @{
   AI_PROVIDER = $AiProvider
   AI_MODEL = $AiModel
   TOOL_SLM_BACKEND = $ToolSlmBackend
+  TOOL_CONTEXT_STORE = "ddb"
   AWS_REGION = $Region
   SSM_BRIDGE_AUTH_TOKEN = "/serverless-openclaw/secrets/bridge-auth-token"
   SSM_OPENCLAW_GATEWAY_TOKEN = "/serverless-openclaw/secrets/openclaw-gateway-token"
@@ -339,3 +340,8 @@ Write-Host ""
 Write-Host "Deploy ApiStack with:"
 Write-Host "  `$env:TOOL_RUNTIME_PROVIDER='agentcore'"
 Write-Host "  `$env:AGENTCORE_RUNTIME_ARN='$($runtime.agentRuntimeArn)'"
+
+
+
+
+

@@ -523,6 +523,31 @@ async function routeAgentCore(
   return "agentcore";
 }
 
+function resolveFargateRouteDecision(taskState: TaskStateItem | null): RouteDecision {
+  return taskState?.status === "Running" && taskState.publicIp
+    ? "fargate-reuse"
+    : "fargate-new";
+}
+
+function hasActiveFargateTask(taskState: TaskStateItem | null): boolean {
+  return taskState?.status === "Starting" ||
+    (taskState?.status === "Running" && Boolean(taskState.publicIp));
+}
+
+function resolveToolRuntimeRouteDecision(
+  deps: RouteDeps,
+  taskState: TaskStateItem | null,
+): RouteDecision {
+  if (
+    resolveToolRuntimeProvider(deps) === "agentcore" &&
+    !hasActiveFargateTask(taskState)
+  ) {
+    return "agentcore";
+  }
+
+  return resolveFargateRouteDecision(taskState);
+}
+
 async function routeToolRuntime(
   deps: RouteDeps,
   taskState: TaskStateItem | null,
@@ -530,7 +555,7 @@ async function routeToolRuntime(
   options: { activeToolAffinity?: boolean } = {},
 ): Promise<RouteResult> {
   const provider = resolveToolRuntimeProvider(deps);
-  if (provider === "agentcore") {
+  if (provider === "agentcore" && routeDecision === "agentcore") {
     try {
       return await routeAgentCore(deps, options);
     } catch (err) {
@@ -554,10 +579,7 @@ async function routeToolRuntime(
         return "clarify";
       }
 
-      const fallbackDecision: RouteDecision =
-        taskState?.status === "Running" && taskState.publicIp
-          ? "fargate-reuse"
-          : "fargate-new";
+      const fallbackDecision = resolveFargateRouteDecision(taskState);
       logRouteEvent(
         "agentcore.invoke.fallback",
         {
@@ -628,12 +650,7 @@ async function routeForcedRuntimeClass(
   const taskState = await deps.getTaskState(deps.userId);
 
   if (runtimeClass === "tool-enabled") {
-    const routeDecision: RouteDecision =
-      resolveToolRuntimeProvider(deps) === "agentcore"
-        ? "agentcore"
-        : taskState?.status === "Running" && taskState.publicIp
-          ? "fargate-reuse"
-          : "fargate-new";
+    const routeDecision = resolveToolRuntimeRouteDecision(deps, taskState);
     logRouteEvent(
       "route.classified",
       buildRouteLogPayload(deps, runtimeClass, routeDecision, taskState, false),
@@ -779,10 +796,9 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
     const runtimeClass = classifyRouteRuntimeClass(deps.message);
     const classifierSignals = getRouteClassificationSignals(deps.message);
     const decision = classifyRoute({ message: deps.message, taskState });
-    const toolDecision: RouteDecision =
-      resolveToolRuntimeProvider(deps) === "agentcore" && runtimeClass === "tool-enabled"
-        ? "agentcore"
-        : decision;
+    const toolDecision: RouteDecision = runtimeClass === "tool-enabled"
+      ? resolveToolRuntimeRouteDecision(deps, taskState)
+      : decision;
     const routedMessage = stripRouteHint(deps.message);
     logRouteEvent(
       "route.classified",
@@ -851,12 +867,7 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
   // Fargate path (default)
   const taskState = await deps.getTaskState(deps.userId);
   const runtimeClass: RuntimeClass = "tool-enabled";
-  const routeDecision: RouteDecision =
-    resolveToolRuntimeProvider(deps) === "agentcore"
-      ? "agentcore"
-      : taskState?.status === "Running" && taskState.publicIp
-        ? "fargate-reuse"
-        : "fargate-new";
+  const routeDecision = resolveToolRuntimeRouteDecision(deps, taskState);
   const classifierSignals = getRouteClassificationSignals(deps.message);
   await deps.putRoutingContext(
     deps.userId,

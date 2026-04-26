@@ -964,6 +964,48 @@ describe("message service", () => {
       );
     });
 
+    it("should keep AgentCore follow-ups on Fargate when a fallback task is already starting", async () => {
+      const mockInvokeAgentCore = vi.fn();
+      const deps = makeDeps({
+        agentRuntime: "both",
+        toolRuntimeProvider: "agentcore",
+        invokeLambdaAgent: vi.fn(),
+        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+        invokeAgentCoreRuntime: mockInvokeAgentCore,
+        agentCoreRuntimeArn: "arn:aws:bedrock-agentcore:us-east-1:123:runtime/test",
+        message: "일본관련된 것만 가져와야지",
+        getTaskState: vi.fn().mockResolvedValue({
+          PK: "USER#user-123",
+          status: "Starting",
+          taskArn: "arn:fargate-fallback",
+          startedAt: "2026-04-04T00:00:00Z",
+          lastActivity: "2026-04-04T00:00:00Z",
+        }),
+        getRoutingContext: vi.fn().mockResolvedValue({
+          status: "active",
+          channel: "web",
+          connectionId: "conn-1",
+          callbackUrl: "https://cb",
+          createdAt: "2026-04-04T00:00:00Z",
+          lastActivityAt: "2026-04-04T00:00:00Z",
+          expiresAt: "2099-04-04T00:05:00Z",
+          runtimeClass: "tool-enabled",
+        }),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("queued");
+      expect(mockInvokeAgentCore).not.toHaveBeenCalled();
+      expect(deps.savePendingMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          routeDecision: "fargate-new",
+          runtimeClass: "tool-enabled",
+        }),
+      );
+      expect(deps.startTask).not.toHaveBeenCalled();
+    });
+
     it("should fallback to Fargate when AGENT_RUNTIME=both and Lambda fails", async () => {
       const mockInvokeLambda = vi.fn().mockResolvedValue({
         success: false,

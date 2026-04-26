@@ -922,6 +922,48 @@ describe("message service", () => {
       );
     });
 
+    it("should preserve active AgentCore context instead of falling back to Fargate on follow-up timeout", async () => {
+      const mockInvokeAgentCore = vi.fn().mockRejectedValue(new Error("AgentCore timeout"));
+      const deps = makeDeps({
+        agentRuntime: "both",
+        toolRuntimeProvider: "agentcore",
+        invokeLambdaAgent: vi.fn(),
+        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+        invokeAgentCoreRuntime: mockInvokeAgentCore,
+        agentCoreRuntimeArn: "arn:aws:bedrock-agentcore:us-east-1:123:runtime/test",
+        message: "일본관련된 것만 가져와야지",
+        getTaskState: vi.fn().mockResolvedValue(null),
+        getRoutingContext: vi.fn().mockResolvedValue({
+          status: "active",
+          channel: "web",
+          connectionId: "conn-1",
+          callbackUrl: "https://cb",
+          createdAt: "2026-04-04T00:00:00Z",
+          lastActivityAt: "2026-04-04T00:00:00Z",
+          expiresAt: "2099-04-04T00:05:00Z",
+          runtimeClass: "tool-enabled",
+        }),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("clarify");
+      expect(mockInvokeAgentCore).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: "일본관련된 것만 가져와야지",
+          timeoutMs: 8000,
+        }),
+      );
+      expect(deps.sendClarification).toHaveBeenCalledWith(
+        expect.stringContaining("문맥이 섞이지 않도록"),
+      );
+      expect(deps.savePendingMessage).not.toHaveBeenCalled();
+      expect(deps.startTask).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("\"event\":\"agentcore.invoke.context_preserved\""),
+      );
+    });
+
     it("should fallback to Fargate when AGENT_RUNTIME=both and Lambda fails", async () => {
       const mockInvokeLambda = vi.fn().mockResolvedValue({
         success: false,

@@ -93,4 +93,29 @@ describe("agentcore service", () => {
       "Signature=784d87a4acae0b70fba27d5089c04e329ab47c3c45319e006669b22cad7fc35b",
     );
   });
+
+  it("accepts an explicit invoke timeout for caller-specific fallback policy", async () => {
+    process.env.AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE";
+    process.env.AWS_SECRET_ACCESS_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+
+    let capturedSignal: AbortSignal | undefined;
+    await invokeAgentCoreRuntime({
+      runtimeArn:
+        "arn:aws:bedrock-agentcore:ap-northeast-2:123456789012:runtime/ServerlessOpenClawToolRuntime-test",
+      userId: "user-123",
+      message: "follow-up",
+      channel: "telegram",
+      connectionId: "telegram:123",
+      callbackUrl: "",
+      runtimeClass: "tool-enabled",
+      timeoutMs: 8000,
+      fetchFn: async (_url, init) => {
+        capturedSignal = init?.signal as AbortSignal;
+        return new Response(JSON.stringify({ content: "ok" }));
+      },
+    });
+
+    expect(capturedSignal).toBeInstanceOf(AbortSignal);
+    expect(capturedSignal?.aborted).toBe(false);
+  });
 });

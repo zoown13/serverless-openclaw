@@ -19,6 +19,7 @@ export interface InvokeAgentCoreRuntimeParams {
   callbackUrl: string;
   runtimeClass: RuntimeClass;
   emailTokenBudget?: EmailTokenBudgetPolicy;
+  timeoutMs?: number;
   fetchFn?: typeof fetch;
   now?: Date;
 }
@@ -37,6 +38,8 @@ interface AwsCredentials {
 const SERVICE_NAME = "bedrock-agentcore";
 const DEFAULT_REGION = "ap-northeast-2";
 const AGENTCORE_INVOKE_TIMEOUT_MS = 25_000;
+const MIN_AGENTCORE_INVOKE_TIMEOUT_MS = 1_000;
+const MAX_AGENTCORE_INVOKE_TIMEOUT_MS = 120_000;
 
 function hashHex(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
@@ -70,6 +73,25 @@ function getCredentialsFromEnv(): AwsCredentials {
     secretAccessKey,
     sessionToken: process.env.AWS_SESSION_TOKEN,
   };
+}
+
+function parseTimeoutMs(value: string | undefined): number | undefined {
+  const parsed = Number.parseInt(value ?? "", 10);
+  if (!Number.isFinite(parsed)) return undefined;
+  if (parsed < MIN_AGENTCORE_INVOKE_TIMEOUT_MS) return MIN_AGENTCORE_INVOKE_TIMEOUT_MS;
+  if (parsed > MAX_AGENTCORE_INVOKE_TIMEOUT_MS) return MAX_AGENTCORE_INVOKE_TIMEOUT_MS;
+  return parsed;
+}
+
+function resolveAgentCoreInvokeTimeoutMs(explicitTimeoutMs?: number): number {
+  const timeoutMs = explicitTimeoutMs;
+  if (typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0) {
+    return Math.min(
+      Math.max(Math.trunc(timeoutMs), MIN_AGENTCORE_INVOKE_TIMEOUT_MS),
+      MAX_AGENTCORE_INVOKE_TIMEOUT_MS,
+    );
+  }
+  return parseTimeoutMs(process.env.AGENTCORE_INVOKE_TIMEOUT_MS) ?? AGENTCORE_INVOKE_TIMEOUT_MS;
 }
 
 export function buildAgentCoreRuntimeSessionId(params: {
@@ -252,7 +274,7 @@ export async function invokeAgentCoreRuntime(
       Authorization: authorization,
     },
     body: payload,
-    signal: AbortSignal.timeout(AGENTCORE_INVOKE_TIMEOUT_MS),
+    signal: AbortSignal.timeout(resolveAgentCoreInvokeTimeoutMs(params.timeoutMs)),
   });
 
   if (!resp.ok) {

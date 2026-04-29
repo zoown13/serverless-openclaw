@@ -443,6 +443,35 @@ describe("Bridge HTTP Server", () => {
         deliveryType: "websocket",
       });
     });
+
+    it("should fail /invocations quickly when OpenClaw is not ready and no direct tool result exists", async () => {
+      deps.openclawClient.sendMessage = vi.fn(() => {
+        throw new Error("OpenClaw runtime is still starting");
+      });
+      app = createApp({
+        ...deps,
+        agentCoreHttpEnabled: true,
+        runtimeLabel: "agentcore",
+      });
+
+      const res = await request(app)
+        .post("/invocations")
+        .send({
+          userId: "user-1",
+          message: "Generic tool question",
+          channel: "web",
+          connectionId: "conn-agentcore",
+          runtimeClass: "tool-enabled",
+          traceId: "trace-agentcore-not-ready",
+          routeDecision: "agentcore",
+        });
+
+      expect(res.status).toBe(500);
+      expect(res.body).toEqual({
+        error: "AgentCore runtime failed to process the request",
+      });
+      expect(deps.callbackSender.send).not.toHaveBeenCalled();
+    });
   });
 
   describe("GET /status", () => {

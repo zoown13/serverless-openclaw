@@ -114,24 +114,8 @@ export async function startContainer(opts: StartContainerOptions): Promise<void>
     );
   }
 
-  // Phase 2: Sequential — wait for gateway, then client
-  await waitForPort(18789, 120000);
-  const tGateway = Date.now();
-
   const telegramBotToken = env.TELEGRAM_BOT_TOKEN;
   const callbackSender = new CallbackSender(env.CALLBACK_URL ?? "", telegramBotToken);
-  const openclawClient = new OpenClawClient(gatewayUrl, env.OPENCLAW_GATEWAY_TOKEN);
-  await openclawClient.waitForReady();
-  const tClient = Date.now();
-
-  if (telegramChatId && env.TELEGRAM_BOT_TOKEN) {
-    void notifyTelegram(
-      env.TELEGRAM_BOT_TOKEN,
-      telegramChatId,
-      "✅ Ready! Processing messages...",
-    );
-  }
-
   const lifecycle = new LifecycleManager({
     dynamoSend,
     userId,
@@ -141,11 +125,25 @@ export async function startContainer(opts: StartContainerOptions): Promise<void>
     workspacePath: "/data/workspace",
     taskStateEnabled: !agentCoreMode,
   });
+  const openclawClientRef: { current?: OpenClawClient } = {};
+  let openclawReady = false;
 
-  // Phase 3: Bridge server start
-  const app = createApp({
+  const openclawClientProxy = {
+    sendMessage(targetUserId: string, message: string): AsyncGenerator<string> {
+      if (!openclawReady || !openclawClientRef.current) {
+        throw new Error("OpenClaw runtime is still starting");
+      }
+
+      return openclawClientRef.current.sendMessage(targetUserId, message);
+    },
+    close(): void {
+      openclawClientRef.current?.close();
+    },
+  };
+
+  const createBridgeApp = () => createApp({
     authToken: env.BRIDGE_AUTH_TOKEN ?? "agentcore-runtime-disabled-token",
-    openclawClient,
+    openclawClient: openclawClientProxy,
     callbackSender,
     lifecycle,
     processStartTime: t0,
@@ -162,9 +160,46 @@ export async function startContainer(opts: StartContainerOptions): Promise<void>
     },
   });
 
-  const server = app.listen(BRIDGE_PORT, "0.0.0.0", () => {
+  let server: ReturnType<ReturnType<typeof createApp>["listen"]> | undefined;
+  const startBridgeServer = (): void => {
+    if (server) return;
+
+    const app = createBridgeApp();
+    server = app.listen(BRIDGE_PORT, "0.0.0.0", () => {
     console.log(`Bridge server listening on port ${BRIDGE_PORT}`);
   });
+  };
+
+  if (agentCoreMode) {
+    // AgentCore invokes POST /invocations on port 8080. Start the HTTP
+    // surface as soon as secrets, workspace, and Gmail state are restored so
+    // tool fast-path requests can complete without waiting for OpenClaw's full
+    // gateway/client startup path.
+    startBridgeServer();
+  }
+
+  // Phase 2: Sequential — wait for gateway, then client
+  await waitForPort(18789, 120000);
+  const tGateway = Date.now();
+
+  openclawClientRef.current = new OpenClawClient(gatewayUrl, env.OPENCLAW_GATEWAY_TOKEN);
+  await openclawClientRef.current.waitForReady();
+  openclawReady = true;
+  const tClient = Date.now();
+
+  if (telegramChatId && env.TELEGRAM_BOT_TOKEN) {
+    void notifyTelegram(
+      env.TELEGRAM_BOT_TOKEN,
+      telegramChatId,
+      "✅ Ready! Processing messages...",
+    );
+  }
+
+  if (!agentCoreMode) {
+    // Phase 3: Bridge server start. Fargate keeps the original behavior so
+    // pending messages are consumed only after OpenClaw is ready.
+    startBridgeServer();
+  }
 
   let consumed = 0;
 
@@ -368,7 +403,7 @@ export async function startContainer(opts: StartContainerOptions): Promise<void>
         historyPrefix = "";
         logBridgeEvent("bridge.openclaw.forwarded", logContext);
 
-        const generator = openclawClient.sendMessage(userId, messageToSend);
+        const generator = openclawClientProxy.sendMessage(userId, messageToSend);
         let fullResponse = "";
         for await (const chunk of generator) {
           fullResponse += chunk;
@@ -441,9 +476,9 @@ export async function startContainer(opts: StartContainerOptions): Promise<void>
   // SIGTERM handler
   process.on("SIGTERM", () => {
     console.log("SIGTERM received, shutting down gracefully...");
-    server.close(async () => {
+    server?.close(async () => {
       await lifecycle.gracefulShutdown();
-      openclawClient.close();
+      openclawClientRef.current?.close();
       process.exit(0);
     });
   });

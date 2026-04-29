@@ -345,6 +345,13 @@ describe("startContainer - parallel startup", () => {
     expect(mockUpdateTaskState).not.toHaveBeenCalled();
     expect(mockDiscoverPublicIp).not.toHaveBeenCalled();
     expect(mockConsumePendingMessages).not.toHaveBeenCalled();
+    expect(callOrder.indexOf("listen")).toBeGreaterThan(-1);
+    expect(callOrder.indexOf("listen")).toBeLessThan(
+      callOrder.indexOf("waitForPort"),
+    );
+    expect(callOrder.indexOf("listen")).toBeLessThan(
+      callOrder.indexOf("waitForReady"),
+    );
     expect(createApp).toHaveBeenCalledWith(
       expect.objectContaining({
         agentCoreHttpEnabled: true,

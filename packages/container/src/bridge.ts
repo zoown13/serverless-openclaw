@@ -397,8 +397,20 @@ export function createApp(deps: BridgeDeps): express.Express {
   }
 
   if (deps.agentCoreHttpEnabled) {
+    let activeAgentCoreInvocations = 0;
+    let agentCorePingStatus: "Healthy" | "HealthyBusy" = "Healthy";
+    let agentCorePingStatusUpdatedAt = Math.floor(Date.now() / 1000);
+    const updateAgentCorePingStatus = (nextStatus: "Healthy" | "HealthyBusy"): void => {
+      if (agentCorePingStatus === nextStatus) return;
+      agentCorePingStatus = nextStatus;
+      agentCorePingStatusUpdatedAt = Math.floor(Date.now() / 1000);
+    };
+
     app.get("/ping", (_req, res) => {
-      res.json({ status: "healthy" });
+      res.json({
+        status: agentCorePingStatus,
+        time_of_last_update: agentCorePingStatusUpdatedAt,
+      });
     });
 
     app.post("/invocations", async (req, res) => {
@@ -410,6 +422,8 @@ export function createApp(deps: BridgeDeps): express.Express {
       }
 
       deps.lifecycle.updateLastActivity();
+      activeAgentCoreInvocations += 1;
+      updateAgentCorePingStatus("HealthyBusy");
 
       try {
         const result = await processAcceptedMessage(body, "response");
@@ -421,6 +435,11 @@ export function createApp(deps: BridgeDeps): express.Express {
         res.status(500).json({
           error: "AgentCore runtime failed to process the request",
         });
+      } finally {
+        activeAgentCoreInvocations = Math.max(0, activeAgentCoreInvocations - 1);
+        if (activeAgentCoreInvocations === 0) {
+          updateAgentCorePingStatus("Healthy");
+        }
       }
     });
   }

@@ -404,7 +404,8 @@ describe("Bridge HTTP Server", () => {
       const res = await request(app).get("/ping");
 
       expect(res.status).toBe(200);
-      expect(res.body).toEqual({ status: "healthy" });
+      expect(res.body).toMatchObject({ status: "Healthy" });
+      expect(res.body.time_of_last_update).toEqual(expect.any(Number));
     });
 
     it("should process /invocations synchronously without callback delivery", async () => {

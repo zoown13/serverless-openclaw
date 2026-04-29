@@ -308,11 +308,13 @@ $environmentVariables = @{
   AWS_REGION = $Region
   SSM_BRIDGE_AUTH_TOKEN = "/serverless-openclaw/secrets/bridge-auth-token"
   SSM_OPENCLAW_GATEWAY_TOKEN = "/serverless-openclaw/secrets/openclaw-gateway-token"
-  SSM_ANTHROPIC_API_KEY = "/serverless-openclaw/secrets/anthropic-api-key"
   SSM_TELEGRAM_BOT_TOKEN = "/serverless-openclaw/secrets/telegram-bot-token"
   SSM_OPENCLAW_AUTH_PROFILES_JSON = "/serverless-openclaw/secrets/openclaw-auth-profiles-json"
   SSM_OPENCLAW_OAUTH_JSON = "/serverless-openclaw/secrets/openclaw-oauth-json"
   SSM_GOOGLE_OAUTH_CLIENT_JSON = "/serverless-openclaw/secrets/google-oauth-client-json"
+}
+if ($AiProvider -ne "bedrock") {
+  $environmentVariables.SSM_ANTHROPIC_API_KEY = "/serverless-openclaw/secrets/anthropic-api-key"
 }
 
 $runtimeFile = Join-Path $env:TEMP "serverless-openclaw-agentcore-runtime.json"

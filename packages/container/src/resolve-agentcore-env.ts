@@ -63,12 +63,30 @@ async function resolveSecret(mapping: SecretMapping): Promise<string | undefined
       Name: parameterName,
       WithDecryption: true,
     }),
-  );
+  ).catch((error: unknown) => {
+    if (!mapping.required && isParameterNotFoundError(error)) {
+      return undefined;
+    }
+    throw error;
+  });
+  if (!result) {
+    return undefined;
+  }
   const value = result.Parameter?.Value;
   if (!value && mapping.required) {
     throw new Error(`SSM parameter returned no value: ${parameterName}`);
   }
   return value;
+}
+
+export function isParameterNotFoundError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) {
+    return false;
+  }
+
+  const record = error as Record<string, unknown>;
+  return record.name === "ParameterNotFound" ||
+    record.__type === "ParameterNotFound";
 }
 
 async function main(): Promise<void> {
@@ -80,7 +98,9 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  console.error("[agentcore-env] Failed to resolve runtime secrets:", error);
-  process.exit(1);
-});
+if (process.argv[1]?.endsWith("resolve-agentcore-env.js")) {
+  main().catch((error) => {
+    console.error("[agentcore-env] Failed to resolve runtime secrets:", error);
+    process.exit(1);
+  });
+}

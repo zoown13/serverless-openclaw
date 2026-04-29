@@ -224,6 +224,29 @@ function Ensure-AgentCoreRuntimeRole {
         Effect = "Allow"
         Action = "cloudwatch:PutMetricData"
         Resource = "*"
+      },
+      @{
+        Sid = "PublishRuntimeLogs"
+        Effect = "Allow"
+        Action = @(
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:DescribeLogStreams",
+          "logs:PutLogEvents"
+        )
+        Resource = @(
+          "arn:aws:logs:${Region}:${AccountId}:log-group:/aws/bedrock-agentcore/runtimes/*",
+          "arn:aws:logs:${Region}:${AccountId}:log-group:/aws/bedrock-agentcore/runtimes/*:log-stream:*"
+        )
+      },
+      @{
+        Sid = "PublishRuntimeTraces"
+        Effect = "Allow"
+        Action = @(
+          "xray:PutTraceSegments",
+          "xray:PutTelemetryRecords"
+        )
+        Resource = "*"
       }
     )
   }

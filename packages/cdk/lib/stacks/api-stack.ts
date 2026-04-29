@@ -118,11 +118,11 @@ export class ApiStack extends cdk.Stack {
     const bundlingDefaults = {
       externalModules: ["@aws-sdk/*"],
       sourceMap: true,
-      target: "node20",
+      target: "node24",
     };
 
     const nodejsFunctionDefaults = {
-      runtime: lambda.Runtime.NODEJS_20_X,
+      runtime: lambda.Runtime.NODEJS_24_X,
       architecture: lambda.Architecture.ARM_64,
       memorySize: 256,
       timeout: cdk.Duration.seconds(30),

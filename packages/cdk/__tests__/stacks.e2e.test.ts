@@ -272,6 +272,17 @@ describe("CDK Stacks E2E — synth all stacks", () => {
         expect(props).toHaveProperty("Architectures", ["arm64"]);
       }
     });
+
+    it("Handler Lambda functions use Node.js 24 runtime", () => {
+      const functions = apiTemplate.findResources("AWS::Lambda::Function");
+      for (const [, fn] of Object.entries(functions)) {
+        const props = (fn as Record<string, unknown>).Properties as Record<string, unknown>;
+        expect(props).toHaveProperty("Runtime", "nodejs24.x");
+      }
+
+      const templateJson = JSON.stringify(apiTemplate.toJSON());
+      expect(templateJson).not.toContain("nodejs20.x");
+    });
   });
 
   // ── WebStack ──

@@ -20,7 +20,7 @@ const deployWeb = process.env.DEPLOY_WEB !== "false"; // default: true (deploy w
 const aiProvider = process.env.AI_PROVIDER;
 const aiModel = process.env.AI_MODEL;
 const toolSlmBackend = process.env.TOOL_SLM_BACKEND;
-const toolRuntimeProvider = process.env.TOOL_RUNTIME_PROVIDER;
+const toolRuntimeProvider = process.env.TOOL_RUNTIME_PROVIDER ?? "agentcore";
 const agentCoreRuntimeArn = process.env.AGENTCORE_RUNTIME_ARN;
 const agentCoreRuntimeQualifier = process.env.AGENTCORE_RUNTIME_QUALIFIER;
 

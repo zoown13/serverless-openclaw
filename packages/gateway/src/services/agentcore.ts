@@ -37,7 +37,7 @@ interface AwsCredentials {
 
 const SERVICE_NAME = "bedrock-agentcore";
 const DEFAULT_REGION = "ap-northeast-2";
-const AGENTCORE_INVOKE_TIMEOUT_MS = 25_000;
+const AGENTCORE_INVOKE_DEADLINE_MS = 12_000;
 const MIN_AGENTCORE_INVOKE_TIMEOUT_MS = 1_000;
 const MAX_AGENTCORE_INVOKE_TIMEOUT_MS = 120_000;
 
@@ -91,7 +91,9 @@ function resolveAgentCoreInvokeTimeoutMs(explicitTimeoutMs?: number): number {
       MAX_AGENTCORE_INVOKE_TIMEOUT_MS,
     );
   }
-  return parseTimeoutMs(process.env.AGENTCORE_INVOKE_TIMEOUT_MS) ?? AGENTCORE_INVOKE_TIMEOUT_MS;
+  return parseTimeoutMs(process.env.AGENTCORE_INVOKE_DEADLINE_MS) ??
+    parseTimeoutMs(process.env.AGENTCORE_INVOKE_TIMEOUT_MS) ??
+    AGENTCORE_INVOKE_DEADLINE_MS;
 }
 
 export function buildAgentCoreRuntimeSessionId(params: {

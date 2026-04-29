@@ -3,7 +3,10 @@ param(
   [string]$Region = $(if ($env:AWS_REGION) { $env:AWS_REGION } else { "ap-northeast-2" }),
   [string]$AiProvider = $(if ($env:AI_PROVIDER) { $env:AI_PROVIDER } else { "bedrock" }),
   [ValidateSet("fargate", "agentcore")]
-  [string]$ToolRuntimeProvider = $(if ($env:TOOL_RUNTIME_PROVIDER) { $env:TOOL_RUNTIME_PROVIDER } else { "fargate" }),
+  [string]$ToolRuntimeProvider = $(if ($env:TOOL_RUNTIME_PROVIDER) { $env:TOOL_RUNTIME_PROVIDER } else { "agentcore" }),
+  [ValidateSet("fargate")]
+  [string]$AgentCoreFallbackProvider = $(if ($env:AGENTCORE_FALLBACK_PROVIDER) { $env:AGENTCORE_FALLBACK_PROVIDER } else { "fargate" }),
+  [string]$AgentCoreInvokeDeadlineMs = $(if ($env:AGENTCORE_INVOKE_DEADLINE_MS) { $env:AGENTCORE_INVOKE_DEADLINE_MS } else { "12000" }),
   [ValidateSet("ddb", "dynamodb", "memory")]
   [string]$ToolContextStore = $(if ($env:TOOL_CONTEXT_STORE) { $env:TOOL_CONTEXT_STORE } else { "ddb" }),
   [string]$AgentCoreRuntimeArn = $(if ($env:AGENTCORE_RUNTIME_ARN) { $env:AGENTCORE_RUNTIME_ARN } else { "" }),
@@ -47,12 +50,24 @@ if (-not $SkipEnvFile) {
   Import-DotEnv -Path (Join-Path $repoRoot ".env")
 }
 
+if ([string]::IsNullOrWhiteSpace($AgentCoreRuntimeArn) -and $env:AGENTCORE_RUNTIME_ARN) {
+  $AgentCoreRuntimeArn = $env:AGENTCORE_RUNTIME_ARN
+}
+if ([string]::IsNullOrWhiteSpace($AgentCoreRuntimeQualifier) -and $env:AGENTCORE_RUNTIME_QUALIFIER) {
+  $AgentCoreRuntimeQualifier = $env:AGENTCORE_RUNTIME_QUALIFIER
+}
+if ([string]::IsNullOrWhiteSpace($AgentCoreInvokeDeadlineMs) -and $env:AGENTCORE_INVOKE_DEADLINE_MS) {
+  $AgentCoreInvokeDeadlineMs = $env:AGENTCORE_INVOKE_DEADLINE_MS
+}
+
 $env:AWS_PROFILE = $Profile
 $env:AWS_REGION = $Region
 $env:AI_PROVIDER = $AiProvider
 $env:AGENT_RUNTIME = "both"
 $env:TOOL_RUNTIME_PROVIDER = $ToolRuntimeProvider
 $env:TOOL_CONTEXT_STORE = $ToolContextStore
+$env:AGENTCORE_FALLBACK_PROVIDER = $AgentCoreFallbackProvider
+$env:AGENTCORE_INVOKE_DEADLINE_MS = $AgentCoreInvokeDeadlineMs
 
 if ($ToolRuntimeProvider -eq "agentcore") {
   if ([string]::IsNullOrWhiteSpace($AgentCoreRuntimeArn)) {
@@ -77,6 +92,8 @@ Write-Host "  AI_PROVIDER           : $env:AI_PROVIDER"
 Write-Host "  AGENT_RUNTIME         : $env:AGENT_RUNTIME"
 Write-Host "  TOOL_RUNTIME_PROVIDER : $env:TOOL_RUNTIME_PROVIDER"
 Write-Host "  TOOL_CONTEXT_STORE    : $env:TOOL_CONTEXT_STORE"
+Write-Host "  AGENTCORE_FALLBACK    : $env:AGENTCORE_FALLBACK_PROVIDER"
+Write-Host "  AGENTCORE_DEADLINE_MS : $env:AGENTCORE_INVOKE_DEADLINE_MS"
 if ($ToolRuntimeProvider -eq "agentcore") {
   Write-Host "  AGENTCORE_RUNTIME_ARN : $env:AGENTCORE_RUNTIME_ARN"
   if ($env:AGENTCORE_RUNTIME_QUALIFIER) {

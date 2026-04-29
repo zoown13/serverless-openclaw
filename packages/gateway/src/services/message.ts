@@ -122,7 +122,7 @@ export interface RouteDeps {
   invokeAgentCoreRuntime?: (params: InvokeAgentCoreRuntimeParams) => Promise<AgentCoreRuntimeResult>;
   agentCoreRuntimeArn?: string;
   agentCoreRuntimeQualifier?: string;
-  agentCoreFallbackOnActiveToolAffinity?: boolean;
+  agentCoreFallbackProvider?: ToolRuntimeProvider;
   sessionId?: string;
 }
 
@@ -139,8 +139,6 @@ const TOOL_AFFINITY_CANCEL_PATTERN = /^(?:취소|그만|끝|됐어|done|cancel|s
 const TOOL_AFFINITY_OBVIOUS_TOPIC_SWITCH_PATTERN =
   /^(?:안녕|안녕하세요|hello|hi|hey|고마워|감사|thanks?|thank you|잘가|bye|날씨|weather|번역|translate|농담|joke)(?:$|[!?.,\s])/i;
 const TOOL_AFFINITY_END_MESSAGE = "알겠습니다. 현재 도구 작업 문맥을 종료할게요.";
-const AGENTCORE_ACTIVE_CONTEXT_DELAY_MESSAGE =
-  "현재 도구 세션 응답이 지연되어 문맥을 안전하게 이어갈 수 없어요. 문맥이 섞이지 않도록 다른 런타임으로 넘기지 않았습니다. 잠시 후 같은 질문을 다시 보내주세요.";
 const DEFAULT_AGENTCORE_FOLLOW_UP_TIMEOUT_MS = 8_000;
 
 function assertLambdaInvokeAccepted(result: unknown): void {
@@ -237,7 +235,7 @@ function buildBridgeMessageRequest(
 }
 
 function resolveToolRuntimeProvider(deps: RouteDeps): ToolRuntimeProvider {
-  return deps.toolRuntimeProvider ?? "fargate";
+  return deps.toolRuntimeProvider ?? "agentcore";
 }
 
 function resolveAgentCoreFollowUpTimeoutMs(): number {
@@ -247,9 +245,10 @@ function resolveAgentCoreFollowUpTimeoutMs(): number {
   );
 }
 
-function shouldFallbackActiveAgentCoreContext(deps: RouteDeps): boolean {
-  return deps.agentCoreFallbackOnActiveToolAffinity ??
-    parseBooleanFlag(process.env.AGENTCORE_FALLBACK_ON_ACTIVE_AFFINITY, false);
+function resolveAgentCoreFallbackProvider(deps: RouteDeps): ToolRuntimeProvider {
+  const configured = deps.agentCoreFallbackProvider ??
+    (process.env.AGENTCORE_FALLBACK_PROVIDER as ToolRuntimeProvider | undefined);
+  return configured === "fargate" ? "fargate" : "fargate";
 }
 
 function buildRouteLogPayload(
@@ -297,12 +296,20 @@ function buildClassifierLogPayload(
 function buildToolRuntimeAffinityState(
   deps: RouteDeps,
   createdAt?: string,
+  provider: ToolRuntimeProvider = resolveToolRuntimeProvider(deps),
+  fallbackProvider?: ToolRuntimeProvider,
+  providerLockedAt?: string,
+  providerLockReason?: ToolRuntimeAffinityState["providerLockReason"],
 ): ToolRuntimeAffinityState {
   const now = new Date();
   return {
     status: "active",
     channel: deps.channel,
     runtimeClass: "tool-enabled",
+    provider,
+    ...(fallbackProvider ? { fallbackProvider } : {}),
+    ...(providerLockedAt ? { providerLockedAt } : {}),
+    ...(providerLockReason ? { providerLockReason } : {}),
     connectionId: deps.connectionId,
     callbackUrl: deps.callbackUrl,
     ...(deps.telegramChatId ? { telegramChatId: deps.telegramChatId } : {}),
@@ -310,6 +317,34 @@ function buildToolRuntimeAffinityState(
     lastActivityAt: now.toISOString(),
     expiresAt: new Date(now.getTime() + TOOL_AFFINITY_TTL_MS).toISOString(),
   };
+}
+
+async function lockToolRuntimeProvider(
+  deps: RouteDeps,
+  provider: ToolRuntimeProvider,
+  reason: ToolRuntimeAffinityState["providerLockReason"],
+): Promise<void> {
+  const current = await deps.getRoutingContext(deps.userId, deps.channel).catch(() => null);
+  const lockedAt = new Date().toISOString();
+  await deps.putRoutingContext(
+    deps.userId,
+    buildToolRuntimeAffinityState(
+      deps,
+      current?.createdAt,
+      provider,
+      provider,
+      lockedAt,
+      reason,
+    ),
+  );
+  logRouteEvent("gateway.harness.session.provider_locked", {
+    traceId: deps.traceId,
+    channel: deps.channel,
+    runtimeClass: "tool-enabled",
+    provider,
+    fallbackProvider: provider,
+    reason,
+  });
 }
 
 function isToolAffinityExpired(state: ToolRuntimeAffinityState): boolean {
@@ -537,9 +572,10 @@ function hasActiveFargateTask(taskState: TaskStateItem | null): boolean {
 function resolveToolRuntimeRouteDecision(
   deps: RouteDeps,
   taskState: TaskStateItem | null,
+  providerOverride?: ToolRuntimeProvider,
 ): RouteDecision {
   if (
-    resolveToolRuntimeProvider(deps) === "agentcore" &&
+    (providerOverride ?? resolveToolRuntimeProvider(deps)) === "agentcore" &&
     !hasActiveFargateTask(taskState)
   ) {
     return "agentcore";
@@ -552,33 +588,15 @@ async function routeToolRuntime(
   deps: RouteDeps,
   taskState: TaskStateItem | null,
   routeDecision: RouteDecision,
-  options: { activeToolAffinity?: boolean } = {},
+  options: { activeToolAffinity?: boolean; providerOverride?: ToolRuntimeProvider } = {},
 ): Promise<RouteResult> {
-  const provider = resolveToolRuntimeProvider(deps);
+  const provider = options.providerOverride ?? resolveToolRuntimeProvider(deps);
   if (provider === "agentcore" && routeDecision === "agentcore") {
     try {
       return await routeAgentCore(deps, options);
     } catch (err) {
-      if (options.activeToolAffinity && !shouldFallbackActiveAgentCoreContext(deps)) {
-        logRouteEvent(
-          "agentcore.invoke.context_preserved",
-          {
-            ...buildRouteLogPayload(
-              deps,
-              "tool-enabled",
-              "agentcore",
-              taskState,
-              false,
-            ),
-            toolRuntimeProvider: "agentcore",
-            error: err instanceof Error ? err.message : String(err),
-          },
-          "warn",
-        );
-        await deps.sendClarification(AGENTCORE_ACTIVE_CONTEXT_DELAY_MESSAGE);
-        return "clarify";
-      }
-
+      const fallbackProvider = resolveAgentCoreFallbackProvider(deps);
+      await lockToolRuntimeProvider(deps, fallbackProvider, "agentcore_fallback");
       const fallbackDecision = resolveFargateRouteDecision(taskState);
       logRouteEvent(
         "agentcore.invoke.fallback",
@@ -591,6 +609,7 @@ async function routeToolRuntime(
             false,
           ),
           toolRuntimeProvider: "agentcore",
+          fallbackProvider,
           error: err instanceof Error ? err.message : String(err),
         },
         "warn",
@@ -645,12 +664,16 @@ async function routeForcedRuntimeClass(
   deps: RouteDeps,
   message: string,
   runtimeClass: RuntimeClass,
-  options: { activeToolAffinity?: boolean } = {},
+  options: { activeToolAffinity?: boolean; providerOverride?: ToolRuntimeProvider } = {},
 ): Promise<RouteResult> {
   const taskState = await deps.getTaskState(deps.userId);
 
   if (runtimeClass === "tool-enabled") {
-    const routeDecision = resolveToolRuntimeRouteDecision(deps, taskState);
+    const routeDecision = resolveToolRuntimeRouteDecision(
+      deps,
+      taskState,
+      options.providerOverride,
+    );
     logRouteEvent(
       "route.classified",
       buildRouteLogPayload(deps, runtimeClass, routeDecision, taskState, false),
@@ -698,6 +721,7 @@ async function maybeHandleToolRuntimeAffinity(
   result?: RouteResult;
   replayMessage?: string;
   replayRuntimeClass?: RuntimeClass;
+  replayProvider?: ToolRuntimeProvider;
 }> {
   const affinity = await deps.getRoutingContext(deps.userId, deps.channel);
   if (!affinity) {
@@ -730,17 +754,32 @@ async function maybeHandleToolRuntimeAffinity(
   if (shouldKeepToolAffinity(deps.message)) {
     await deps.putRoutingContext(
       deps.userId,
-      buildToolRuntimeAffinityState(deps, affinity.createdAt),
+      buildToolRuntimeAffinityState(
+        deps,
+        affinity.createdAt,
+        affinity.fallbackProvider ?? affinity.provider ?? resolveToolRuntimeProvider(deps),
+        affinity.fallbackProvider,
+        affinity.providerLockedAt,
+        affinity.providerLockReason,
+      ),
     );
     logRouteEvent("route.affinity.reused", {
       traceId: deps.traceId,
       channel: deps.channel,
       runtimeClass: affinity.runtimeClass,
+      provider: affinity.fallbackProvider ?? affinity.provider ?? resolveToolRuntimeProvider(deps),
+    });
+    logRouteEvent("gateway.harness.session.reused", {
+      traceId: deps.traceId,
+      channel: deps.channel,
+      runtimeClass: affinity.runtimeClass,
+      provider: affinity.fallbackProvider ?? affinity.provider ?? resolveToolRuntimeProvider(deps),
     });
     return {
       handled: false,
       replayMessage: deps.message,
       replayRuntimeClass: affinity.runtimeClass,
+      replayProvider: affinity.fallbackProvider ?? affinity.provider,
     };
   }
 
@@ -767,7 +806,10 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
       deps,
       affinityResolution.replayMessage,
       affinityResolution.replayRuntimeClass,
-      { activeToolAffinity: true },
+      {
+        activeToolAffinity: true,
+        providerOverride: affinityResolution.replayProvider,
+      },
     );
   }
 
@@ -821,6 +863,12 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
         channel: deps.channel,
         runtimeClass,
         toolRuntimeProvider: resolveToolRuntimeProvider(deps),
+      });
+      logRouteEvent("gateway.harness.session.created", {
+        traceId: deps.traceId,
+        channel: deps.channel,
+        runtimeClass,
+        provider: resolveToolRuntimeProvider(deps),
       });
       return routeToolRuntime(
         { ...deps, message: routedMessage },
@@ -878,6 +926,12 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
     channel: deps.channel,
     runtimeClass,
     toolRuntimeProvider: resolveToolRuntimeProvider(deps),
+  });
+  logRouteEvent("gateway.harness.session.created", {
+    traceId: deps.traceId,
+    channel: deps.channel,
+    runtimeClass,
+    provider: resolveToolRuntimeProvider(deps),
   });
   logRouteEvent(
     "route.classified",

@@ -384,10 +384,12 @@ describe("CDK Stacks E2E — synth all stacks", () => {
       expect(dashboardJson).toContain("DeliveryFailure");
     });
 
-    it("defaults tool runtime provider to Fargate", () => {
+    it("defaults tool runtime provider to AgentCore-first without invoke permission when ARN is absent", () => {
       const templateJson = JSON.stringify(apiTemplate.toJSON());
       expect(templateJson).toContain("TOOL_RUNTIME_PROVIDER");
-      expect(templateJson).toContain("fargate");
+      expect(templateJson).toContain("agentcore");
+      expect(templateJson).toContain("AGENTCORE_FALLBACK_PROVIDER");
+      expect(templateJson).toContain("AGENTCORE_INVOKE_DEADLINE_MS");
       expect(templateJson).not.toContain("bedrock-agentcore:InvokeAgentRuntime");
     });
   });
@@ -422,6 +424,8 @@ describe("CDK Stacks E2E — synth all stacks", () => {
       expect(templateJson).toContain(agentCoreRuntimeArn);
       expect(templateJson).toContain("AGENTCORE_RUNTIME_QUALIFIER");
       expect(templateJson).toContain("DEFAULT");
+      expect(templateJson).toContain("AGENTCORE_FALLBACK_PROVIDER");
+      expect(templateJson).toContain("AGENTCORE_INVOKE_DEADLINE_MS");
       expect(templateJson).toContain("bedrock-agentcore:InvokeAgentRuntime");
       expect(templateJson).toContain(`${agentCoreRuntimeArn}/runtime-endpoint/*`);
     });

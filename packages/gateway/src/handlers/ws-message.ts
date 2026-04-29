@@ -115,12 +115,13 @@ export async function handler(event: {
         ],
       },
       agentRuntime,
-      toolRuntimeProvider: (process.env.TOOL_RUNTIME_PROVIDER as "fargate" | "agentcore" | undefined) ?? "fargate",
+      toolRuntimeProvider: (process.env.TOOL_RUNTIME_PROVIDER as "fargate" | "agentcore" | undefined) ?? "agentcore",
       invokeLambdaAgent,
       lambdaAgentFunctionArn: process.env.LAMBDA_AGENT_FUNCTION_ARN ?? "",
       invokeAgentCoreRuntime,
       agentCoreRuntimeArn: process.env.AGENTCORE_RUNTIME_ARN ?? "",
       agentCoreRuntimeQualifier: process.env.AGENTCORE_RUNTIME_QUALIFIER,
+      agentCoreFallbackProvider: (process.env.AGENTCORE_FALLBACK_PROVIDER as "fargate" | undefined) ?? "fargate",
     });
 
     if (result === "lambda") {

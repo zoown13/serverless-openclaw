@@ -50,6 +50,10 @@ export interface ToolRuntimeAffinityState {
   status: "active";
   channel: Channel;
   runtimeClass: "tool-enabled";
+  provider?: ToolRuntimeProvider;
+  fallbackProvider?: ToolRuntimeProvider;
+  providerLockedAt?: string;
+  providerLockReason?: "agentcore_fallback";
   connectionId: string;
   callbackUrl: string;
   telegramChatId?: string;

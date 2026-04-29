@@ -38,7 +38,7 @@ export interface ApiStackProps extends cdk.StackProps {
   userPoolClient: cognito.IUserPoolClient;
   /** Agent runtime mode: 'fargate' | 'lambda' | 'both'. Default: 'fargate' */
   agentRuntime?: string;
-  /** Tool-capable runtime provider: 'fargate' | 'agentcore'. Default: 'fargate' */
+  /** Tool-capable runtime provider: 'fargate' | 'agentcore'. Default: 'agentcore' */
   toolRuntimeProvider?: string;
   /** Optional Bedrock AgentCore runtime ARN for tool-capable requests. */
   agentCoreRuntimeArn?: string;
@@ -59,7 +59,7 @@ export class ApiStack extends cdk.Stack {
 
     // Common environment variables for Lambda functions
     const agentRuntime = props.agentRuntime ?? "fargate";
-    const toolRuntimeProvider = props.toolRuntimeProvider ?? "fargate";
+    const toolRuntimeProvider = props.toolRuntimeProvider ?? "agentcore";
     const fargateEnabled = agentRuntime !== "lambda";
 
     let subnetIds = "";
@@ -103,6 +103,8 @@ export class ApiStack extends cdk.Stack {
         : {}),
       AGENT_RUNTIME: agentRuntime,
       TOOL_RUNTIME_PROVIDER: toolRuntimeProvider,
+      AGENTCORE_FALLBACK_PROVIDER: process.env.AGENTCORE_FALLBACK_PROVIDER ?? "fargate",
+      AGENTCORE_INVOKE_DEADLINE_MS: process.env.AGENTCORE_INVOKE_DEADLINE_MS ?? "12000",
       ...(props.agentCoreRuntimeArn
         ? { AGENTCORE_RUNTIME_ARN: props.agentCoreRuntimeArn }
         : {}),

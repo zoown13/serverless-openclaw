@@ -76,6 +76,26 @@ function resolveDeliveryType(
   return channel === "telegram" ? "telegram" : "websocket";
 }
 
+function parseInvocationBody(value: unknown): Partial<BridgeMessageRequest> {
+  if (typeof value === "object" && value !== null && !Buffer.isBuffer(value)) {
+    return value as Partial<BridgeMessageRequest>;
+  }
+
+  const raw = Buffer.isBuffer(value) ? value.toString("utf8") : value;
+  if (typeof raw !== "string" || raw.trim().length === 0) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return typeof parsed === "object" && parsed !== null
+      ? parsed as Partial<BridgeMessageRequest>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
 function buildBridgeLogContext(
   body: Partial<BridgeMessageRequest>,
 ): Record<string, unknown> {
@@ -229,7 +249,9 @@ export function createApp(deps: BridgeDeps): express.Express {
   let firstResponseSent = false;
   const runtimeLabel = deps.runtimeLabel ?? "fargate";
 
-  app.use(express.json());
+  app.use(express.json({
+    type: ["application/json", "application/*+json", "application/octet-stream", "text/plain"],
+  }));
 
   async function processAcceptedMessage(
     body: Partial<BridgeMessageRequest>,
@@ -414,7 +436,7 @@ export function createApp(deps: BridgeDeps): express.Express {
     });
 
     app.post("/invocations", async (req, res) => {
-      const body = req.body as Partial<BridgeMessageRequest>;
+      const body = parseInvocationBody(req.body);
 
       if (!body.userId || !body.message || !body.channel || !body.connectionId) {
         res.status(400).json({ error: "Missing required fields" });

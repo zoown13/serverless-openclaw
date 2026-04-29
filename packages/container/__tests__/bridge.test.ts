@@ -445,6 +445,39 @@ describe("Bridge HTTP Server", () => {
       });
     });
 
+    it("should process /invocations when AgentCore sends octet-stream JSON", async () => {
+      gmailToolMock.mockResolvedValue({
+        kind: "direct",
+        message: "AgentCore octet-stream result",
+        source: "gmail",
+      });
+      app = createApp({
+        ...deps,
+        agentCoreHttpEnabled: true,
+        runtimeLabel: "agentcore",
+      });
+
+      const res = await request(app)
+        .post("/invocations")
+        .set("Content-Type", "application/octet-stream")
+        .send(JSON.stringify({
+          userId: "user-1",
+          message: "Check my Gmail inbox",
+          channel: "web",
+          connectionId: "conn-agentcore",
+          runtimeClass: "tool-enabled",
+          traceId: "trace-agentcore-octet",
+          routeDecision: "agentcore",
+        }));
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({
+        content: "AgentCore octet-stream result",
+        source: "gmail",
+      });
+      expect(deps.callbackSender.send).not.toHaveBeenCalled();
+    });
+
     it("should fail /invocations quickly when OpenClaw is not ready and no direct tool result exists", async () => {
       deps.openclawClient.sendMessage = vi.fn(() => {
         throw new Error("OpenClaw runtime is still starting");

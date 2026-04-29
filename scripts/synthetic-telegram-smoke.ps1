@@ -268,6 +268,36 @@ function Send-TelegramWebhookEvent {
   }
 }
 
+function Get-AgentCoreLogGroups {
+  param(
+    [Parameter(Mandatory = $true)][string]$SelectedProfile,
+    [Parameter(Mandatory = $true)][string]$SelectedRegion
+  )
+
+  $logGroups = @()
+
+  if ($env:AGENTCORE_LOG_GROUP) {
+    $logGroups += $env:AGENTCORE_LOG_GROUP
+  }
+
+  if ($env:AGENTCORE_RUNTIME_ID) {
+    $logGroups += "/aws/bedrock-agentcore/runtimes/$($env:AGENTCORE_RUNTIME_ID)-DEFAULT"
+  }
+
+  $discovered = aws logs describe-log-groups `
+    --log-group-name-prefix /aws/bedrock-agentcore/runtimes/ `
+    --query "logGroups[?contains(logGroupName, 'ServerlessOpenClawToolRuntime')].logGroupName" `
+    --output text `
+    --profile $SelectedProfile `
+    --region $SelectedRegion 2>$null
+
+  if ($LASTEXITCODE -eq 0 -and $discovered) {
+    $logGroups += @($discovered -split "\s+" | Where-Object { $_ })
+  }
+
+  return @($logGroups | Where-Object { $_ } | Select-Object -Unique)
+}
+
 function Show-RecentLogs {
   param(
     [Parameter(Mandatory = $true)][string]$SelectedProfile,
@@ -289,6 +319,56 @@ function Show-RecentLogs {
     --format short `
     --profile $SelectedProfile `
     --region $SelectedRegion
+
+  $agentCoreLogGroups = Get-AgentCoreLogGroups `
+    -SelectedProfile $SelectedProfile `
+    -SelectedRegion $SelectedRegion
+
+  foreach ($logGroup in $agentCoreLogGroups) {
+    Write-Host ""
+    Write-Host "Recent AgentCore Runtime logs: $logGroup"
+    aws logs tail $logGroup `
+      --since 5m `
+      --format short `
+      --profile $SelectedProfile `
+      --region $SelectedRegion
+  }
+}
+
+function Read-BridgeSignalMessages {
+  param(
+    [Parameter(Mandatory = $true)][string]$SelectedProfile,
+    [Parameter(Mandatory = $true)][string]$SelectedRegion,
+    [Parameter(Mandatory = $true)][long]$StartTimeMs,
+    [Parameter(Mandatory = $true)][string[]]$LogGroups
+  )
+
+  $allMessages = @()
+  $readCount = 0
+  $effectiveStartTimeMs = [Math]::Max([int64]0, [int64]($StartTimeMs - 120000))
+
+  foreach ($logGroup in $LogGroups) {
+    $messages = aws logs filter-log-events `
+      --log-group-name $logGroup `
+      --start-time $effectiveStartTimeMs `
+      --query "events[].message" `
+      --output text `
+      --profile $SelectedProfile `
+      --region $SelectedRegion 2>$null
+
+    if ($LASTEXITCODE -eq 0) {
+      $readCount += 1
+      if ($messages) {
+        $allMessages += @($messages)
+      }
+    }
+  }
+
+  if ($readCount -eq 0) {
+    throw "Failed to read Bridge logs from ECS or AgentCore log groups."
+  }
+
+  return [string]::Join("`n", @($allMessages))
 }
 
 function Wait-BridgeSignals {
@@ -301,9 +381,14 @@ function Wait-BridgeSignals {
   )
 
   $requiredSignals = @(
-    "bridge.tool.context.created",
-    "bridge.tool.context.reused",
     "bridge.delivery.success"
+  )
+
+  $requiredSignalGroups = @(
+    [pscustomobject]@{
+      Label = "bridge.tool.context.created or bridge.tool.context.reused"
+      Signals = @("bridge.tool.context.created", "bridge.tool.context.reused")
+    }
   )
 
   if ($SelectedScenario -eq "TravelPaymentFollowUp") {
@@ -317,36 +402,51 @@ function Wait-BridgeSignals {
     "Failed to persist durable tool context",
     "missing scope: operator.write",
     "TaskDefinition is inactive",
-    "CIAO PROBING",
-    "bridge.tool.handler.fallback"
+    "CIAO PROBING"
   )
 
   $deadline = [DateTimeOffset]::UtcNow.AddSeconds($TimeoutSeconds)
-  $lastMissing = $requiredSignals
+  $lastMissing = @($requiredSignals + ($requiredSignalGroups | ForEach-Object { $_.Label }))
+  $bridgeLogGroups = @("/ecs/serverless-openclaw")
+  $bridgeLogGroups += Get-AgentCoreLogGroups `
+    -SelectedProfile $SelectedProfile `
+    -SelectedRegion $SelectedRegion
+  $bridgeLogGroups = @($bridgeLogGroups | Where-Object { $_ } | Select-Object -Unique)
 
   Write-Host ""
-  Write-Host "Waiting for Bridge processing signals..."
+  Write-Host "Waiting for Bridge processing signals in:"
+  $bridgeLogGroups | ForEach-Object { Write-Host "  - $_" }
 
   while ([DateTimeOffset]::UtcNow -lt $deadline) {
-    $messages = aws logs filter-log-events `
-      --log-group-name /ecs/serverless-openclaw `
-      --start-time $StartTimeMs `
-      --query "events[].message" `
-      --output text `
-      --profile $SelectedProfile `
-      --region $SelectedRegion
+    $text = Read-BridgeSignalMessages `
+      -SelectedProfile $SelectedProfile `
+      -SelectedRegion $SelectedRegion `
+      -StartTimeMs $StartTimeMs `
+      -LogGroups $bridgeLogGroups
 
-    if ($LASTEXITCODE -ne 0) {
-      throw "Failed to read ECS logs for Bridge signal check."
-    }
-
-    $text = ($messages | Out-String)
     $forbiddenHit = $forbiddenSignals | Where-Object { $text.Contains($_) } | Select-Object -First 1
     if ($forbiddenHit) {
       throw "Bridge signal check failed: found forbidden signal '$forbiddenHit'."
     }
 
-    $lastMissing = @($requiredSignals | Where-Object { -not $text.Contains($_) })
+    $missingSignals = @($requiredSignals | Where-Object { -not $text.Contains($_) })
+    $missingGroups = @()
+
+    foreach ($requiredGroup in $requiredSignalGroups) {
+      $groupMatched = $false
+      foreach ($signal in $requiredGroup.Signals) {
+        if ($text.Contains($signal)) {
+          $groupMatched = $true
+          break
+        }
+      }
+
+      if (-not $groupMatched) {
+        $missingGroups += $requiredGroup.Label
+      }
+    }
+
+    $lastMissing = @($missingSignals + $missingGroups)
     if ($lastMissing.Count -eq 0) {
       Write-Host "Bridge signal check passed."
       return

@@ -37,11 +37,18 @@ aws ecr get-login-password --region "${REGION}" | \
 echo ""
 echo "[2/3] Building and pushing Docker image (zstd compression)..."
 OPENCLAW_VERSION="${OPENCLAW_VERSION:-latest}"
+IMAGE_TAG="${IMAGE_TAG:-latest}"
 echo "OpenClaw version: ${OPENCLAW_VERSION}"
+echo "Image tag: ${IMAGE_TAG}"
+
+IMAGE_TAG_ARGS=(-t "${ECR_REPO}:latest")
+if [ "${IMAGE_TAG}" != "latest" ]; then
+  IMAGE_TAG_ARGS+=(-t "${ECR_REPO}:${IMAGE_TAG}")
+fi
 
 docker buildx build \
   --platform linux/arm64 \
-  -t "${ECR_REPO}:latest" \
+  "${IMAGE_TAG_ARGS[@]}" \
   --build-arg OPENCLAW_VERSION="${OPENCLAW_VERSION}" \
   --provenance=false \
   --no-cache \
@@ -80,9 +87,12 @@ fi
 echo ""
 echo "=== Deploy complete ==="
 echo "Image: ${ECR_REPO}:latest"
+if [ "${IMAGE_TAG}" != "latest" ]; then
+  echo "AgentCore image: ${ECR_REPO}:${IMAGE_TAG}"
+fi
 
 # Check image size in ECR
-IMAGE_SIZE=$(aws ecr describe-images --repository-name serverless-openclaw --image-ids imageTag=latest \
+IMAGE_SIZE=$(aws ecr describe-images --repository-name serverless-openclaw --image-ids imageTag="${IMAGE_TAG}" \
   --query 'imageDetails[0].imageSizeInBytes' --output text --region "${REGION}" 2>/dev/null || echo "unknown")
 if [ "${IMAGE_SIZE}" != "unknown" ]; then
   IMAGE_SIZE_MB=$((IMAGE_SIZE / 1024 / 1024))

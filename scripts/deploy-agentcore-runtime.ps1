@@ -230,12 +230,22 @@ function Ensure-AgentCoreRuntimeRole {
         Effect = "Allow"
         Action = @(
           "logs:CreateLogGroup",
+          "logs:DescribeLogGroups",
+          "logs:DescribeLogStreams"
+        )
+        Resource = @(
+          "arn:aws:logs:${Region}:${AccountId}:log-group:*",
+          "arn:aws:logs:${Region}:${AccountId}:log-group:/aws/bedrock-agentcore/runtimes/*"
+        )
+      },
+      @{
+        Sid = "WriteRuntimeLogStreams"
+        Effect = "Allow"
+        Action = @(
           "logs:CreateLogStream",
-          "logs:DescribeLogStreams",
           "logs:PutLogEvents"
         )
         Resource = @(
-          "arn:aws:logs:${Region}:${AccountId}:log-group:/aws/bedrock-agentcore/runtimes/*",
           "arn:aws:logs:${Region}:${AccountId}:log-group:/aws/bedrock-agentcore/runtimes/*:log-stream:*"
         )
       },
@@ -243,6 +253,8 @@ function Ensure-AgentCoreRuntimeRole {
         Sid = "PublishRuntimeTraces"
         Effect = "Allow"
         Action = @(
+          "xray:GetSamplingRules",
+          "xray:GetSamplingTargets",
           "xray:PutTraceSegments",
           "xray:PutTelemetryRecords"
         )

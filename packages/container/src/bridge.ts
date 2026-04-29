@@ -77,19 +77,45 @@ function resolveDeliveryType(
 }
 
 function parseInvocationBody(value: unknown): Partial<BridgeMessageRequest> {
-  if (typeof value === "object" && value !== null && !Buffer.isBuffer(value)) {
-    return value as Partial<BridgeMessageRequest>;
+  if (Buffer.isBuffer(value)) {
+    return parseInvocationBody(value.toString("utf8"));
   }
 
-  const raw = Buffer.isBuffer(value) ? value.toString("utf8") : value;
-  if (typeof raw !== "string" || raw.trim().length === 0) {
+  if (typeof value === "object" && value !== null && !Buffer.isBuffer(value)) {
+    const record = value as Record<string, unknown>;
+    for (const key of ["payload", "body", "input", "request"]) {
+      const nested = record[key];
+      if (nested === undefined) continue;
+
+      if (typeof nested === "object" && nested !== null && "bytes" in nested) {
+        const bytes = (nested as Record<string, unknown>).bytes;
+        if (typeof bytes === "string") {
+          return parseInvocationBody(Buffer.from(bytes, "base64"));
+        }
+      }
+
+      const parsedNested = parseInvocationBody(nested);
+      if (Object.keys(parsedNested).length > 0) {
+        return parsedNested;
+      }
+    }
+
+    return record as Partial<BridgeMessageRequest>;
+  }
+
+  if (typeof value !== "string") {
+    return {};
+  }
+
+  const raw = value.replace(/^\uFEFF/, "").trim();
+  if (raw.length === 0) {
     return {};
   }
 
   try {
     const parsed = JSON.parse(raw) as unknown;
     return typeof parsed === "object" && parsed !== null
-      ? parsed as Partial<BridgeMessageRequest>
+      ? parseInvocationBody(parsed)
       : {};
   } catch {
     return {};
@@ -248,10 +274,6 @@ export function createApp(deps: BridgeDeps): express.Express {
   const app = express();
   let firstResponseSent = false;
   const runtimeLabel = deps.runtimeLabel ?? "fargate";
-
-  app.use(express.json({
-    type: ["application/json", "application/*+json", "application/octet-stream", "text/plain"],
-  }));
 
   async function processAcceptedMessage(
     body: Partial<BridgeMessageRequest>,
@@ -435,10 +457,20 @@ export function createApp(deps: BridgeDeps): express.Express {
       });
     });
 
-    app.post("/invocations", async (req, res) => {
+    app.post("/invocations", express.raw({ type: "*/*", limit: "1mb" }), async (req, res) => {
       const body = parseInvocationBody(req.body);
 
       if (!body.userId || !body.message || !body.channel || !body.connectionId) {
+        logBridgeEvent("agentcore.invocation.invalid", {
+          contentType: req.headers["content-type"] ?? "unknown",
+          rawBodyType: Buffer.isBuffer(req.body) ? "buffer" : typeof req.body,
+          rawBodyLength: Buffer.isBuffer(req.body)
+            ? req.body.length
+            : typeof req.body === "string"
+              ? req.body.length
+              : 0,
+          parsedKeys: Object.keys(body),
+        }, "error");
         res.status(400).json({ error: "Missing required fields" });
         return;
       }
@@ -465,6 +497,10 @@ export function createApp(deps: BridgeDeps): express.Express {
       }
     });
   }
+
+  app.use(express.json({
+    type: ["application/json", "application/*+json", "application/octet-stream", "text/plain"],
+  }));
 
   app.use(createAuthMiddleware(deps.authToken));
 

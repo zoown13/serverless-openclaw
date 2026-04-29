@@ -478,6 +478,74 @@ describe("Bridge HTTP Server", () => {
       expect(deps.callbackSender.send).not.toHaveBeenCalled();
     });
 
+    it("should process /invocations when AgentCore sends raw JSON with a UTF-8 BOM", async () => {
+      gmailToolMock.mockResolvedValue({
+        kind: "direct",
+        message: "AgentCore BOM result",
+        source: "gmail",
+      });
+      app = createApp({
+        ...deps,
+        agentCoreHttpEnabled: true,
+        runtimeLabel: "agentcore",
+      });
+
+      const payload = JSON.stringify({
+        userId: "user-1",
+        message: "Check my Gmail inbox",
+        channel: "web",
+        connectionId: "conn-agentcore",
+        runtimeClass: "tool-enabled",
+        traceId: "trace-agentcore-bom",
+        routeDecision: "agentcore",
+      });
+      const res = await request(app)
+        .post("/invocations")
+        .set("Content-Type", "application/octet-stream")
+        .send(Buffer.from(`\uFEFF${payload}`, "utf8"));
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({
+        content: "AgentCore BOM result",
+        source: "gmail",
+      });
+      expect(deps.callbackSender.send).not.toHaveBeenCalled();
+    });
+
+    it("should process /invocations when AgentCore wraps the bridge request in a payload field", async () => {
+      gmailToolMock.mockResolvedValue({
+        kind: "direct",
+        message: "AgentCore wrapped result",
+        source: "gmail",
+      });
+      app = createApp({
+        ...deps,
+        agentCoreHttpEnabled: true,
+        runtimeLabel: "agentcore",
+      });
+
+      const res = await request(app)
+        .post("/invocations")
+        .send({
+          payload: JSON.stringify({
+            userId: "user-1",
+            message: "Check my Gmail inbox",
+            channel: "web",
+            connectionId: "conn-agentcore",
+            runtimeClass: "tool-enabled",
+            traceId: "trace-agentcore-wrapped",
+            routeDecision: "agentcore",
+          }),
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({
+        content: "AgentCore wrapped result",
+        source: "gmail",
+      });
+      expect(deps.callbackSender.send).not.toHaveBeenCalled();
+    });
+
     it("should fail /invocations quickly when OpenClaw is not ready and no direct tool result exists", async () => {
       deps.openclawClient.sendMessage = vi.fn(() => {
         throw new Error("OpenClaw runtime is still starting");

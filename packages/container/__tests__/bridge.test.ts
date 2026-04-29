@@ -512,6 +512,40 @@ describe("Bridge HTTP Server", () => {
       expect(deps.callbackSender.send).not.toHaveBeenCalled();
     });
 
+    it("should process /invocations when AgentCore omits content-type", async () => {
+      gmailToolMock.mockResolvedValue({
+        kind: "direct",
+        message: "AgentCore no content-type result",
+        source: "gmail",
+      });
+      app = createApp({
+        ...deps,
+        agentCoreHttpEnabled: true,
+        runtimeLabel: "agentcore",
+      });
+
+      const payload = JSON.stringify({
+        userId: "user-1",
+        message: "Check my Gmail inbox",
+        channel: "web",
+        connectionId: "conn-agentcore",
+        runtimeClass: "tool-enabled",
+        traceId: "trace-agentcore-no-content-type",
+        routeDecision: "agentcore",
+      });
+      const res = await request(app)
+        .post("/invocations")
+        .unset("Content-Type")
+        .send(Buffer.from(payload, "utf8"));
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({
+        content: "AgentCore no content-type result",
+        source: "gmail",
+      });
+      expect(deps.callbackSender.send).not.toHaveBeenCalled();
+    });
+
     it("should process /invocations when AgentCore wraps the bridge request in a payload field", async () => {
       gmailToolMock.mockResolvedValue({
         kind: "direct",

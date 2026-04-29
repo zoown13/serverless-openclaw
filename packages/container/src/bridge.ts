@@ -457,7 +457,7 @@ export function createApp(deps: BridgeDeps): express.Express {
       });
     });
 
-    app.post("/invocations", express.raw({ type: "*/*", limit: "1mb" }), async (req, res) => {
+    app.post("/invocations", express.raw({ type: () => true, limit: "1mb" }), async (req, res) => {
       const body = parseInvocationBody(req.body);
 
       if (!body.userId || !body.message || !body.channel || !body.connectionId) {

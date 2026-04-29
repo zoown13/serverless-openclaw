@@ -178,21 +178,41 @@ export async function startContainer(opts: StartContainerOptions): Promise<void>
     startBridgeServer();
   }
 
-  // Phase 2: Sequential — wait for gateway, then client
-  await waitForPort(18789, 120000);
-  const tGateway = Date.now();
+  let tGateway = tS3;
+  let tClient = tS3;
 
-  openclawClientRef.current = new OpenClawClient(gatewayUrl, env.OPENCLAW_GATEWAY_TOKEN);
-  await openclawClientRef.current.waitForReady();
-  openclawReady = true;
-  const tClient = Date.now();
+  const initializeOpenClaw = async (): Promise<void> => {
+    // Phase 2: Sequential — wait for gateway, then client
+    await waitForPort(18789, 120000);
+    tGateway = Date.now();
 
-  if (telegramChatId && env.TELEGRAM_BOT_TOKEN) {
-    void notifyTelegram(
-      env.TELEGRAM_BOT_TOKEN,
-      telegramChatId,
-      "✅ Ready! Processing messages...",
-    );
+    openclawClientRef.current = new OpenClawClient(gatewayUrl, env.OPENCLAW_GATEWAY_TOKEN);
+    await openclawClientRef.current.waitForReady();
+    openclawReady = true;
+    tClient = Date.now();
+
+    if (telegramChatId && env.TELEGRAM_BOT_TOKEN) {
+      void notifyTelegram(
+        env.TELEGRAM_BOT_TOKEN,
+        telegramChatId,
+        "✅ Ready! Processing messages...",
+      );
+    }
+  };
+
+  if (agentCoreMode) {
+    void initializeOpenClaw()
+      .then(() => {
+        console.log(`AgentCore OpenClaw fallback ready in ${tClient - tS3}ms`);
+      })
+      .catch((err) => {
+        console.warn(
+          "AgentCore OpenClaw fallback startup failed; direct tool fast-path remains available:",
+          err,
+        );
+      });
+  } else {
+    await initializeOpenClaw();
   }
 
   if (!agentCoreMode) {

@@ -359,4 +359,22 @@ describe("startContainer - parallel startup", () => {
       }),
     );
   });
+
+  it("should keep AgentCore bridge alive when OpenClaw fallback startup fails", async () => {
+    mockWaitForPort.mockRejectedValueOnce(new Error("Port 18789 not ready"));
+
+    await startContainer({
+      ...defaultOpts(),
+      env: {
+        ...defaultOpts().env,
+        CONTAINER_RUNTIME_MODE: "agentcore",
+        AGENTCORE_HTTP_ENABLED: "true",
+      },
+    });
+    await Promise.resolve();
+
+    expect(mockListen).toHaveBeenCalledOnce();
+    expect(mockUpdateTaskState).not.toHaveBeenCalled();
+    expect(mockConsumePendingMessages).not.toHaveBeenCalled();
+  });
 });

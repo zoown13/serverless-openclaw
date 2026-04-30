@@ -556,6 +556,61 @@ describe("gmail-tool", () => {
     });
   });
 
+  it("trusts advisor general handoff even when static payment keywords are present", async () => {
+    decideToolIntentMock
+      .mockResolvedValueOnce({
+        action: "gmail",
+        taskFamily: "gmail_payment_summary",
+        sourceChoice: "gmail",
+        confidence: 0.95,
+      })
+      .mockResolvedValueOnce({
+        action: "generic_openclaw",
+        taskFamily: "generic_tool_task",
+        sourceChoice: "general",
+        confidence: 0.9,
+      });
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m1" }] } }))
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "카드 결제 알림",
+          "Card Co <billing@example.com>",
+          "Fri, 03 Apr 2026 09:00:00 +0000",
+          "결제금액 12,300원 카드종류 삼성카드 가맹점명 스타벅스",
+        ),
+      );
+
+    await maybeHandleCustomGmailRequest({
+      userId: "user-advisor-chat-handoff",
+      sessionKey: "session-advisor-chat-handoff",
+      message: "이번주 결제한 금액이 어느정도 되려나?",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    fetchMock.mockReset();
+
+    const followUp = await maybeHandleCustomGmailRequest({
+      userId: "user-advisor-chat-handoff",
+      sessionKey: "session-advisor-chat-handoff",
+      message: "운동 루틴은 얼마 정도 해야 해?",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(followUp).toEqual({
+      kind: "handoff",
+      message: "운동 루틴은 얼마 정도 해야 해?",
+      source: "chat-handoff",
+      runtimeClass: "chat-only",
+      clearToolContext: true,
+    });
+  });
+
   it("explains the headers-first cap for payment coverage follow-ups without refetching", async () => {
     decideToolIntentMock.mockResolvedValueOnce({
       action: "gmail",

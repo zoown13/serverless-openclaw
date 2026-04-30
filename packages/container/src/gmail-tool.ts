@@ -2237,6 +2237,28 @@ async function handleAwaitingSourceContext(
   return undefined;
 }
 
+async function handoffActiveTaskContextToChat(
+  contextKey: string,
+  context: ToolTaskContext,
+  options: MaybeHandleCustomGmailRequestOptions,
+  reason: string,
+): Promise<ToolHandlerResult> {
+  const trimmed = normalizeWhitespace(options.message);
+  await clearTaskContext(contextKey);
+  emitToolEvent(options.onToolEvent, {
+    type: "contextCleared",
+    taskFamily: context.taskFamily,
+    reason,
+  });
+  return {
+    kind: "handoff",
+    message: trimmed,
+    source: "chat-handoff",
+    runtimeClass: "chat-only",
+    clearToolContext: true,
+  };
+}
+
 async function handleActiveTaskContext(
   contextKey: string,
   context: ToolTaskContext,
@@ -2244,7 +2266,7 @@ async function handleActiveTaskContext(
   followUpIntent?: ToolFollowUpIntent,
 ): Promise<ToolHandlerResult | undefined> {
   const trimmed = normalizeWhitespace(options.message);
-  if (CANCEL_PATTERN.test(trimmed)) {
+  if (followUpIntent === "cancel_task" || CANCEL_PATTERN.test(trimmed)) {
     await clearTaskContext(contextKey);
     emitToolEvent(options.onToolEvent, {
       type: "contextCleared",
@@ -2259,19 +2281,7 @@ async function handleActiveTaskContext(
   }
 
   if (isClearlyUnrelated(trimmed)) {
-    await clearTaskContext(contextKey);
-    emitToolEvent(options.onToolEvent, {
-      type: "contextCleared",
-      taskFamily: context.taskFamily,
-      reason: "topic-switch",
-    });
-    return {
-      kind: "handoff",
-      message: trimmed,
-      source: "chat-handoff",
-      runtimeClass: "chat-only",
-      clearToolContext: true,
-    };
+    return handoffActiveTaskContextToChat(contextKey, context, options, "topic-switch");
   }
 
   let effectiveContext = context;
@@ -2394,6 +2404,14 @@ export async function maybeHandleCustomGmailRequest(
       confidence: advisorDecision?.confidence,
       slmBackend: advisorDecision?.slmBackend,
     });
+    if (advisorDecision?.action === "generic_openclaw") {
+      return handoffActiveTaskContextToChat(
+        contextKey,
+        refreshedContext,
+        options,
+        "advisor-topic-switch",
+      );
+    }
     const handled = await handleActiveTaskContext(
       contextKey,
       refreshedContext,

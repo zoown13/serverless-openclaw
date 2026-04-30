@@ -18,6 +18,8 @@ const AMOUNT_SUMMARY_PATTERN = /(합계|총액|sum|total|얼마)/i;
 const COVERAGE_CHECK_PATTERN = /(더\s*(있|찾|보)|밖에\s*없|몇\s*개|개수|건수|limit)/i;
 const CANCEL_PATTERN = /^(?:취소|그만|끝|됐어|done|cancel|stop)(?:[.!?])?$/i;
 const EXPLICIT_GMAIL_PATTERN = /(gmail|google mail|inbox|mailbox|이메일|메일함|메일에서|지메일)/i;
+const OBVIOUS_GENERAL_CHAT_PATTERN =
+  /(날씨|weather|번역|translate|농담|joke|리눅스|linux|명령어|command|코드|code|설명해|추천해|맛집|일정|계획|어떻게|왜|무엇|뭐야|what|how|why)/i;
 
 function classifyActiveFollowUp(input: SlmClassificationInput): SlmTaskDecision | null {
   if (!input.activeTaskFamily) {
@@ -35,6 +37,21 @@ function classifyActiveFollowUp(input: SlmClassificationInput): SlmTaskDecision 
       followUpIntent: "cancel_task",
       confidence: 0.99,
       reason: "mock-local active cancel",
+    };
+  }
+  if (
+    OBVIOUS_GENERAL_CHAT_PATTERN.test(message) &&
+    !PAYMENT_LOOKUP_PATTERN.test(message) &&
+    !EXPLICIT_GMAIL_PATTERN.test(message) &&
+    !TOPIC_REFINE_PATTERN.test(message) &&
+    !BODY_OPEN_PATTERN.test(message)
+  ) {
+    return {
+      action: "generic_openclaw",
+      taskFamily: "generic_tool_task",
+      sourceChoice: "general",
+      confidence: 0.86,
+      reason: "mock-local active general chat handoff",
     };
   }
   if (BODY_OPEN_PATTERN.test(message)) {

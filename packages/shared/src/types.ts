@@ -150,6 +150,14 @@ export interface BridgeMessageRequest {
   emailTokenBudget?: EmailTokenBudgetPolicy;
 }
 
+export interface BridgeMessageResponse {
+  content?: string;
+  source?: string;
+  handoffRuntimeClass?: RuntimeClass;
+  handoffMessage?: string;
+  clearToolAffinity?: boolean;
+}
+
 export interface BridgeHealthResponse {
   status: "ok";
 }

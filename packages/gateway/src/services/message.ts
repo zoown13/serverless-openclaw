@@ -543,6 +543,31 @@ async function routeAgentCore(
       : undefined,
   });
 
+  if (result.handoffRuntimeClass === "chat-only") {
+    if (result.clearToolAffinity !== false) {
+      await deps.deleteRoutingContext(deps.userId, deps.channel);
+      logRouteEvent("route.affinity.cleared", {
+        traceId: deps.traceId,
+        channel: deps.channel,
+        runtimeClass: "tool-enabled",
+        reason: "runtime_handoff_chat_only",
+      });
+    }
+    logRouteEvent("agentcore.invoke.handoff", {
+      ...buildRouteLogPayload(deps, "tool-enabled", "agentcore", null, false),
+      toolRuntimeProvider: "agentcore",
+      handoffRuntimeClass: result.handoffRuntimeClass,
+      source: result.source,
+    });
+    return invokeLambdaRoute(
+      deps,
+      result.handoffMessage ?? deps.message,
+      "chat-only",
+      "lambda",
+      null,
+    );
+  }
+
   if (result.content) {
     await deps.sendClarification(result.content);
   }

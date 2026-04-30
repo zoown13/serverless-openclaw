@@ -118,4 +118,37 @@ describe("agentcore service", () => {
     expect(capturedSignal).toBeInstanceOf(AbortSignal);
     expect(capturedSignal?.aborted).toBe(false);
   });
+
+  it("preserves runtime handoff metadata from AgentCore responses", async () => {
+    process.env.AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE";
+    process.env.AWS_SECRET_ACCESS_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+
+    const result = await invokeAgentCoreRuntime({
+      runtimeArn:
+        "arn:aws:bedrock-agentcore:ap-northeast-2:123456789012:runtime/ServerlessOpenClawToolRuntime-test",
+      userId: "user-123",
+      message: "리눅스에서 파일 찾는 명령어 알려줘",
+      channel: "telegram",
+      connectionId: "telegram:123",
+      callbackUrl: "",
+      runtimeClass: "tool-enabled",
+      fetchFn: async () =>
+        new Response(JSON.stringify({
+          source: "chat-handoff",
+          handoffRuntimeClass: "chat-only",
+          handoffMessage: "리눅스에서 파일 찾는 명령어 알려줘",
+          clearToolAffinity: true,
+        })),
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        accepted: true,
+        source: "chat-handoff",
+        handoffRuntimeClass: "chat-only",
+        handoffMessage: "리눅스에서 파일 찾는 명령어 알려줘",
+        clearToolAffinity: true,
+      }),
+    );
+  });
 });

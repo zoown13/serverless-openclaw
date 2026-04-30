@@ -894,6 +894,59 @@ describe("message service", () => {
       expect(mockInvokeAgentCore).not.toHaveBeenCalled();
     });
 
+    it("should clear tool affinity and hand active AgentCore sessions back to Lambda chat", async () => {
+      const mockInvokeLambda = vi.fn().mockResolvedValue({ accepted: true });
+      const mockInvokeAgentCore = vi.fn().mockResolvedValue({
+        accepted: true,
+        source: "chat-handoff",
+        handoffRuntimeClass: "chat-only",
+        handoffMessage: "리눅스에서 파일 찾는 명령어 알려줘",
+        clearToolAffinity: true,
+      });
+      const deps = makeDeps({
+        agentRuntime: "both",
+        toolRuntimeProvider: "agentcore",
+        invokeLambdaAgent: mockInvokeLambda,
+        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+        invokeAgentCoreRuntime: mockInvokeAgentCore,
+        agentCoreRuntimeArn: "arn:aws:bedrock-agentcore:us-east-1:123:runtime/test",
+        message: "리눅스에서 파일 찾는 명령어 알려줘",
+        getTaskState: vi.fn().mockResolvedValue(null),
+        getRoutingContext: vi.fn().mockResolvedValue({
+          status: "active",
+          channel: "web",
+          connectionId: "conn-1",
+          callbackUrl: "https://cb",
+          createdAt: "2026-04-04T00:00:00Z",
+          lastActivityAt: "2026-04-04T00:00:00Z",
+          expiresAt: "2099-04-04T00:05:00Z",
+          runtimeClass: "tool-enabled",
+          provider: "agentcore",
+        }),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("lambda");
+      expect(mockInvokeAgentCore).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: "리눅스에서 파일 찾는 명령어 알려줘",
+          runtimeClass: "tool-enabled",
+        }),
+      );
+      expect(deps.deleteRoutingContext).toHaveBeenCalledWith("user-123", "web");
+      expect(mockInvokeLambda).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: "리눅스에서 파일 찾는 명령어 알려줘",
+          channel: "web",
+        }),
+      );
+      expect(deps.sendClarification).not.toHaveBeenCalled();
+      expect(infoSpy).toHaveBeenCalledWith(
+        expect.stringContaining("\"event\":\"agentcore.invoke.handoff\""),
+      );
+    });
+
     it("should fallback to Fargate when AgentCore invoke fails", async () => {
       const mockInvokeAgentCore = vi.fn().mockRejectedValue(new Error("AgentCore timeout"));
       const deps = makeDeps({

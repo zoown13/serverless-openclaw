@@ -1,6 +1,7 @@
 import { createHash, createHmac } from "node:crypto";
 import type {
   BridgeMessageRequest,
+  BridgeMessageResponse,
   Channel,
   EmailTokenBudgetPolicy,
   RuntimeClass,
@@ -27,6 +28,10 @@ export interface InvokeAgentCoreRuntimeParams {
 export interface AgentCoreRuntimeResult {
   accepted: true;
   content?: string;
+  source?: string;
+  handoffRuntimeClass?: RuntimeClass;
+  handoffMessage?: string;
+  clearToolAffinity?: boolean;
 }
 
 interface AwsCredentials {
@@ -212,6 +217,36 @@ function parseAgentCoreResponseText(text: string): string | undefined {
   }
 }
 
+function parseAgentCoreResponse(text: string): Omit<AgentCoreRuntimeResult, "accepted"> {
+  const trimmed = text.trim();
+  if (!trimmed) return {};
+
+  try {
+    const parsed = JSON.parse(trimmed) as BridgeMessageResponse;
+    if (typeof parsed !== "object" || parsed === null) {
+      return { content: parseAgentCoreResponseText(trimmed) };
+    }
+
+    const content = extractTextFromAgentCoreResponse(parsed);
+    return {
+      ...(content ? { content } : {}),
+      ...(typeof parsed.source === "string" ? { source: parsed.source } : {}),
+      ...(parsed.handoffRuntimeClass === "chat-only" ||
+      parsed.handoffRuntimeClass === "tool-enabled"
+        ? { handoffRuntimeClass: parsed.handoffRuntimeClass }
+        : {}),
+      ...(typeof parsed.handoffMessage === "string"
+        ? { handoffMessage: parsed.handoffMessage }
+        : {}),
+      ...(typeof parsed.clearToolAffinity === "boolean"
+        ? { clearToolAffinity: parsed.clearToolAffinity }
+        : {}),
+    };
+  } catch {
+    return { content: parseAgentCoreResponseText(trimmed) };
+  }
+}
+
 export async function invokeAgentCoreRuntime(
   params: InvokeAgentCoreRuntimeParams,
 ): Promise<AgentCoreRuntimeResult> {
@@ -287,6 +322,6 @@ export async function invokeAgentCoreRuntime(
 
   return {
     accepted: true,
-    content: parseAgentCoreResponseText(await resp.text()),
+    ...parseAgentCoreResponse(await resp.text()),
   };
 }

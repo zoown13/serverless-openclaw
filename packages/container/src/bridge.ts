@@ -43,6 +43,9 @@ export interface BridgeDeps {
 interface ProcessedMessageResult {
   message: string;
   source: string;
+  handoffRuntimeClass?: "chat-only" | "tool-enabled";
+  handoffMessage?: string;
+  clearToolAffinity?: boolean;
 }
 
 const startTime = Date.now();
@@ -344,7 +347,29 @@ export function createApp(deps: BridgeDeps): express.Express {
           };
         }
 
-        body.message = gmailResponse.message;
+        if (gmailResponse.kind === "handoff") {
+          logBridgeEvent("bridge.tool.handoff.chat_only", {
+            ...logContext,
+            deliveryType,
+            source: gmailResponse.source,
+          });
+
+          if (deliveryMode === "response") {
+            return {
+              message: gmailResponse.message,
+              source: gmailResponse.source,
+              handoffRuntimeClass: gmailResponse.runtimeClass,
+              handoffMessage: gmailResponse.message,
+              clearToolAffinity: gmailResponse.clearToolContext,
+            };
+          }
+
+          body.message = gmailResponse.message;
+          body.runtimeClass = gmailResponse.runtimeClass;
+        } else {
+          body.message = gmailResponse.message;
+        }
+
       }
 
       const prefixes: string[] = [];
@@ -481,10 +506,19 @@ export function createApp(deps: BridgeDeps): express.Express {
 
       try {
         const result = await processAcceptedMessage(body, "response");
-        res.json({
-          content: result.message,
-          source: result.source,
-        });
+        res.json(
+          result.handoffRuntimeClass
+            ? {
+                source: result.source,
+                handoffRuntimeClass: result.handoffRuntimeClass,
+                handoffMessage: result.handoffMessage,
+                clearToolAffinity: result.clearToolAffinity,
+              }
+            : {
+                content: result.message,
+                source: result.source,
+              },
+        );
       } catch {
         res.status(500).json({
           error: "AgentCore runtime failed to process the request",

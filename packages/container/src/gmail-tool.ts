@@ -13,6 +13,7 @@ import {
   KEY_PREFIX,
   TABLE_NAMES,
   type EmailTokenBudgetPolicy,
+  type RuntimeClass,
   type ToolIntentAdvisorAction,
   type ToolSourceChoice,
   type ToolTaskFamily,
@@ -28,7 +29,7 @@ import type { SlmBackendKind, ToolFollowUpIntent } from "./slm/index.js";
 const DEFAULT_CONTEXT_TTL_MS = 5 * 60 * 1000;
 const TOOL_CONTEXT_SETTING_KEY = "tool-task-context";
 const SUMMARY_FOLLOW_UP_PATTERN =
-  /(얼마|합계|총액|정리|요약|카드사|결제처|가맹점|merchant|issuer|sum|summary|breakdown|table|표|테이블|이번주 것만 다시|이번 주 것만 다시|다시|계속|그거|이거|그럼|더\s*있|더\s*찾|더\s*보|밖에\s*없|몇\s*개|개수|건수|limit)/i;
+  /(얼마|합계|총액|정리|요약|카드사|결제처|가맹점|merchant|issuer|sum|summary|breakdown|table|표|테이블|이번주 것만 다시|이번 주 것만 다시|다시|계속|그거|그걸|그걸로|이거|그럼|부탁|더\s*있|더\s*찾|더\s*보|밖에\s*없|몇\s*개|개수|건수|limit)/i;
 const PAYMENT_HINT_PATTERN =
   /(결제|카드값|카드 값|명세서|청구서|영수증|receipt|statement|invoice|spent|spend|payment|total|amount|얼마 썼|얼마 쓴)/i;
 const EXPLICIT_GMAIL_PATTERN =
@@ -207,6 +208,13 @@ export type ToolHandlerResult =
       kind: "forward";
       message: string;
       source: "openclaw";
+    }
+  | {
+      kind: "handoff";
+      message: string;
+      source: "chat-handoff";
+      runtimeClass: RuntimeClass;
+      clearToolContext: boolean;
     };
 
 export type ToolEvent =
@@ -1848,19 +1856,6 @@ function formatPaymentFollowUp(
   };
 }
 
-function shouldKeepPaymentContextByIntent(followUpIntent?: ToolFollowUpIntent): boolean {
-  return [
-    "continue_active_task",
-    "refine_topic",
-    "refine_date",
-    "issuer_breakdown",
-    "merchant_breakdown",
-    "amount_summary",
-    "coverage_check",
-    "open_body",
-  ].includes(followUpIntent ?? "");
-}
-
 function parseBodySelector(message: string, searchContext?: SearchContext): GmailMessageSummary[] {
   if (!searchContext) {
     return [];
@@ -2139,7 +2134,11 @@ function buildAdvisorInput(
 }
 
 function isClearlyUnrelated(message: string): boolean {
-  return !looksLikePaymentQuestion(message) && !isExplicitGmailMessage(message) && !isPaymentFollowUp(message) && !isBodyRequest(message) && !TRAVEL_REFINEMENT_PATTERN.test(message) && extractTopicKeywords(message).length === 0;
+  return !looksLikePaymentQuestion(message) &&
+    !isExplicitGmailMessage(message) &&
+    !isPaymentFollowUp(message) &&
+    !isBodyRequest(message) &&
+    !isTopicRefinementFollowUp(message);
 }
 
 async function handleAwaitingSourceContext(
@@ -2259,6 +2258,22 @@ async function handleActiveTaskContext(
     };
   }
 
+  if (isClearlyUnrelated(trimmed)) {
+    await clearTaskContext(contextKey);
+    emitToolEvent(options.onToolEvent, {
+      type: "contextCleared",
+      taskFamily: context.taskFamily,
+      reason: "topic-switch",
+    });
+    return {
+      kind: "handoff",
+      message: trimmed,
+      source: "chat-handoff",
+      runtimeClass: "chat-only",
+      clearToolContext: true,
+    };
+  }
+
   let effectiveContext = context;
   if (
     context.taskFamily === "gmail_search" &&
@@ -2305,16 +2320,6 @@ async function handleActiveTaskContext(
         trimmed,
         credentials,
       );
-    }
-
-    if (!shouldKeepPaymentContextByIntent(followUpIntent) && isClearlyUnrelated(trimmed)) {
-      await clearTaskContext(contextKey);
-      emitToolEvent(options.onToolEvent, {
-        type: "contextCleared",
-        taskFamily: effectiveContext.taskFamily,
-        reason: "topic-switch",
-      });
-      return undefined;
     }
 
     const nextContext: ToolTaskContext = {

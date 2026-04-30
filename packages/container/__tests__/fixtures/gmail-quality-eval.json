@@ -33,9 +33,9 @@
             }
           ],
           "expectIncludes": [
-            "travel-related payments linked to: 일본",
-            "Merchant: 마이리얼트립(일반)",
-            "KRW 9,215 across 1 matched payment message(s)"
+            "일본/여행/eSIM 관련 결제만",
+            "마이리얼트립(일반)",
+            "확인 가능한 합계: KRW 9,215 (1건)"
           ],
           "expectExcludes": [
             "현대엔지니어링 베이커리",
@@ -62,8 +62,8 @@
             }
           ],
           "expectIncludes": [
-            "Merchant: KLOOK",
-            "KRW 18,400 across 1 matched payment message(s)"
+            "KLOOK",
+            "확인 가능한 합계: KRW 18,400 (1건)"
           ],
           "expectExcludes": [
             "I could not confidently match any visible payment emails"
@@ -103,8 +103,8 @@
           "message": "일본관련된 것만 가져와야지",
           "expectNoAdditionalFetch": true,
           "expectIncludes": [
-            "travel-related payments linked to: 일본",
-            "Merchant: 마이리얼트립(일반)"
+            "일본/여행/eSIM 관련 결제만",
+            "마이리얼트립(일반)"
           ],
           "expectExcludes": [
             "병천순대전문점"
@@ -138,14 +138,14 @@
             }
           ],
           "expectIncludes": [
-            "travel-related payments linked to:"
+            "관련 결제만"
           ]
         },
         {
           "message": "카드사별로 보여줘",
           "expectNoAdditionalFetch": true,
           "expectIncludes": [
-            "card-issuer breakdown",
+            "카드사별로 정리",
             "- 현대카드: KRW 18,400 (1건)",
             "- 삼성카드: KRW 9,215 (1건)"
           ]
@@ -176,8 +176,8 @@
             }
           ],
           "expectIncludes": [
-            "Evidence: matched by body",
-            "KRW 9,215 across 1 matched payment message(s)"
+            "본문 확인",
+            "확인 가능한 합계: KRW 9,215 (1건)"
           ]
         }
       ]
@@ -214,9 +214,9 @@
             }
           ],
           "expectIncludes": [
-            "Merchant: AGODA",
-            "Card: 신한카드",
-            "KRW 128,400 across 1 matched payment message(s)"
+            "AGODA",
+            "/ 신한카드",
+            "확인 가능한 합계: KRW 128,400 (1건)"
           ],
           "expectExcludes": [
             "편의점",
@@ -250,9 +250,9 @@
             }
           ],
           "expectIncludes": [
-            "Merchant: 대한항공",
-            "Card: 현대카드",
-            "KRW 356,000 across 1 matched payment message(s)"
+            "대한항공",
+            "/ 현대카드",
+            "확인 가능한 합계: KRW 356,000 (1건)"
           ],
           "expectExcludes": [
             "카페"
@@ -285,8 +285,8 @@
             }
           ],
           "expectIncludes": [
-            "Merchant: KLOOK",
-            "KRW 21,400 across 1 matched payment message(s)"
+            "KLOOK",
+            "확인 가능한 합계: KRW 21,400 (1건)"
           ],
           "expectExcludes": [
             "분식집"
@@ -319,9 +319,9 @@
             }
           ],
           "expectIncludes": [
-            "Merchant: 공항 리무진",
-            "Card: 하나카드",
-            "KRW 17,000 across 1 matched payment message(s)"
+            "공항 리무진",
+            "/ 하나카드",
+            "확인 가능한 합계: KRW 17,000 (1건)"
           ],
           "expectExcludes": [
             "카페"
@@ -354,9 +354,9 @@
             }
           ],
           "expectIncludes": [
-            "Merchant: Airbnb",
-            "Card: 삼성카드",
-            "KRW 214,500 across 1 matched payment message(s)"
+            "Airbnb",
+            "/ 삼성카드",
+            "확인 가능한 합계: KRW 214,500 (1건)"
           ],
           "expectExcludes": [
             "편의점"
@@ -389,9 +389,9 @@
             }
           ],
           "expectIncludes": [
-            "Merchant: KLOOK",
-            "Card: 현대카드",
-            "KRW 62,400 across 1 matched payment message(s)"
+            "KLOOK",
+            "/ 현대카드",
+            "확인 가능한 합계: KRW 62,400 (1건)"
           ],
           "expectExcludes": [
             "카페"
@@ -424,9 +424,9 @@
             }
           ],
           "expectIncludes": [
-            "Merchant: Rentalcars.com",
-            "Card: 신한카드",
-            "KRW 84,200 across 1 matched payment message(s)"
+            "Rentalcars.com",
+            "/ 신한카드",
+            "확인 가능한 합계: KRW 84,200 (1건)"
           ],
           "expectExcludes": [
             "약관 개정 안내"

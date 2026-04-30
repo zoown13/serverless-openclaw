@@ -1341,6 +1341,30 @@ function formatCurrency(amount: number): string {
   return `KRW ${amount.toLocaleString("en-US")}`;
 }
 
+function formatDisplayTopicLabel(topicKeywords: string[]): string {
+  const labels: string[] = [];
+  const normalized = topicKeywords.join(" ").toLowerCase();
+  if (/일본|japan|도쿄|tokyo|오사카|osaka|교토|kyoto|후쿠오카|fukuoka|삿포로|sapporo|오키나와|okinawa|나고야|nagoya/.test(normalized)) {
+    labels.push("일본");
+  }
+  if (/여행|travel|trip|해외|overseas/.test(normalized)) {
+    labels.push("여행");
+  }
+  if (/esim|e-sim/.test(normalized)) {
+    labels.push("eSIM");
+  }
+  if (labels.length > 0) {
+    return [...new Set(labels)].join("/");
+  }
+  return [...new Set(topicKeywords.filter((keyword) => !/관련|가져|보여|정리/.test(keyword)))]
+    .slice(0, 4)
+    .join("/");
+}
+
+function formatIssuerLabel(issuer?: string): string {
+  return issuer ?? "카드사 확인 불가";
+}
+
 function buildEvidenceList(messages: GmailMessageSummary[]): string {
   return messages
     .map((message, index) => {
@@ -1400,41 +1424,41 @@ function buildTopicFilteredPaymentSummaryResponse(
   usedBodyCheck: boolean,
 ): string {
   const total = records.reduce((sum, record) => sum + (record.amount ?? 0), 0);
-  const topicLabel = topicKeywords.join(", ");
+  const topicLabel = formatDisplayTopicLabel(topicKeywords);
   const lines = records
     .slice()
     .sort((a, b) => (b.amount ?? 0) - (a.amount ?? 0))
     .slice(0, 5)
     .map((record, index) => {
       const merchant = record.merchant ?? record.subject;
-      const amount = record.amount ? formatCurrency(record.amount) : "amount unavailable";
-      const issuer = record.cardIssuer ?? "Unknown issuer";
+      const amount = record.amount ? formatCurrency(record.amount) : "금액 확인 불가";
+      const issuer = formatIssuerLabel(record.cardIssuer);
       const evidenceBits = [
-        record.matchedBy ? `matched by ${record.matchedBy}` : undefined,
+        record.matchedBy === "body"
+          ? "본문 확인"
+          : record.matchedBy === "query"
+            ? "검색어 매칭"
+            : "스니펫 매칭",
         record.topicTags && record.topicTags.length > 0 ? record.topicTags.join(", ") : undefined,
       ].filter(Boolean);
-      const evidence = evidenceBits.length > 0 ? evidenceBits.join(" · ") : "travel context";
-      return [
-        `${index + 1}. Merchant: ${merchant}`,
-        `   Amount: ${amount}`,
-        `   Card: ${issuer}`,
-        `   Date: ${record.date}`,
-        `   Evidence: ${evidence}`,
-      ].join("\n");
+      const evidence = evidenceBits.length > 0 ? evidenceBits.join(" · ") : "여행 단서";
+      return `${index + 1}. ${merchant} - ${amount} / ${issuer}\n   날짜: ${record.date}\n   근거: ${evidence}`;
     });
 
   return [
-    `I filtered the Gmail payment context for travel-related payments linked to: ${topicLabel}.`,
-    `Topic-aware query: "${query}".`,
-    "I stayed in headers-first mode by default.",
+    `${topicLabel} 관련 결제만 다시 추렸습니다.`,
+    `검색 기준: "${query}"`,
     usedBodyCheck
-      ? "I opened up to 2 short email bodies only where snippet evidence was ambiguous."
-      : "I did not open full bodies or attachments.",
-    `Estimated topic-linked total: ${formatCurrency(total)} across ${records.length} matched payment message(s).`,
+      ? "스니펫만으로 애매한 메일은 최대 2건까지만 짧게 본문 확인했습니다."
+      : "본문/첨부는 열지 않고 헤더와 스니펫 기준으로만 확인했습니다.",
+    `확인 가능한 합계: ${formatCurrency(total)} (${records.length}건)`,
+    records.length > 5 ? "아래에는 금액이 큰 순서로 상위 5건만 먼저 보여드립니다." : undefined,
     "",
-    "Matched travel-related payments:",
+    "결제 내역:",
     ...lines,
-  ].join("\n");
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join("\n");
 }
 
 async function fetchPaymentMessages(
@@ -1765,7 +1789,7 @@ function formatPaymentFollowUp(
     return {
       kind: "direct",
       message:
-        "I do not have a usable payment summary in the current Gmail context. Please ask the Gmail question again so I can rebuild it.",
+        "현재 Gmail 문맥에 다시 정리할 수 있는 결제 레코드가 없습니다. 같은 Gmail 질문을 한 번 더 해주시면 결제 문맥을 새로 만들겠습니다.",
       source: "gmail-context",
     };
   }
@@ -1777,15 +1801,15 @@ function formatPaymentFollowUp(
     const inspectedCount = context.lastMessages?.length ?? records.length;
     const hitSafetyCap = inspectedCount >= maxMessages;
     const capMessage = hitSafetyCap
-      ? `I only inspected the first ${maxMessages} Gmail message(s) because the current safety policy is headers-first with a ${maxMessages}-message cap, so there may be more matching payment emails beyond this window.`
-      : `I inspected ${inspectedCount} Gmail message(s) in the current headers-first window and did not hit the ${maxMessages}-message cap.`;
+      ? `현재 안전 정책상 헤더/스니펫 기준으로 먼저 ${maxMessages}건까지만 확인했습니다. 그래서 이 범위 밖에 결제 메일이 더 있을 수 있습니다.`
+      : `현재 헤더/스니펫 확인 범위에서는 ${inspectedCount}건을 봤고, ${maxMessages}건 제한에는 걸리지 않았습니다.`;
 
     return {
       kind: "direct",
       message:
         `${capMessage}\n\n` +
-        `Within the currently visible payment context, I extracted ${records.length} payment-like message(s) with a rough visible total of ${formatCurrency(total)}.\n` +
-        "If you want me to check a different slice safely, narrow it by period, sender, card issuer, or merchant.",
+        `현재 보이는 결제 문맥에서는 결제성 메일 ${records.length}건, 확인 가능한 합계 ${formatCurrency(total)}입니다.\n` +
+        "더 넓게 보려면 기간, 보낸 사람, 카드사, 결제처 중 하나로 범위를 좁혀주세요.",
       source: "gmail-context",
     };
   }
@@ -1793,7 +1817,7 @@ function formatPaymentFollowUp(
   if (followUpIntent === "issuer_breakdown" || /카드사|issuer/i.test(normalized)) {
     const grouped = new Map<string, { total: number; count: number }>();
     for (const record of records) {
-      const key = record.cardIssuer ?? "Unknown";
+      const key = formatIssuerLabel(record.cardIssuer);
       const current = grouped.get(key) ?? { total: 0, count: 0 };
       current.total += record.amount ?? 0;
       current.count += 1;
@@ -1807,7 +1831,11 @@ function formatPaymentFollowUp(
       );
     return {
       kind: "direct",
-      message: `Within the current Gmail payment context, here is the card-issuer breakdown:\n${lines.join("\n")}`,
+      message:
+        `현재 Gmail 결제 문맥을 카드사별로 정리했습니다.\n${lines.join("\n")}` +
+        (grouped.has("카드사 확인 불가")
+          ? "\n\n참고: '카드사 확인 불가'는 헤더/스니펫에 카드사명이 보이지 않는 결제입니다. 필요하면 특정 메일 번호를 지정해 본문을 제한적으로 확인할 수 있습니다."
+          : ""),
       source: "gmail-context",
     };
   }
@@ -1815,7 +1843,7 @@ function formatPaymentFollowUp(
   if (followUpIntent === "merchant_breakdown" || /결제처|가맹점|merchant/i.test(normalized)) {
     const grouped = new Map<string, number>();
     for (const record of records) {
-      const key = record.merchant ?? "Unknown merchant";
+      const key = record.merchant ?? "결제처 확인 불가";
       grouped.set(key, (grouped.get(key) ?? 0) + (record.amount ?? 0));
     }
     const lines = [...grouped.entries()]
@@ -1823,7 +1851,7 @@ function formatPaymentFollowUp(
       .map(([merchant, amount]) => `- ${merchant}: ${formatCurrency(amount)}`);
     return {
       kind: "direct",
-      message: `Within the current Gmail payment context, here is the merchant breakdown:\n${lines.join("\n")}`,
+      message: `현재 Gmail 결제 문맥을 결제처별로 정리했습니다.\n${lines.join("\n")}`,
       source: "gmail-context",
     };
   }
@@ -1831,7 +1859,7 @@ function formatPaymentFollowUp(
   if (followUpIntent === "amount_summary" || /합계|총액|sum|total/i.test(normalized)) {
     return {
       kind: "direct",
-      message: `Within the current Gmail payment context, the visible headers-first total is ${formatCurrency(total)} across ${records.length} payment message(s).`,
+      message: `현재 Gmail 결제 문맥에서 헤더/스니펫 기준 확인 가능한 합계는 ${formatCurrency(total)}입니다. 대상 결제성 메일은 ${records.length}건입니다.`,
       source: "gmail-context",
     };
   }
@@ -1850,8 +1878,8 @@ function formatPaymentFollowUp(
   return {
     kind: "direct",
     message:
-      `Within the current Gmail payment context, the visible headers-first total is ${formatCurrency(total)} across ${records.length} payment message(s).\n\n` +
-      `Top matched payments:\n${topRecords.join("\n")}`,
+      `현재 Gmail 결제 문맥에서 확인 가능한 합계는 ${formatCurrency(total)}입니다. 대상 결제성 메일은 ${records.length}건입니다.\n\n` +
+      `주요 결제 내역:\n${topRecords.join("\n")}`,
     source: "gmail-context",
   };
 }

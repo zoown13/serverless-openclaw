@@ -375,7 +375,7 @@ describe("gmail-tool", () => {
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(followUp?.kind).toBe("direct");
-    expect(followUp?.message).toContain("Top matched payments:");
+    expect(followUp?.message).toContain("주요 결제 내역:");
     expect(followUp?.message).toContain("KRW 57,300");
   });
 
@@ -434,7 +434,7 @@ describe("gmail-tool", () => {
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(followUp?.kind).toBe("direct");
-    expect(followUp?.message).toContain("card-issuer breakdown");
+    expect(followUp?.message).toContain("카드사별로 정리");
     expect(followUp?.message).toContain("- 삼성카드: KRW 12,300 (1건)");
     expect(followUp?.message).toContain("- 현대카드: KRW 45,000 (1건)");
   });
@@ -495,7 +495,7 @@ describe("gmail-tool", () => {
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(followUp?.kind).toBe("direct");
-    expect(followUp?.message).toContain("card-issuer breakdown");
+    expect(followUp?.message).toContain("카드사별로 정리");
     expect(followUp?.message).toContain("- 삼성카드: KRW 12,300 (1건)");
     expect(followUp?.message).toContain("- 현대카드: KRW 45,000 (1건)");
   });
@@ -556,7 +556,7 @@ describe("gmail-tool", () => {
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(followUp?.kind).toBe("direct");
-    expect(followUp?.message).toContain("card-issuer breakdown");
+    expect(followUp?.message).toContain("카드사별로 정리");
     expect(followUp?.message).toContain("- 삼성카드: KRW 12,300 (1건)");
     expect(followUp?.message).toContain("- 현대카드: KRW 45,000 (1건)");
   });
@@ -750,8 +750,8 @@ describe("gmail-tool", () => {
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(followUp?.kind).toBe("direct");
-    expect(followUp?.message).toContain("first 5 Gmail message(s)");
-    expect(followUp?.message).toContain("there may be more matching payment emails");
+    expect(followUp?.message).toContain("먼저 5건까지만");
+    expect(followUp?.message).toContain("더 있을 수 있습니다");
   });
 
   it("builds a topic-aware travel payment query and excludes policy notices", async () => {
@@ -790,10 +790,10 @@ describe("gmail-tool", () => {
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain("%EC%9D%BC%EB%B3%B8");
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain("maxResults=10");
     expect(String(fetchMock.mock.calls[2]?.[0])).toContain("maxResults=15");
-    expect(response?.message).toContain("travel-related payments linked to: 일본");
-    expect(response?.message).toContain("Merchant: 마이리얼트립(일반)");
-    expect(response?.message).toContain("Card: 삼성카드");
-    expect(response?.message).toContain("Evidence: matched by");
+    expect(response?.message).toContain("일본/여행/eSIM 관련 결제만");
+    expect(response?.message).toContain("마이리얼트립(일반)");
+    expect(response?.message).toContain("/ 삼성카드");
+    expect(response?.message).toContain("근거:");
     expect(response?.message).not.toContain("표준 전자금융거래 기본약관");
   });
 
@@ -841,10 +841,10 @@ describe("gmail-tool", () => {
     });
 
     expect(response?.kind).toBe("direct");
-    expect(response?.message).toContain("Merchant: 마이리얼트립(일반)");
+    expect(response?.message).toContain("마이리얼트립(일반)");
     expect(response?.message).not.toContain("현대엔지니어링 베이커리");
     expect(response?.message).not.toContain("병천순대전문점");
-    expect(response?.message).toContain("KRW 9,215 across 1 matched payment message(s)");
+    expect(response?.message).toContain("확인 가능한 합계: KRW 9,215 (1건)");
   });
 
   it("keeps destination-specific travel records such as Osaka bookings", async () => {
@@ -871,8 +871,8 @@ describe("gmail-tool", () => {
 
     expect(response?.kind).toBe("direct");
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain("%EC%98%A4%EC%82%AC%EC%B9%B4");
-    expect(response?.message).toContain("Merchant: KLOOK");
-    expect(response?.message).toContain("KRW 18,400 across 1 matched payment message(s)");
+    expect(response?.message).toContain("KLOOK");
+    expect(response?.message).toContain("확인 가능한 합계: KRW 18,400 (1건)");
   });
 
   it("refines an active payment context to Japan-related records without falling back", async () => {
@@ -918,8 +918,8 @@ describe("gmail-tool", () => {
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(followUp?.kind).toBe("direct");
-    expect(followUp?.message).toContain("travel-related payments linked to: 일본");
-    expect(followUp?.message).toContain("Merchant: 마이리얼트립(일반)");
+    expect(followUp?.message).toContain("일본/여행/eSIM 관련 결제만");
+    expect(followUp?.message).toContain("마이리얼트립(일반)");
     expect(followUp?.message).not.toContain("병천순대전문점");
   });
 
@@ -977,8 +977,8 @@ describe("gmail-tool", () => {
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(followUp?.kind).toBe("direct");
-    expect(followUp?.message).toContain("Merchant: 마이리얼트립(일반)");
-    expect(followUp?.message).toContain("KRW 9,215 across 1 matched payment message(s)");
+    expect(followUp?.message).toContain("마이리얼트립(일반)");
+    expect(followUp?.message).toContain("확인 가능한 합계: KRW 9,215 (1건)");
     expect(followUp?.message).not.toContain("해외 온라인 몰");
     expect(followUp?.message).not.toContain("글로벌 eSIM");
   });
@@ -1032,7 +1032,7 @@ describe("gmail-tool", () => {
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain("%EC%9D%BC%EB%B3%B8");
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain("maxResults=10");
     expect(String(fetchMock.mock.calls[2]?.[0])).toContain("maxResults=15");
-    expect(followUp?.message).toContain("Merchant: 마이리얼트립(일반)");
+    expect(followUp?.message).toContain("마이리얼트립(일반)");
   });
 
   it("uses at most one or two limited body checks when travel evidence is ambiguous", async () => {
@@ -1065,7 +1065,7 @@ describe("gmail-tool", () => {
     );
     expect(bodyCalls.length).toBeLessThanOrEqual(1);
     expect(response?.kind).toBe("direct");
-    expect(response?.message).toMatch(/opened up to 2 short email bodies|Evidence: matched by/);
+    expect(response?.message).toMatch(/최대 2건까지만 짧게 본문 확인|근거:/);
   });
 
   it("opens one selected body from the last search context", async () => {

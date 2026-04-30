@@ -4,7 +4,7 @@ import {
   resolveCrisPrefix,
   resolveBedrockModel,
   resolveProviderConfig,
-  BEDROCK_BASE_MODEL,
+  BEDROCK_DEFAULT_MODEL,
 } from "../src/provider-config.js";
 
 describe("resolveCrisPrefix", () => {
@@ -58,28 +58,24 @@ describe("resolveCrisPrefix", () => {
 });
 
 describe("resolveBedrockModel", () => {
-  it("returns eu-prefixed model for eu-central-1", () => {
-    expect(resolveBedrockModel("eu-central-1")).toBe(
-      `eu.${BEDROCK_BASE_MODEL}`,
-    );
+  it("returns the safe default model for eu-central-1", () => {
+    expect(resolveBedrockModel("eu-central-1")).toBe(BEDROCK_DEFAULT_MODEL);
   });
 
-  it("returns us-prefixed model for us-east-1", () => {
-    expect(resolveBedrockModel("us-east-1")).toBe(`us.${BEDROCK_BASE_MODEL}`);
+  it("returns the safe default model for us-east-1", () => {
+    expect(resolveBedrockModel("us-east-1")).toBe(BEDROCK_DEFAULT_MODEL);
   });
 
-  it("returns apac-prefixed model for ap-northeast-1", () => {
-    expect(resolveBedrockModel("ap-northeast-1")).toBe(
-      `apac.${BEDROCK_BASE_MODEL}`,
-    );
+  it("returns the safe default model for ap-northeast-1", () => {
+    expect(resolveBedrockModel("ap-northeast-1")).toBe(BEDROCK_DEFAULT_MODEL);
   });
 
-  it("returns base model for unknown region (no CRIS prefix)", () => {
-    expect(resolveBedrockModel("sa-east-1")).toBe(BEDROCK_BASE_MODEL);
+  it("returns the safe default model for unknown region", () => {
+    expect(resolveBedrockModel("sa-east-1")).toBe(BEDROCK_DEFAULT_MODEL);
   });
 
-  it("returns base model when region is undefined", () => {
-    expect(resolveBedrockModel(undefined)).toBe(BEDROCK_BASE_MODEL);
+  it("returns the safe default model when region is undefined", () => {
+    expect(resolveBedrockModel(undefined)).toBe(BEDROCK_DEFAULT_MODEL);
   });
 
   it("returns AI_MODEL override as-is regardless of region", () => {
@@ -95,19 +91,17 @@ describe("resolveBedrockModel", () => {
   });
 
   it("ignores empty string AI_MODEL and uses region resolution", () => {
-    expect(resolveBedrockModel("eu-central-1", "")).toBe(
-      `eu.${BEDROCK_BASE_MODEL}`,
-    );
+    expect(resolveBedrockModel("eu-central-1", "")).toBe(BEDROCK_DEFAULT_MODEL);
   });
 });
 
 describe("resolveProviderConfig", () => {
-  it("resolves bedrock model with CRIS prefix from AWS_REGION", () => {
+  it("resolves bedrock model to the safe default without requiring AI_MODEL", () => {
     const config = resolveProviderConfig({
       AI_PROVIDER: "bedrock",
       AWS_REGION: "eu-central-1",
     });
-    expect(config.defaultModel).toBe(`eu.${BEDROCK_BASE_MODEL}`);
+    expect(config.defaultModel).toBe(BEDROCK_DEFAULT_MODEL);
     expect(config.openclawProvider).toBe("amazon-bedrock");
     expect(config.openclawApi).toBe("bedrock-converse-stream");
     expect(config.capability).toBe("chat-only");
@@ -124,12 +118,12 @@ describe("resolveProviderConfig", () => {
     expect(config.defaultModel).toBe("custom-model-id");
   });
 
-  it("falls back to base model for bedrock with unknown region", () => {
+  it("falls back to safe default model for bedrock with unknown region", () => {
     const config = resolveProviderConfig({
       AI_PROVIDER: "bedrock",
       AWS_REGION: "sa-east-1",
     });
-    expect(config.defaultModel).toBe(BEDROCK_BASE_MODEL);
+    expect(config.defaultModel).toBe(BEDROCK_DEFAULT_MODEL);
   });
 
   it("resolves anthropic defaults correctly", () => {

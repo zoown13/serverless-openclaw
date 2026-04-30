@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import * as cdk from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
+import { BEDROCK_DEFAULT_MODEL } from "@serverless-openclaw/shared";
 import {
   NetworkStack,
   StorageStack,
@@ -227,6 +228,27 @@ describe("CDK Stacks E2E — synth all stacks", () => {
       expect(templateJson).not.toContain("TOOL_SLM_BACKEND");
     });
 
+    it("sets safe Bedrock AI_MODEL for Fargate fallback when Bedrock provider omits an explicit model", () => {
+      const bedrockApp = new cdk.App();
+      const network = new NetworkStack(bedrockApp, "BedrockComputeNetworkStack");
+      const storage = new StorageStack(bedrockApp, "BedrockComputeStorageStack");
+      const compute = new ComputeStack(bedrockApp, "BedrockComputeStack", {
+        vpc: network.vpc,
+        fargateSecurityGroup: network.fargateSecurityGroup,
+        conversationsTable: storage.conversationsTable,
+        settingsTable: storage.settingsTable,
+        taskStateTable: storage.taskStateTable,
+        connectionsTable: storage.connectionsTable,
+        pendingMessagesTable: storage.pendingMessagesTable,
+        dataBucket: storage.dataBucket,
+        ecrRepository: storage.ecrRepository,
+        aiProvider: "bedrock",
+      });
+      const templateJson = JSON.stringify(Template.fromStack(compute).toJSON());
+
+      expect(templateJson).toContain(BEDROCK_DEFAULT_MODEL);
+    });
+
     it("CloudWatch Log Group", () => {
       computeTemplate.resourceCountIs("AWS::Logs::LogGroup", 1);
     });
@@ -344,6 +366,23 @@ describe("CDK Stacks E2E — synth all stacks", () => {
       expect(env.NODE_OPTIONS).toBe("--no-deprecation");
       expect(env.SSM_ANTHROPIC_API_KEY).toBe("/serverless-openclaw/secrets/anthropic-api-key");
       expect(env.SESSION_BUCKET).toBeDefined();
+    });
+
+    it("sets safe Bedrock AI_MODEL when Bedrock provider omits an explicit model", () => {
+      const bedrockApp = new cdk.App();
+      const storage = new StorageStack(bedrockApp, "BedrockLambdaStorageStack");
+      const lambdaAgent = new LambdaAgentStack(bedrockApp, "BedrockLambdaAgentStack", {
+        dataBucket: storage.dataBucket,
+        taskStateTable: storage.taskStateTable,
+        aiProvider: "bedrock",
+      });
+      const template = Template.fromStack(lambdaAgent);
+      const functions = template.findResources("AWS::Lambda::Function");
+      const fn = Object.values(functions)[0] as Record<string, unknown>;
+      const env = ((fn.Properties as Record<string, unknown>).Environment as Record<string, unknown>).Variables as Record<string, unknown>;
+
+      expect(env.AI_PROVIDER).toBe("bedrock");
+      expect(env.AI_MODEL).toBe(BEDROCK_DEFAULT_MODEL);
     });
 
     it("no ECR repository (imported externally via fromRepositoryName)", () => {

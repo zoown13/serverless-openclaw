@@ -50,8 +50,12 @@ export interface ResolvedRuntimeConfig extends ProviderConfig {
   secretContract: SecretContract;
 }
 
-// Base Bedrock model ID (without CRIS prefix)
-export const BEDROCK_BASE_MODEL = "anthropic.claude-sonnet-4-20250514-v1:0";
+// Safe Bedrock default verified with the embedded OpenClaw Lambda runtime.
+// Keep this explicit instead of deriving a regional CRIS profile so a missing
+// AI_MODEL cannot fall back to an OpenClaw-unknown model.
+export const BEDROCK_DEFAULT_MODEL =
+  "global.anthropic.claude-haiku-4-5-20251001-v1:0";
+export const BEDROCK_BASE_MODEL = BEDROCK_DEFAULT_MODEL;
 
 // Maps AWS region → cross-region inference system (CRIS) geographic prefix.
 // Bedrock uses these prefixes to route requests within a geographic boundary.
@@ -120,15 +124,14 @@ export function resolveCrisPrefix(region?: string): string | undefined {
 }
 
 /**
- * Resolves the Bedrock model ID to use:
- * - If aiModel is explicitly set, returns it as-is (caller's responsibility to use correct format)
- * - Otherwise, prepends the CRIS geographic prefix for the given region
- * - Falls back to the base model ID for regions without CRIS support
+ * Resolves the Bedrock model ID to use.
+ * If aiModel is explicitly set, returns it as-is. Otherwise returns the
+ * verified global Haiku 4.5 inference profile used by the Lambda chat path.
  */
 export function resolveBedrockModel(region?: string, aiModel?: string): string {
   if (aiModel) return aiModel;
-  const prefix = resolveCrisPrefix(region);
-  return prefix ? `${prefix}.${BEDROCK_BASE_MODEL}` : BEDROCK_BASE_MODEL;
+  void region;
+  return BEDROCK_DEFAULT_MODEL;
 }
 
 export function resolveModel(provider: "anthropic", aiModel?: string): string {

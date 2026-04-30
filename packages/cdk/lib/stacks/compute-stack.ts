@@ -8,7 +8,11 @@ import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as ssm from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
-import { BRIDGE_PORT, TABLE_NAMES } from "@serverless-openclaw/shared";
+import {
+  BEDROCK_DEFAULT_MODEL,
+  BRIDGE_PORT,
+  TABLE_NAMES,
+} from "@serverless-openclaw/shared";
 import { SSM_PARAMS, SSM_SECRETS } from "./ssm-params.js";
 
 export interface ComputeStackProps extends cdk.StackProps {
@@ -38,6 +42,10 @@ export class ComputeStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: ComputeStackProps) {
     super(scope, id, props);
 
+    const resolvedAiProvider = props.aiProvider ?? "anthropic";
+    const resolvedAiModel =
+      props.aiModel ?? (resolvedAiProvider === "bedrock" ? BEDROCK_DEFAULT_MODEL : undefined);
+
     // SSM SecureString parameter references (manually created)
     const bridgeAuthToken = ssm.StringParameter.fromSecureStringParameterAttributes(
       this, "BridgeAuthToken",
@@ -47,7 +55,7 @@ export class ComputeStack extends cdk.Stack {
       this, "OpenclawGatewayToken",
       { parameterName: SSM_SECRETS.OPENCLAW_GATEWAY_TOKEN },
     );
-    const anthropicApiKey = props.aiProvider !== "bedrock"
+    const anthropicApiKey = resolvedAiProvider !== "bedrock"
       ? ssm.StringParameter.fromSecureStringParameterAttributes(
           this, "AnthropicApiKey",
           { parameterName: SSM_SECRETS.ANTHROPIC_API_KEY },
@@ -111,8 +119,8 @@ export class ComputeStack extends cdk.Stack {
         DATA_BUCKET: props.dataBucket.bucketName,
         BRIDGE_PORT: String(BRIDGE_PORT),
         METRICS_ENABLED: "true",
-        AI_PROVIDER: props.aiProvider ?? "anthropic",
-        ...(props.aiModel ? { AI_MODEL: props.aiModel } : {}),
+        AI_PROVIDER: resolvedAiProvider,
+        ...(resolvedAiModel ? { AI_MODEL: resolvedAiModel } : {}),
         ...(props.toolSlmBackend ? { TOOL_SLM_BACKEND: props.toolSlmBackend } : {}),
         TOOL_CONTEXT_STORE: process.env.TOOL_CONTEXT_STORE ?? "ddb",
         AWS_REGION: this.region,

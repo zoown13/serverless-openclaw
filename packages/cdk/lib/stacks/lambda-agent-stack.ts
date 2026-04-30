@@ -7,6 +7,7 @@ import * as logs from "aws-cdk-lib/aws-logs";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as ssm from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
+import { BEDROCK_DEFAULT_MODEL } from "@serverless-openclaw/shared";
 import { SSM_PARAMS, SSM_SECRETS } from "./ssm-params.js";
 
 export interface LambdaAgentStackProps extends cdk.StackProps {
@@ -35,6 +36,9 @@ export class LambdaAgentStack extends cdk.Stack {
       retention: logs.RetentionDays.ONE_WEEK,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
+    const resolvedAiProvider = props.aiProvider ?? "anthropic";
+    const resolvedAiModel =
+      props.aiModel ?? (resolvedAiProvider === "bedrock" ? BEDROCK_DEFAULT_MODEL : undefined);
 
     // Lambda function from container image
     this.agentFunction = new lambda.DockerImageFunction(this, "AgentFunction", {
@@ -59,8 +63,8 @@ export class LambdaAgentStack extends cdk.Stack {
         SSM_GOOGLE_OAUTH_CLIENT_JSON:
           "/serverless-openclaw/secrets/google-oauth-client-json",
         SESSION_BUCKET: props.dataBucket.bucketName,
-        AI_PROVIDER: props.aiProvider ?? "anthropic",
-        ...(props.aiModel ? { AI_MODEL: props.aiModel } : {}),
+        AI_PROVIDER: resolvedAiProvider,
+        ...(resolvedAiModel ? { AI_MODEL: resolvedAiModel } : {}),
       },
     });
 

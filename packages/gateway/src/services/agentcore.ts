@@ -105,9 +105,17 @@ export function buildAgentCoreRuntimeSessionId(params: {
   userId: string;
   channel: Channel;
   sessionId?: string;
+  namespace?: string;
 }): string {
   const logicalSession = params.sessionId ?? `session-${params.userId}`;
-  return `soc-${hashHex(`${params.userId}|${params.channel}|${logicalSession}`)}`;
+  const namespace = params.namespace ?? process.env.AGENTCORE_SESSION_NAMESPACE;
+  const sessionParts = [
+    params.userId,
+    params.channel,
+    logicalSession,
+    ...(namespace?.trim() ? [namespace.trim()] : []),
+  ];
+  return `soc-${hashHex(sessionParts.join("|"))}`;
 }
 
 function normalizeHeaders(headers: Record<string, string>): {
@@ -270,6 +278,7 @@ export async function invokeAgentCoreRuntime(
     userId: params.userId,
     channel: params.channel,
     sessionId: params.sessionId,
+    namespace: process.env.AGENTCORE_SESSION_NAMESPACE,
   });
   const body: BridgeMessageRequest = {
     userId: params.userId,

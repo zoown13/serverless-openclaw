@@ -11,6 +11,7 @@ param(
   [string]$ToolContextStore = $(if ($env:TOOL_CONTEXT_STORE) { $env:TOOL_CONTEXT_STORE } else { "ddb" }),
   [string]$AgentCoreRuntimeArn = $(if ($env:AGENTCORE_RUNTIME_ARN) { $env:AGENTCORE_RUNTIME_ARN } else { "" }),
   [string]$AgentCoreRuntimeQualifier = $(if ($env:AGENTCORE_RUNTIME_QUALIFIER) { $env:AGENTCORE_RUNTIME_QUALIFIER } else { "" }),
+  [string]$AgentCoreSessionNamespace = $(if ($env:AGENTCORE_SESSION_NAMESPACE) { $env:AGENTCORE_SESSION_NAMESPACE } else { "" }),
   [switch]$SkipEnvFile
 )
 
@@ -59,6 +60,9 @@ if ([string]::IsNullOrWhiteSpace($AgentCoreRuntimeQualifier) -and $env:AGENTCORE
 if ([string]::IsNullOrWhiteSpace($AgentCoreInvokeDeadlineMs) -and $env:AGENTCORE_INVOKE_DEADLINE_MS) {
   $AgentCoreInvokeDeadlineMs = $env:AGENTCORE_INVOKE_DEADLINE_MS
 }
+if ([string]::IsNullOrWhiteSpace($AgentCoreSessionNamespace) -and $env:AGENTCORE_SESSION_NAMESPACE) {
+  $AgentCoreSessionNamespace = $env:AGENTCORE_SESSION_NAMESPACE
+}
 
 $env:AWS_PROFILE = $Profile
 $env:AWS_REGION = $Region
@@ -80,9 +84,15 @@ if ($ToolRuntimeProvider -eq "agentcore") {
   } else {
     Remove-Item Env:AGENTCORE_RUNTIME_QUALIFIER -ErrorAction SilentlyContinue
   }
+  if (-not [string]::IsNullOrWhiteSpace($AgentCoreSessionNamespace)) {
+    $env:AGENTCORE_SESSION_NAMESPACE = $AgentCoreSessionNamespace.Trim()
+  } else {
+    Remove-Item Env:AGENTCORE_SESSION_NAMESPACE -ErrorAction SilentlyContinue
+  }
 } else {
   Remove-Item Env:AGENTCORE_RUNTIME_ARN -ErrorAction SilentlyContinue
   Remove-Item Env:AGENTCORE_RUNTIME_QUALIFIER -ErrorAction SilentlyContinue
+  Remove-Item Env:AGENTCORE_SESSION_NAMESPACE -ErrorAction SilentlyContinue
 }
 
 Write-Host "Deploying Option B tool runtime stacks"
@@ -98,6 +108,9 @@ if ($ToolRuntimeProvider -eq "agentcore") {
   Write-Host "  AGENTCORE_RUNTIME_ARN : $env:AGENTCORE_RUNTIME_ARN"
   if ($env:AGENTCORE_RUNTIME_QUALIFIER) {
     Write-Host "  AGENTCORE_QUALIFIER   : $env:AGENTCORE_RUNTIME_QUALIFIER"
+  }
+  if ($env:AGENTCORE_SESSION_NAMESPACE) {
+    Write-Host "  AGENTCORE_SESSION_NS  : $env:AGENTCORE_SESSION_NAMESPACE"
   }
 }
 Write-Host ""

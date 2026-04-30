@@ -268,6 +268,9 @@ function buildRouteLogPayload(
     hasPublicIp: Boolean(taskState?.publicIp),
     pendingQueued,
     sessionId: deps.sessionId ?? `session-${deps.userId}`,
+    ...(process.env.AGENTCORE_SESSION_NAMESPACE
+      ? { agentCoreSessionNamespace: process.env.AGENTCORE_SESSION_NAMESPACE }
+      : {}),
     messageLength: deps.message.length,
     ...(classifierSignals ? { classifierSignals } : {}),
   };

@@ -9,6 +9,7 @@ const ORIGINAL_ENV = {
   AWS_SECRET_ACCESS_KEY: process.env.AWS_SECRET_ACCESS_KEY,
   AWS_SESSION_TOKEN: process.env.AWS_SESSION_TOKEN,
   AWS_REGION: process.env.AWS_REGION,
+  AGENTCORE_SESSION_NAMESPACE: process.env.AGENTCORE_SESSION_NAMESPACE,
 };
 
 describe("agentcore service", () => {
@@ -52,6 +53,22 @@ describe("agentcore service", () => {
     });
 
     expect(web).not.toBe(telegram);
+  });
+
+  it("separates sessions by deployment namespace", () => {
+    const stable = buildAgentCoreRuntimeSessionId({
+      userId: "user-123",
+      channel: "telegram",
+      sessionId: "session-user-123",
+    });
+    const deployed = buildAgentCoreRuntimeSessionId({
+      userId: "user-123",
+      channel: "telegram",
+      sessionId: "session-user-123",
+      namespace: "agentcore-marker-005fd48",
+    });
+
+    expect(stable).not.toBe(deployed);
   });
 
   it("signs invoke requests with the same required headers as the official AgentCore CLI", async () => {

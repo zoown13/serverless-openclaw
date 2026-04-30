@@ -66,6 +66,8 @@ function logBridgeEvent(
   const entry = JSON.stringify({
     component: "bridge",
     event,
+    runtimeImageTag: process.env.IMAGE_TAG ?? "unknown",
+    responseFormatVersion: process.env.RESPONSE_FORMAT_VERSION ?? "unknown",
     ...payload,
   });
 

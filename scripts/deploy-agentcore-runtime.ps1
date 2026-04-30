@@ -6,7 +6,8 @@
   [string]$UserId = "system:agentcore",
   [string]$AiProvider = "bedrock",
   [string]$AiModel = "global.anthropic.claude-haiku-4-5-20251001-v1:0",
-  [string]$ToolSlmBackend = "mock-local"
+  [string]$ToolSlmBackend = "mock-local",
+  [string]$ResponseFormatVersion = "ko-payment-v1"
 )
 
 $ErrorActionPreference = "Stop"
@@ -304,6 +305,8 @@ $environmentVariables = @{
   AI_PROVIDER = $AiProvider
   AI_MODEL = $AiModel
   TOOL_SLM_BACKEND = $ToolSlmBackend
+  IMAGE_TAG = $ImageTag
+  RESPONSE_FORMAT_VERSION = $ResponseFormatVersion
   TOOL_CONTEXT_STORE = "ddb"
   AWS_REGION = $Region
   SSM_BRIDGE_AUTH_TOKEN = "/serverless-openclaw/secrets/bridge-auth-token"

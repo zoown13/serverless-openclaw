@@ -2259,13 +2259,32 @@ async function handoffActiveTaskContextToChat(
   };
 }
 
+function rebuildPaymentRecordsFromContext(
+  context: ToolTaskContext,
+  message: string,
+): ParsedPaymentRecord[] {
+  if (context.parsedPaymentRecords && context.parsedPaymentRecords.length > 0) {
+    return context.parsedPaymentRecords;
+  }
+
+  const topicKeywords =
+    context.topicKeywords && context.topicKeywords.length > 0
+      ? context.topicKeywords
+      : extractTopicKeywords(`${context.canonicalGoal}\n${message}`);
+
+  return (context.lastMessages ?? [])
+    .map((summary) => buildPaymentRecord(summary, topicKeywords))
+    .filter((record): record is ParsedPaymentRecord => Boolean(record));
+}
+
 async function handleActiveTaskContext(
   contextKey: string,
   context: ToolTaskContext,
   options: MaybeHandleCustomGmailRequestOptions,
-  followUpIntent?: ToolFollowUpIntent,
+  plannerHint?: ToolIntentDecision,
 ): Promise<ToolHandlerResult | undefined> {
   const trimmed = normalizeWhitespace(options.message);
+  const followUpIntent = plannerHint?.followUpIntent;
   if (followUpIntent === "cancel_task" || CANCEL_PATTERN.test(trimmed)) {
     await clearTaskContext(contextKey);
     emitToolEvent(options.onToolEvent, {
@@ -2285,14 +2304,20 @@ async function handleActiveTaskContext(
   }
 
   let effectiveContext = context;
+  const plannerWantsPaymentSummary =
+    (plannerHint?.action === "continue_active_task" || plannerHint?.action === "gmail") &&
+    plannerHint.taskFamily === "gmail_payment_summary" &&
+    (plannerHint.sourceChoice === "gmail" || plannerHint.sourceChoice === null);
   if (
     context.taskFamily === "gmail_search" &&
     context.sourceChoice === "gmail" &&
-    shouldPreferPaymentSummaryTask(trimmed, context)
+    (plannerWantsPaymentSummary || shouldPreferPaymentSummaryTask(trimmed, context))
   ) {
+    const rebuiltPaymentRecords = rebuildPaymentRecordsFromContext(context, trimmed);
     effectiveContext = {
       ...context,
       taskFamily: "gmail_payment_summary",
+      parsedPaymentRecords: rebuiltPaymentRecords,
       lastActivityAt: nowIso(),
       expiresAt: futureIso(DEFAULT_CONTEXT_TTL_MS),
     };
@@ -2416,7 +2441,7 @@ export async function maybeHandleCustomGmailRequest(
       contextKey,
       refreshedContext,
       options,
-      advisorDecision?.followUpIntent,
+      advisorDecision ?? undefined,
     );
     if (handled) {
       return handled;
@@ -2473,7 +2498,7 @@ export async function maybeHandleCustomGmailRequest(
       contextKey,
       refreshedContext,
       options,
-      advisorDecision?.followUpIntent,
+      advisorDecision ?? undefined,
     );
     if (handled) {
       return handled;

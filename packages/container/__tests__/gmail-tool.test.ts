@@ -439,6 +439,67 @@ describe("gmail-tool", () => {
     expect(followUp?.message).toContain("- 현대카드: KRW 45,000 (1건)");
   });
 
+  it("promotes active gmail_search to payment summary when the advisor chooses a payment task", async () => {
+    decideToolIntentMock
+      .mockResolvedValueOnce({
+        action: "gmail",
+        taskFamily: "gmail_search",
+        sourceChoice: "gmail",
+        confidence: 0.95,
+      })
+      .mockResolvedValueOnce({
+        action: "continue_active_task",
+        taskFamily: "gmail_payment_summary",
+        sourceChoice: "gmail",
+        followUpIntent: "issuer_breakdown",
+        confidence: 0.92,
+      });
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m1" }, { id: "m2" }] } }))
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "스타벅스 카드 알림",
+          "Card Co <billing@example.com>",
+          "Fri, 03 Apr 2026 09:00:00 +0000",
+          "결제금액 12,300원 카드종류 삼성카드 가맹점명 스타벅스",
+        ),
+      )
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "쿠팡 카드 알림",
+          "Card Co <billing@example.com>",
+          "Thu, 02 Apr 2026 09:00:00 +0000",
+          "결제금액 45,000원 카드종류 현대카드 가맹점명 쿠팡",
+        ),
+      );
+
+    await maybeHandleCustomGmailRequest({
+      userId: "user-planner-promote",
+      sessionKey: "session-planner-promote",
+      message: "지메일에서 스타벅스랑 쿠팡 메일 찾아줘",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    fetchMock.mockReset();
+
+    const followUp = await maybeHandleCustomGmailRequest({
+      userId: "user-planner-promote",
+      sessionKey: "session-planner-promote",
+      message: "그걸 카드사별로 정리해줘",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(followUp?.kind).toBe("direct");
+    expect(followUp?.message).toContain("card-issuer breakdown");
+    expect(followUp?.message).toContain("- 삼성카드: KRW 12,300 (1건)");
+    expect(followUp?.message).toContain("- 현대카드: KRW 45,000 (1건)");
+  });
+
   it("uses followUpIntent to route short active-context replies into the specialized payment handler", async () => {
     decideToolIntentMock
       .mockResolvedValueOnce({

@@ -227,6 +227,16 @@ function parseAgentCoreResponse(text: string): Omit<AgentCoreRuntimeResult, "acc
       return { content: parseAgentCoreResponseText(trimmed) };
     }
 
+    for (const key of ["content", "message", "text", "output", "response", "payload"]) {
+      const nested = (parsed as Record<string, unknown>)[key];
+      if (typeof nested === "string" && nested.trim().startsWith("{")) {
+        const nestedResponse = parseAgentCoreResponse(nested);
+        if (nestedResponse.handoffRuntimeClass) {
+          return nestedResponse;
+        }
+      }
+    }
+
     const content = extractTextFromAgentCoreResponse(parsed);
     return {
       ...(content ? { content } : {}),

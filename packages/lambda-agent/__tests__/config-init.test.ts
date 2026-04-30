@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -87,6 +87,33 @@ describe("config-init", () => {
       } else {
         delete process.env.ANTHROPIC_API_KEY;
       }
+    }
+  });
+
+  it("should ignore auth profiles secret on bedrock runtime", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    try {
+      await initConfig({
+        runtimeConfig: resolveProviderConfig({ AI_PROVIDER: "bedrock" }),
+        openclawAuthProfilesJson: "{not-json",
+      });
+
+      expect(warn).not.toHaveBeenCalled();
+      expect(
+        fs.existsSync(
+          path.join(
+            tmpDir,
+            ".openclaw",
+            "agents",
+            "default",
+            "agent",
+            "auth-profiles.json",
+          ),
+        ),
+      ).toBe(false);
+    } finally {
+      warn.mockRestore();
     }
   });
 

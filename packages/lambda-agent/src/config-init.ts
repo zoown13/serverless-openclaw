@@ -107,8 +107,10 @@ export async function initConfig(
 
   // Optional: hydrate OpenClaw auth stores from SSM-provided JSON blobs.
   // This stabilizes OAuth/API-key auth across Lambda cold starts.
+  // Bedrock authenticates via the Lambda IAM role, so its reserved auth-profile
+  // secret may legitimately be empty or a deployment placeholder.
   let wroteAuthProfiles = false;
-  if (options?.openclawAuthProfilesJson) {
+  if (!isBedrock && options?.openclawAuthProfilesJson) {
     const authProfiles = parseOptionalJson<unknown>(
       options.openclawAuthProfilesJson,
       "openclaw auth-profiles",

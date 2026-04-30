@@ -341,6 +341,7 @@ describe("CDK Stacks E2E — synth all stacks", () => {
       const fn = Object.values(functions)[0] as Record<string, unknown>;
       const env = ((fn.Properties as Record<string, unknown>).Environment as Record<string, unknown>).Variables as Record<string, unknown>;
       expect(env.HOME).toBe("/tmp");
+      expect(env.NODE_OPTIONS).toBe("--no-deprecation");
       expect(env.SSM_ANTHROPIC_API_KEY).toBe("/serverless-openclaw/secrets/anthropic-api-key");
       expect(env.SESSION_BUCKET).toBeDefined();
     });

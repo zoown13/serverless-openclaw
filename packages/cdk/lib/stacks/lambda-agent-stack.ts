@@ -49,6 +49,7 @@ export class LambdaAgentStack extends cdk.Stack {
       logGroup,
       environment: {
         HOME: "/tmp",
+        NODE_OPTIONS: "--no-deprecation",
         SSM_ANTHROPIC_API_KEY: SSM_SECRETS.ANTHROPIC_API_KEY,
         SSM_TELEGRAM_BOT_TOKEN: SSM_SECRETS.TELEGRAM_BOT_TOKEN,
         SSM_OPENCLAW_AUTH_PROFILES_JSON:

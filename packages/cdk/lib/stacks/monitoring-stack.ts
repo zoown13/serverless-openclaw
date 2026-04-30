@@ -21,6 +21,11 @@ const KEY_LAMBDA_FUNCTIONS = [
   "serverless-openclaw-telegram-webhook",
 ];
 
+const GATEWAY_RUNTIME_LOG_GROUPS = [
+  "/aws/lambda/serverless-openclaw-ws-message",
+  "/aws/lambda/serverless-openclaw-telegram-webhook",
+];
+
 /** Custom metric with Channel dimension — one per channel for correct CloudWatch lookup */
 function channelMetrics(
   metricName: string,
@@ -284,6 +289,68 @@ export class MonitoringStack extends cdk.Stack {
         width: 6,
         height: 4,
         leftYAxis: { label: "count" },
+      }),
+    );
+
+    dashboard.addWidgets(
+      sectionHeader(
+        "AgentCore Harness & Handoff",
+        "AgentCore-first tool runtime control plane, chat-only handoff, and Fargate fallback lock diagnostics from gateway logs.",
+      ),
+    );
+
+    dashboard.addWidgets(
+      new cloudwatch.LogQueryWidget({
+        title: "AgentCore invoke / handoff / fallback events",
+        logGroupNames: GATEWAY_RUNTIME_LOG_GROUPS,
+        queryLines: [
+          "fields @timestamp, @message",
+          'filter @message like /"event":"agentcore.invoke/',
+          'parse @message /"event":"(?<event>[^"]+)"/',
+          'parse @message /"traceId":"(?<traceId>[^"]+)"/',
+          'parse @message /"channel":"(?<channel>[^"]+)"/',
+          'parse @message /"toolRuntimeProvider":"(?<provider>[^"]+)"/',
+          'parse @message /"handoffRuntimeClass":"(?<handoffRuntimeClass>[^"]+)"/',
+          "display @timestamp, event, channel, provider, handoffRuntimeClass, traceId",
+          "sort @timestamp desc",
+          "limit 50",
+        ],
+        width: 12,
+        height: 6,
+      }),
+      new cloudwatch.LogQueryWidget({
+        title: "Tool affinity clear / provider lock events",
+        logGroupNames: GATEWAY_RUNTIME_LOG_GROUPS,
+        queryLines: [
+          "fields @timestamp, @message",
+          'filter @message like /"event":"route.affinity./ or @message like /"event":"gateway.harness.session./',
+          'parse @message /"event":"(?<event>[^"]+)"/',
+          'parse @message /"traceId":"(?<traceId>[^"]+)"/',
+          'parse @message /"channel":"(?<channel>[^"]+)"/',
+          'parse @message /"reason":"(?<reason>[^"]+)"/',
+          'parse @message /"provider":"(?<provider>[^"]+)"/',
+          "display @timestamp, event, channel, provider, reason, traceId",
+          "sort @timestamp desc",
+          "limit 50",
+        ],
+        width: 12,
+        height: 6,
+      }),
+    );
+
+    dashboard.addWidgets(
+      new cloudwatch.LogQueryWidget({
+        title: "AgentCore handoff / fallback counts",
+        logGroupNames: GATEWAY_RUNTIME_LOG_GROUPS,
+        queryLines: [
+          "fields @timestamp, @message",
+          'filter @message like /"event":"agentcore.invoke.handoff"/ or @message like /"event":"agentcore.invoke.fallback"/',
+          'parse @message /"event":"(?<event>[^"]+)"/',
+          "stats count(*) by bin(5m), event",
+          "sort bin(5m) desc",
+        ],
+        width: 12,
+        height: 6,
       }),
     );
 

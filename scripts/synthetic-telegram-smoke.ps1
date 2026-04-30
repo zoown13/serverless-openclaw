@@ -7,7 +7,7 @@ param(
   [long]$ChatId,
   [long]$TelegramId,
   [string]$UserId,
-  [ValidateSet("PaymentFollowUp", "TravelPaymentFollowUp")]
+  [ValidateSet("PaymentFollowUp", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff")]
   [string]$Scenario = "PaymentFollowUp",
   [int]$PauseSeconds = 10,
   [int]$BridgeSignalTimeoutSeconds = 180,
@@ -195,6 +195,14 @@ function Get-ScenarioMessages {
         "카드사별로 보여줘"
       )
     }
+    "TravelPaymentThenChatHandoff" {
+      return @(
+        "일본 여행가는데 결제한 내역들 알려줘",
+        "일본관련된 것만 가져와야지",
+        "카드사별로 보여줘",
+        "리눅스에서 파일 찾는 명령어 알려줘"
+      )
+    }
     default {
       throw "Unsupported scenario: $SelectedScenario"
     }
@@ -313,6 +321,14 @@ function Show-RecentLogs {
     --region $SelectedRegion
 
   Write-Host ""
+  Write-Host "Recent Lambda Agent logs:"
+  aws logs tail /aws/lambda/serverless-openclaw-agent `
+    --since 5m `
+    --format short `
+    --profile $SelectedProfile `
+    --region $SelectedRegion
+
+  Write-Host ""
   Write-Host "Recent ECS logs:"
   aws logs tail /ecs/serverless-openclaw `
     --since 5m `
@@ -391,10 +407,33 @@ function Wait-BridgeSignals {
     }
   )
 
-  if ($SelectedScenario -eq "TravelPaymentFollowUp") {
+  $requiresTravelSignals = $SelectedScenario -in @("TravelPaymentFollowUp", "TravelPaymentThenChatHandoff")
+  $requiresChatHandoff = $SelectedScenario -eq "TravelPaymentThenChatHandoff"
+
+  if ($requiresTravelSignals) {
     $requiredSignals += @(
       "bridge.tool.payment.refine.completed",
       '"followUpIntent":"issuer_breakdown"'
+    )
+  }
+
+  if ($requiresChatHandoff) {
+    $requiredSignals += @(
+      "bridge.tool.handoff.chat_only"
+    )
+  }
+
+  $requiredGatewaySignals = @()
+  $requiredLambdaSignals = @()
+
+  if ($requiresChatHandoff) {
+    $requiredGatewaySignals = @(
+      "agentcore.invoke.handoff",
+      "route.affinity.cleared",
+      "route.lambda.invoked"
+    )
+    $requiredLambdaSignals = @(
+      "lambda.delivery.telegram.success"
     )
   }
 
@@ -412,10 +451,23 @@ function Wait-BridgeSignals {
     -SelectedProfile $SelectedProfile `
     -SelectedRegion $SelectedRegion
   $bridgeLogGroups = @($bridgeLogGroups | Where-Object { $_ } | Select-Object -Unique)
+  $gatewayLogGroups = @()
+  $lambdaLogGroups = @()
+
+  if ($requiresChatHandoff) {
+    $gatewayLogGroups = @("/aws/lambda/serverless-openclaw-telegram-webhook")
+    $lambdaLogGroups = @("/aws/lambda/serverless-openclaw-agent")
+  }
 
   Write-Host ""
   Write-Host "Waiting for Bridge processing signals in:"
   $bridgeLogGroups | ForEach-Object { Write-Host "  - $_" }
+  if ($requiresChatHandoff) {
+    Write-Host "Waiting for Gateway handoff signals in:"
+    $gatewayLogGroups | ForEach-Object { Write-Host "  - $_" }
+    Write-Host "Waiting for Lambda chat delivery signals in:"
+    $lambdaLogGroups | ForEach-Object { Write-Host "  - $_" }
+  }
 
   while ([DateTimeOffset]::UtcNow -lt $deadline) {
     $text = Read-BridgeSignalMessages `
@@ -424,12 +476,41 @@ function Wait-BridgeSignals {
       -StartTimeMs $StartTimeMs `
       -LogGroups $bridgeLogGroups
 
-    $forbiddenHit = $forbiddenSignals | Where-Object { $text.Contains($_) } | Select-Object -First 1
+    $gatewayText = ""
+    $lambdaText = ""
+
+    if ($requiresChatHandoff) {
+      $gatewayText = Read-BridgeSignalMessages `
+        -SelectedProfile $SelectedProfile `
+        -SelectedRegion $SelectedRegion `
+        -StartTimeMs $StartTimeMs `
+        -LogGroups $gatewayLogGroups
+      $lambdaText = Read-BridgeSignalMessages `
+        -SelectedProfile $SelectedProfile `
+        -SelectedRegion $SelectedRegion `
+        -StartTimeMs $StartTimeMs `
+        -LogGroups $lambdaLogGroups
+    }
+
+    $combinedText = [string]::Join("`n", @($text, $gatewayText, $lambdaText))
+    $forbiddenHit = $forbiddenSignals | Where-Object { $combinedText.Contains($_) } | Select-Object -First 1
     if ($forbiddenHit) {
       throw "Bridge signal check failed: found forbidden signal '$forbiddenHit'."
     }
 
     $missingSignals = @($requiredSignals | Where-Object { -not $text.Contains($_) })
+    if ($requiresChatHandoff) {
+      $missingSignals += @(
+        $requiredGatewaySignals |
+          Where-Object { -not $gatewayText.Contains($_) } |
+          ForEach-Object { "gateway:$_" }
+      )
+      $missingSignals += @(
+        $requiredLambdaSignals |
+          Where-Object { -not $lambdaText.Contains($_) } |
+          ForEach-Object { "lambda:$_" }
+      )
+    }
     $missingGroups = @()
 
     foreach ($requiredGroup in $requiredSignalGroups) {

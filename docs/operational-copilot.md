@@ -183,6 +183,8 @@ powershell -File .\scripts\repair-operational-copilot.ps1 `
   -Action stop-fargate-tasks
 ```
 
+By default, `stop-fargate-tasks` stops only owned tasks older than `-StaleTaskAgeHours`. To include fresh owned tasks, explicitly add `-IncludeFreshFargateTasks`.
+
 The next version should add more repair actions behind the same explicit `-Apply` guard:
 
 - true pending message redrive instead of cleanup-only repair

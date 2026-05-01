@@ -10,6 +10,7 @@ param(
   [string]$Action = "inspect",
   [string]$ClusterName = "serverless-openclaw",
   [int]$StaleTaskAgeHours = 6,
+  [switch]$IncludeFreshFargateTasks,
   [ValidateSet("PaymentFollowUp", "PaymentCoverageFollowUp", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff")]
   [string]$SmokeScenario = "TravelPaymentThenChatHandoff",
   [int]$SmokePauseSeconds = 10,
@@ -533,7 +534,8 @@ function Show-FargateTasks {
   param(
     $Tasks,
     [string]$SelectedUserId,
-    [int]$SelectedStaleTaskAgeHours = 6
+    [int]$SelectedStaleTaskAgeHours = 6,
+    [switch]$SelectFreshTasks
   )
 
   $visibleTasks = @($Tasks | Where-Object { $null -ne $_ })
@@ -548,6 +550,7 @@ function Show-FargateTasks {
     $owned = (Get-OptionalProperty -Object $task -Name "UserId") -eq $SelectedUserId
     $ageHours = Get-OptionalProperty -Object $task -Name "AgeHours"
     $isStale = $owned -and $ageHours -and $ageHours -ge $SelectedStaleTaskAgeHours
+    $selectedForStop = $owned -and ($isStale -or $SelectFreshTasks)
     if ($isStale) {
       $staleOwnedCount += 1
     }
@@ -560,6 +563,7 @@ function Show-FargateTasks {
     Write-Host "    ageHours : $(if ($null -ne $ageHours) { $ageHours } else { 'unknown' })"
     Write-Host "    stale    : $isStale"
     Write-Host "    selected : $owned"
+    Write-Host "    stopPlan : $selectedForStop"
   }
 
   if ($staleOwnedCount -gt 0) {
@@ -575,7 +579,9 @@ function Stop-OwnedFargateTasks {
     [Parameter(Mandatory = $true)][string]$SelectedProfile,
     [Parameter(Mandatory = $true)][string]$SelectedRegion,
     [Parameter(Mandatory = $true)][string]$SelectedClusterName,
-    [Parameter(Mandatory = $true)][string]$SelectedUserId
+    [Parameter(Mandatory = $true)][string]$SelectedUserId,
+    [Parameter(Mandatory = $true)][int]$SelectedStaleTaskAgeHours,
+    [switch]$StopFreshTasks
   )
 
   $tasks = Read-FargateTasks `
@@ -583,7 +589,12 @@ function Stop-OwnedFargateTasks {
     -SelectedRegion $SelectedRegion `
     -SelectedClusterName $SelectedClusterName
 
-  $selectedTasks = @($tasks | Where-Object { $_.UserId -eq $SelectedUserId })
+  $selectedTasks = @($tasks | Where-Object {
+    $owned = $_.UserId -eq $SelectedUserId
+    $ageHours = Get-OptionalProperty -Object $_ -Name "AgeHours"
+    $stale = $owned -and $ageHours -and $ageHours -ge $SelectedStaleTaskAgeHours
+    $owned -and ($stale -or $StopFreshTasks)
+  })
   foreach ($task in $selectedTasks) {
     Invoke-AwsNoJson `
       -Arguments @(
@@ -676,7 +687,8 @@ if ($Action -eq "inspect" -or $Action -eq "inspect-pending-messages" -or $Action
     Show-FargateTasks `
       -Tasks $fargateTasks `
       -SelectedUserId $UserId `
-      -SelectedStaleTaskAgeHours $StaleTaskAgeHours
+      -SelectedStaleTaskAgeHours $StaleTaskAgeHours `
+      -SelectFreshTasks:$IncludeFreshFargateTasks
   }
 
   Write-Host "No repair action selected. This was a read-only inspection."
@@ -715,11 +727,14 @@ if (-not $Apply) {
       -SelectedProfile $Profile `
       -SelectedRegion $Region `
       -SelectedClusterName $ClusterName
-    Write-Host "  - Stop running Fargate tasks owned by USER#$UserId only"
+    Write-Host "  - Stop running stale Fargate tasks owned by USER#$UserId only"
+    Write-Host "    stale threshold       : ${StaleTaskAgeHours}h"
+    Write-Host "    include fresh tasks   : $IncludeFreshFargateTasks"
     Show-FargateTasks `
       -Tasks $fargateTasks `
       -SelectedUserId $UserId `
-      -SelectedStaleTaskAgeHours $StaleTaskAgeHours
+      -SelectedStaleTaskAgeHours $StaleTaskAgeHours `
+      -SelectFreshTasks:$IncludeFreshFargateTasks
   }
   if ($RunSmokeAfterRepair) {
     Write-Host "  - Run synthetic Telegram smoke after repair: $SmokeScenario"
@@ -773,7 +788,9 @@ if ($Action -eq "stop-fargate-tasks") {
     -SelectedProfile $Profile `
     -SelectedRegion $Region `
     -SelectedClusterName $ClusterName `
-    -SelectedUserId $UserId
+    -SelectedUserId $UserId `
+    -SelectedStaleTaskAgeHours $StaleTaskAgeHours `
+    -StopFreshTasks:$IncludeFreshFargateTasks
   Write-Host "Stopped owned Fargate tasks: $stoppedCount"
 }
 

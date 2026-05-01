@@ -8,7 +8,7 @@ The percentages are not feature-count completion. They represent operational rea
 
 ## Current snapshot
 
-Overall readiness: **64%**
+Overall readiness: **65%**
 
 Updated: **2026-05-01**
 
@@ -19,7 +19,7 @@ Updated: **2026-05-01**
 | Gmail/payment assistant behavior | 14% | 75% | Travel payment refinement, issuer breakdown, and context reuse pass the main Telegram smoke scenario. |
 | Planner/advisor quality | 14% | 65% | Remote planner handles the core task flow and chat handoff; broader eval coverage is still needed. |
 | Operational Copilot | 12% | 45% | Diagnostics can summarize the latest trace, DynamoDB state, likely failing layer, Fargate task state, and link to guarded repair actions. |
-| Self-healing runbook | 12% | 45% | Dry-run-first repair script can inspect state, inspect/clear pending messages, reset fallback locks, stop owned Fargate tasks, clear stale affinity/task state, and optionally run post-repair smoke. |
+| Self-healing runbook | 12% | 50% | Dry-run-first repair script can inspect state, inspect/clear pending messages, reset fallback locks, stop stale owned Fargate tasks by default, clear stale affinity/task state, and optionally run post-repair smoke. |
 | Cost guardrails | 8% | 50% | Cost-aware architecture constraints remain in place, and the repair runbook now flags stale owned Fargate tasks by age. Active AgentCore cost tracking is still shallow. |
 | Regression/smoke automation | 8% | 58% | Synthetic Telegram smoke exists and can be launched from the repair runbook after an applied repair. |
 | Documentation / portfolio narrative | 6% | 55% | DevOps story exists; AgentCore and Operational Copilot updates need to be reflected consistently. |
@@ -28,7 +28,7 @@ Weighted readiness calculation:
 
 ```text
 0.12*85 + 0.14*70 + 0.14*75 + 0.14*65 + 0.12*45
-+ 0.12*45 + 0.08*50 + 0.08*58 + 0.06*55 = 63.3%
++ 0.12*50 + 0.08*50 + 0.08*58 + 0.06*55 = 63.9%
 ```
 
 ## Reporting format
@@ -63,3 +63,4 @@ If the work is exploratory or does not materially improve readiness, keep the pe
 | 2026-05-01 | 59% | Added pending message inspection/cleanup and optional post-repair synthetic smoke to the repair runbook. |
 | 2026-05-01 | 62% | Added fallback lock reset and owned Fargate task inspection/stop actions to the guarded repair runbook. |
 | 2026-05-01 | 64% | Added age-based stale Fargate task cost guardrail warnings to the repair runbook. |
+| 2026-05-01 | 65% | Made Fargate stop repair safer by stopping stale owned tasks by default and requiring `-IncludeFreshFargateTasks` for fresh tasks. |

@@ -123,13 +123,32 @@ powershell -File .\scripts\repair-operational-copilot.ps1 `
 Supported v1 repair actions:
 
 - `inspect`: read-only state inspection
+- `inspect-pending-messages`: read-only pending queue inspection
 - `clear-active-tool-affinity`: clears `SETTING#active-tool:{channel}` for the user
 - `clear-task-state`: clears the user's `TaskState` item
 - `clear-runtime-state`: clears both active tool affinity and task state
+- `clear-pending-messages`: clears pending messages for the user after explicit `-Apply`
+
+Preview pending queue cleanup:
+
+```powershell
+powershell -File .\scripts\repair-operational-copilot.ps1 `
+  -TelegramId 8585874705 `
+  -Action clear-pending-messages
+```
+
+Run a smoke check after an applied repair:
+
+```powershell
+powershell -File .\scripts\repair-operational-copilot.ps1 `
+  -TelegramId 8585874705 `
+  -Action clear-active-tool-affinity `
+  -Apply `
+  -RunSmokeAfterRepair
+```
 
 The next version should add more repair actions behind the same explicit `-Apply` guard:
 
-- inspect and redrive pending messages
 - reset fallback provider lock
 - stop a stuck Fargate task
-- run a targeted synthetic smoke after repair
+- true pending message redrive instead of cleanup-only repair

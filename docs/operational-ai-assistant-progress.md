@@ -8,7 +8,7 @@ The percentages are not feature-count completion. They represent operational rea
 
 ## Current snapshot
 
-Overall readiness: **57%**
+Overall readiness: **59%**
 
 Updated: **2026-05-01**
 
@@ -18,17 +18,17 @@ Updated: **2026-05-01**
 | AgentCore tool runtime | 14% | 70% | AgentCore Runtime is the primary tool control-plane; Fargate remains the fallback path. |
 | Gmail/payment assistant behavior | 14% | 75% | Travel payment refinement, issuer breakdown, and context reuse pass the main Telegram smoke scenario. |
 | Planner/advisor quality | 14% | 65% | Remote planner handles the core task flow and chat handoff; broader eval coverage is still needed. |
-| Operational Copilot | 12% | 40% | Diagnostics can summarize the latest trace, DynamoDB state, likely failing layer, and link to guarded repair actions. |
-| Self-healing runbook | 12% | 20% | Dry-run-first repair script can inspect state and clear stale affinity/task state only with explicit `-Apply`. |
+| Operational Copilot | 12% | 42% | Diagnostics can summarize the latest trace, DynamoDB state, likely failing layer, and link to guarded repair actions. |
+| Self-healing runbook | 12% | 30% | Dry-run-first repair script can inspect state, inspect/clear pending messages, clear stale affinity/task state, and optionally run post-repair smoke. |
 | Cost guardrails | 8% | 30% | Cost-aware architecture constraints remain in place; active AgentCore cost tracking is still shallow. |
-| Regression/smoke automation | 8% | 55% | Synthetic Telegram smoke exists; quality eval and operational diagnosis should be connected next. |
+| Regression/smoke automation | 8% | 58% | Synthetic Telegram smoke exists and can be launched from the repair runbook after an applied repair. |
 | Documentation / portfolio narrative | 6% | 55% | DevOps story exists; AgentCore and Operational Copilot updates need to be reflected consistently. |
 
 Weighted readiness calculation:
 
 ```text
-0.12*85 + 0.14*70 + 0.14*75 + 0.14*65 + 0.12*40
-+ 0.12*20 + 0.08*30 + 0.08*55 + 0.06*55 = 56.9%
+0.12*85 + 0.14*70 + 0.14*75 + 0.14*65 + 0.12*42
++ 0.12*30 + 0.08*30 + 0.08*58 + 0.06*55 = 59.3%
 ```
 
 ## Reporting format
@@ -60,3 +60,4 @@ If the work is exploratory or does not materially improve readiness, keep the pe
 | --- | ---: | --- |
 | 2026-05-01 | 55% | Established the progress model after AgentCore planner smoke passed and Operational Copilot v1 was added. |
 | 2026-05-01 | 57% | Added the dry-run-first repair runbook for inspecting state and clearing stale affinity/task state with explicit `-Apply`. |
+| 2026-05-01 | 59% | Added pending message inspection/cleanup and optional post-repair synthetic smoke to the repair runbook. |

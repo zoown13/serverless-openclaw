@@ -3,10 +3,15 @@ param(
   [string]$Region = $(if ($env:AWS_REGION) { $env:AWS_REGION } else { "ap-northeast-2" }),
   [string]$UserId,
   [long]$TelegramId,
+  [long]$ChatId,
   [ValidateSet("telegram", "web")]
   [string]$Channel = "telegram",
-  [ValidateSet("inspect", "clear-active-tool-affinity", "clear-task-state", "clear-runtime-state")]
+  [ValidateSet("inspect", "inspect-pending-messages", "clear-active-tool-affinity", "clear-task-state", "clear-runtime-state", "clear-pending-messages")]
   [string]$Action = "inspect",
+  [ValidateSet("PaymentFollowUp", "PaymentCoverageFollowUp", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff")]
+  [string]$SmokeScenario = "TravelPaymentThenChatHandoff",
+  [int]$SmokePauseSeconds = 10,
+  [switch]$RunSmokeAfterRepair,
   [switch]$Apply
 )
 
@@ -261,6 +266,81 @@ function Show-RuntimeState {
   Write-Host "  PendingMessages.count  : $(if ($null -ne $State.PendingCount) { $State.PendingCount } else { 'unknown' })"
 }
 
+function Read-PendingMessages {
+  param(
+    [Parameter(Mandatory = $true)][string]$SelectedProfile,
+    [Parameter(Mandatory = $true)][string]$SelectedRegion,
+    [Parameter(Mandatory = $true)][string]$SelectedUserId,
+    [int]$SelectedLimit = 25
+  )
+
+  $pendingValuesPath = New-TempJsonFile -Json "{`":pk`":{`"S`":`"USER#$SelectedUserId`"}}"
+
+  try {
+    $pending = Invoke-AwsJson `
+      -Arguments @(
+        "dynamodb", "query",
+        "--table-name", "serverless-openclaw-PendingMessages",
+        "--key-condition-expression", "PK = :pk",
+        "--expression-attribute-values", "file://$pendingValuesPath",
+        "--scan-index-forward", "false",
+        "--limit", "$SelectedLimit",
+        "--output", "json",
+        "--profile", $SelectedProfile,
+        "--region", $SelectedRegion
+      ) `
+      -AllowFailure
+
+    if (-not $pending) {
+      return @()
+    }
+
+    $items = Get-OptionalProperty -Object $pending -Name "Items"
+    if (-not $items) {
+      return @()
+    }
+
+    return @($items | ForEach-Object { ConvertFrom-DynamoItem -Item $_ })
+  } finally {
+    if (Test-Path -LiteralPath $pendingValuesPath) {
+      Remove-Item -LiteralPath $pendingValuesPath -Force
+    }
+  }
+}
+
+function Show-PendingMessages {
+  param($Messages)
+
+  $visibleMessages = @($Messages | Where-Object { $null -ne $_ })
+
+  if ($visibleMessages.Count -eq 0) {
+    Write-Host "Pending messages: none"
+    return
+  }
+
+  Write-Host "Pending messages:"
+  foreach ($message in $visibleMessages) {
+    $sk = Get-OptionalProperty -Object $message -Name "SK"
+    $ttl = Get-OptionalProperty -Object $message -Name "ttl"
+    $createdAt = Get-OptionalProperty -Object $message -Name "createdAt"
+    $traceId = Get-OptionalProperty -Object $message -Name "traceId"
+    $text = Get-OptionalProperty -Object $message -Name "message"
+    if (-not $text) {
+      $text = Get-OptionalProperty -Object $message -Name "text"
+    }
+
+    if ($text -and $text.Length -gt 80) {
+      $text = "$($text.Substring(0, 80))..."
+    }
+
+    Write-Host "  - SK       : $(if ($sk) { $sk } else { 'unknown' })"
+    Write-Host "    ttl      : $(if ($ttl) { $ttl } else { 'unknown' })"
+    Write-Host "    createdAt: $(if ($createdAt) { $createdAt } else { 'unknown' })"
+    Write-Host "    traceId  : $(if ($traceId) { $traceId } else { 'unknown' })"
+    Write-Host "    message  : $(if ($text) { $text } else { 'unavailable' })"
+  }
+}
+
 function Remove-ActiveToolAffinity {
   param(
     [Parameter(Mandatory = $true)][string]$SelectedProfile,
@@ -310,11 +390,79 @@ function Remove-TaskState {
   }
 }
 
+function Remove-PendingMessages {
+  param(
+    [Parameter(Mandatory = $true)][string]$SelectedProfile,
+    [Parameter(Mandatory = $true)][string]$SelectedRegion,
+    [Parameter(Mandatory = $true)][string]$SelectedUserId
+  )
+
+  $messages = Read-PendingMessages `
+    -SelectedProfile $SelectedProfile `
+    -SelectedRegion $SelectedRegion `
+    -SelectedUserId $SelectedUserId `
+    -SelectedLimit 100
+
+  foreach ($message in $messages) {
+    $sk = Get-OptionalProperty -Object $message -Name "SK"
+    if (-not $sk) {
+      continue
+    }
+
+    $keyPath = New-TempJsonFile -Json "{`"PK`":{`"S`":`"USER#$SelectedUserId`"},`"SK`":{`"S`":`"$sk`"}}"
+    try {
+      Invoke-AwsNoJson `
+        -Arguments @(
+          "dynamodb", "delete-item",
+          "--table-name", "serverless-openclaw-PendingMessages",
+          "--key", "file://$keyPath",
+          "--profile", $SelectedProfile,
+          "--region", $SelectedRegion
+        )
+    } finally {
+      if (Test-Path -LiteralPath $keyPath) {
+        Remove-Item -LiteralPath $keyPath -Force
+      }
+    }
+  }
+
+  return $messages.Count
+}
+
+function Invoke-PostRepairSmoke {
+  param(
+    [Parameter(Mandatory = $true)][long]$SelectedChatId,
+    [Parameter(Mandatory = $true)][long]$SelectedTelegramId,
+    [Parameter(Mandatory = $true)][string]$SelectedScenario,
+    [Parameter(Mandatory = $true)][int]$SelectedPauseSeconds
+  )
+
+  $scriptRoot = Split-Path -Parent $MyInvocation.ScriptName
+  $smokePath = Join-Path $scriptRoot "synthetic-telegram-smoke.ps1"
+  if (-not (Test-Path -LiteralPath $smokePath)) {
+    throw "Synthetic smoke script not found: $smokePath"
+  }
+
+  & powershell -File $smokePath `
+    -ChatId $SelectedChatId `
+    -TelegramId $SelectedTelegramId `
+    -Scenario $SelectedScenario `
+    -PauseSeconds $SelectedPauseSeconds
+
+  if ($LASTEXITCODE -ne 0) {
+    throw "Post-repair synthetic smoke failed."
+  }
+}
+
 if ($TelegramId -and -not $UserId) {
   $UserId = Resolve-LinkedTelegramUserId `
     -SelectedProfile $Profile `
     -SelectedRegion $Region `
     -SelectedTelegramId $TelegramId
+}
+
+if ($TelegramId -and -not $ChatId) {
+  $ChatId = $TelegramId
 }
 
 if (-not $UserId) {
@@ -327,6 +475,7 @@ Write-Host "  UserId  : $UserId"
 Write-Host "  Channel : $Channel"
 Write-Host "  Action  : $Action"
 Write-Host "  Apply   : $Apply"
+Write-Host "  Smoke   : $(if ($RunSmokeAfterRepair) { $SmokeScenario } else { 'disabled' })"
 Write-Host ""
 
 $beforeState = Read-RuntimeState `
@@ -339,7 +488,16 @@ Write-Host "Before:"
 Show-RuntimeState -State $beforeState
 Write-Host ""
 
-if ($Action -eq "inspect") {
+if ($Action -eq "inspect" -or $Action -eq "inspect-pending-messages") {
+  if ($Action -eq "inspect-pending-messages") {
+    $pendingMessages = Read-PendingMessages `
+      -SelectedProfile $Profile `
+      -SelectedRegion $Region `
+      -SelectedUserId $UserId `
+      -SelectedLimit 25
+    Show-PendingMessages -Messages $pendingMessages
+  }
+
   Write-Host "No repair action selected. This was a read-only inspection."
   exit 0
 }
@@ -353,6 +511,18 @@ if (-not $Apply) {
   }
   if ($Action -in @("clear-task-state", "clear-runtime-state")) {
     Write-Host "  - Delete TaskState item: USER#$UserId"
+  }
+  if ($Action -eq "clear-pending-messages") {
+    $pendingMessages = Read-PendingMessages `
+      -SelectedProfile $Profile `
+      -SelectedRegion $Region `
+      -SelectedUserId $UserId `
+      -SelectedLimit 25
+    Write-Host "  - Delete PendingMessages items for USER#$UserId"
+    Show-PendingMessages -Messages $pendingMessages
+  }
+  if ($RunSmokeAfterRepair) {
+    Write-Host "  - Run synthetic Telegram smoke after repair: $SmokeScenario"
   }
   exit 0
 }
@@ -372,6 +542,14 @@ if ($Action -in @("clear-task-state", "clear-runtime-state")) {
     -SelectedUserId $UserId
 }
 
+if ($Action -eq "clear-pending-messages") {
+  $deletedCount = Remove-PendingMessages `
+    -SelectedProfile $Profile `
+    -SelectedRegion $Region `
+    -SelectedUserId $UserId
+  Write-Host "Deleted pending messages: $deletedCount"
+}
+
 $afterState = Read-RuntimeState `
   -SelectedProfile $Profile `
   -SelectedRegion $Region `
@@ -382,3 +560,17 @@ Write-Host "After:"
 Show-RuntimeState -State $afterState
 Write-Host ""
 Write-Host "Repair action completed."
+
+if ($RunSmokeAfterRepair) {
+  if (-not $TelegramId -or -not $ChatId) {
+    throw "Post-repair smoke requires -TelegramId and -ChatId."
+  }
+
+  Write-Host ""
+  Write-Host "Running post-repair synthetic smoke..."
+  Invoke-PostRepairSmoke `
+    -SelectedChatId $ChatId `
+    -SelectedTelegramId $TelegramId `
+    -SelectedScenario $SmokeScenario `
+    -SelectedPauseSeconds $SmokePauseSeconds
+}

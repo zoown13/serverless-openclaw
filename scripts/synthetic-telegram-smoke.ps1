@@ -7,7 +7,7 @@ param(
   [long]$ChatId,
   [long]$TelegramId,
   [string]$UserId,
-  [ValidateSet("PaymentFollowUp", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff")]
+  [ValidateSet("PaymentFollowUp", "PaymentCoverageFollowUp", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff")]
   [string]$Scenario = "PaymentFollowUp",
   [int]$PauseSeconds = 10,
   [int]$BridgeSignalTimeoutSeconds = 180,
@@ -186,6 +186,14 @@ function Get-ScenarioMessages {
         "이번주 결제한 금액이 어느정도 되려나?",
         "지메일에서 확인해줘",
         "그거 표로 보여줘"
+      )
+    }
+    "PaymentCoverageFollowUp" {
+      return @(
+        "이번주 결제한 금액이 어느정도 되려나?",
+        "합계만",
+        "더 있을텐데",
+        "5개 밖에 없어?"
       )
     }
     "TravelPaymentFollowUp" {
@@ -407,8 +415,16 @@ function Wait-BridgeSignals {
     }
   )
 
+  $requiresPaymentCoverageSignals = $SelectedScenario -eq "PaymentCoverageFollowUp"
   $requiresTravelSignals = $SelectedScenario -in @("TravelPaymentFollowUp", "TravelPaymentThenChatHandoff")
   $requiresChatHandoff = $SelectedScenario -eq "TravelPaymentThenChatHandoff"
+
+  if ($requiresPaymentCoverageSignals) {
+    $requiredSignals += @(
+      '"followUpIntent":"amount_summary"',
+      '"followUpIntent":"coverage_check"'
+    )
+  }
 
   if ($requiresTravelSignals) {
     $requiredSignals += @(

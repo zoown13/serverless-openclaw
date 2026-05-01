@@ -113,6 +113,60 @@
       ]
     },
     {
+      "id": "followup_amount_and_coverage_reuse_payment_context",
+      "steps": [
+        {
+          "message": "이번주 결제한 금액이 어느정도 되려나?",
+          "listResults": [
+            ["m1", "m2"]
+          ],
+          "messages": [
+            {
+              "id": "m1",
+              "subject": "마이리얼트립(일반)의 결제 내역입니다.",
+              "from": "\"NHN KCP 발신전용\" <pgadmcust@kcp.co.kr>",
+              "date": "Sat, 04 Apr 2026 17:40:51 +0900",
+              "snippet": "결제금액 9215 원 카드종류 삼성카드 주문상품명 [eSIM/로컬] 일본 사이트"
+            },
+            {
+              "id": "m2",
+              "subject": "[네이버페이] 결제하신 내역을 안내해드립니다.",
+              "from": "\"네이버페이\" <naverpayadmin_noreply@navercorp.com>",
+              "date": "Mon, 13 Apr 2026 03:08:14 +0000",
+              "snippet": "병천순대전문점 총 결제 금액 35000원 결제수단 카드 간편결제"
+            }
+          ],
+          "expectIncludes": [
+            "KRW 44,215"
+          ]
+        },
+        {
+          "message": "합계만",
+          "expectNoAdditionalFetch": true,
+          "expectIncludes": [
+            "확인 가능한 합계는 KRW 44,215",
+            "대상 결제성 메일은 2건"
+          ]
+        },
+        {
+          "message": "더 있을텐데",
+          "expectNoAdditionalFetch": true,
+          "expectIncludes": [
+            "현재 헤더/스니펫 확인 범위에서는 2건",
+            "결제성 메일 2건"
+          ]
+        },
+        {
+          "message": "5개 밖에 없어?",
+          "expectNoAdditionalFetch": true,
+          "expectIncludes": [
+            "현재 헤더/스니펫 확인 범위에서는 2건",
+            "더 넓게 보려면"
+          ]
+        }
+      ]
+    },
+    {
       "id": "followup_card_issuer_breakdown_stays_in_context",
       "steps": [
         {

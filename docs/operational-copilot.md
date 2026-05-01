@@ -43,6 +43,14 @@ powershell -File .\scripts\diagnose-operational-copilot.ps1 `
   -SinceMinutes 30
 ```
 
+Run the read-only health check that combines latest trace diagnosis, pending queue inspection, and Fargate cost guardrail inspection:
+
+```powershell
+powershell -File .\scripts\check-operational-health.ps1 `
+  -TelegramId 8585874705 `
+  -SinceMinutes 120
+```
+
 By default, when a user or Telegram id is provided without an explicit trace id, the script focuses the output on the latest correlated trace. Use `-AllEvents` to inspect the full time window.
 
 Diagnose a specific trace:

@@ -60,6 +60,15 @@ describe("slm/classifier", () => {
         confidence: 0.7,
       }),
     ).toBe("fallback");
+
+    expect(
+      evaluateSlmDecisionPolicy({
+        action: "switch_to_chat",
+        taskFamily: "generic_tool_task",
+        sourceChoice: "general",
+        confidence: 0.7,
+      }),
+    ).toBe("accept");
   });
 
   it("rejects very low-confidence SLM decisions", () => {

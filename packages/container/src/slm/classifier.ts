@@ -7,6 +7,7 @@ import type { SlmBackendKind, SlmClassificationInput, SlmClassifier, SlmTaskDeci
 const MAX_CLASSIFIER_CHARS = 600;
 export const SLM_ACCEPT_CONFIDENCE = 0.8;
 export const SLM_FALLBACK_CONFIDENCE = 0.55;
+export const SLM_SAFE_TRANSITION_CONFIDENCE = 0.65;
 export const MIN_TOOL_INTENT_CONFIDENCE = SLM_ACCEPT_CONFIDENCE;
 const TIMEOUT_MS = 3500;
 
@@ -14,6 +15,12 @@ export type SlmDecisionPolicy = "accept" | "clarify" | "fallback" | "reject";
 
 export function evaluateSlmDecisionPolicy(decision: Pick<SlmTaskDecision, "action" | "confidence">): SlmDecisionPolicy {
   if (decision.confidence >= SLM_ACCEPT_CONFIDENCE) {
+    return "accept";
+  }
+  if (
+    decision.confidence >= SLM_SAFE_TRANSITION_CONFIDENCE &&
+    ["switch_to_chat", "generic_openclaw", "cancel_task"].includes(decision.action)
+  ) {
     return "accept";
   }
   if (decision.confidence < SLM_FALLBACK_CONFIDENCE) {

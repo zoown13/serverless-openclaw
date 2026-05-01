@@ -166,6 +166,15 @@ powershell -File .\scripts\repair-operational-copilot.ps1 `
   -Action inspect-fargate-tasks
 ```
 
+The Fargate inspection includes an age-based cost guardrail. By default, owned tasks older than 6 hours are marked as stale. Adjust the threshold when needed:
+
+```powershell
+powershell -File .\scripts\repair-operational-copilot.ps1 `
+  -TelegramId 8585874705 `
+  -Action inspect-fargate-tasks `
+  -StaleTaskAgeHours 2
+```
+
 Preview stopping owned Fargate tasks:
 
 ```powershell

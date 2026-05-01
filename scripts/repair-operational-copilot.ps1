@@ -9,6 +9,7 @@ param(
   [ValidateSet("inspect", "inspect-pending-messages", "inspect-fargate-tasks", "clear-active-tool-affinity", "clear-task-state", "clear-runtime-state", "clear-pending-messages", "reset-fallback-provider-lock", "stop-fargate-tasks")]
   [string]$Action = "inspect",
   [string]$ClusterName = "serverless-openclaw",
+  [int]$StaleTaskAgeHours = 6,
   [ValidateSet("PaymentFollowUp", "PaymentCoverageFollowUp", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff")]
   [string]$SmokeScenario = "TravelPaymentThenChatHandoff",
   [int]$SmokePauseSeconds = 10,
@@ -452,6 +453,22 @@ function Get-ContainerEnvironmentValue {
   return $null
 }
 
+function Get-TaskAgeHours {
+  param($StartedAt)
+
+  if (-not $StartedAt) {
+    return $null
+  }
+
+  try {
+    $started = [DateTimeOffset]$StartedAt
+    $age = [DateTimeOffset]::Now - $started
+    return [Math]::Round($age.TotalHours, 2)
+  } catch {
+    return $null
+  }
+}
+
 function Read-FargateTasks {
   param(
     [Parameter(Mandatory = $true)][string]$SelectedProfile,
@@ -498,12 +515,14 @@ function Read-FargateTasks {
     $startedAt = Get-OptionalProperty -Object $_ -Name "startedAt"
     $userId = Get-ContainerEnvironmentValue -Task $_ -Names @("USER_ID", "OPENCLAW_USER_ID")
     $runtime = Get-ContainerEnvironmentValue -Task $_ -Names @("OPENCLAW_RUNTIME", "RUNTIME")
+    $ageHours = Get-TaskAgeHours -StartedAt $startedAt
 
     [pscustomobject]@{
       TaskArn = $taskArn
       LastStatus = $lastStatus
       DesiredStatus = $desiredStatus
       StartedAt = $startedAt
+      AgeHours = $ageHours
       UserId = $userId
       Runtime = $runtime
     }
@@ -513,7 +532,8 @@ function Read-FargateTasks {
 function Show-FargateTasks {
   param(
     $Tasks,
-    [string]$SelectedUserId
+    [string]$SelectedUserId,
+    [int]$SelectedStaleTaskAgeHours = 6
   )
 
   $visibleTasks = @($Tasks | Where-Object { $null -ne $_ })
@@ -523,14 +543,30 @@ function Show-FargateTasks {
   }
 
   Write-Host "Fargate tasks:"
+  $staleOwnedCount = 0
   foreach ($task in $visibleTasks) {
     $owned = (Get-OptionalProperty -Object $task -Name "UserId") -eq $SelectedUserId
+    $ageHours = Get-OptionalProperty -Object $task -Name "AgeHours"
+    $isStale = $owned -and $ageHours -and $ageHours -ge $SelectedStaleTaskAgeHours
+    if ($isStale) {
+      $staleOwnedCount += 1
+    }
+
     Write-Host "  - taskArn  : $($task.TaskArn)"
     Write-Host "    status   : $($task.LastStatus) / desired=$($task.DesiredStatus)"
     Write-Host "    userId   : $(if ($task.UserId) { $task.UserId } else { 'unknown' })"
     Write-Host "    runtime  : $(if ($task.Runtime) { $task.Runtime } else { 'unknown' })"
     Write-Host "    startedAt: $(if ($task.StartedAt) { $task.StartedAt } else { 'unknown' })"
+    Write-Host "    ageHours : $(if ($null -ne $ageHours) { $ageHours } else { 'unknown' })"
+    Write-Host "    stale    : $isStale"
     Write-Host "    selected : $owned"
+  }
+
+  if ($staleOwnedCount -gt 0) {
+    Write-Host ""
+    Write-Host "Cost guardrail warning: $staleOwnedCount owned Fargate task(s) exceed the stale threshold of ${SelectedStaleTaskAgeHours}h."
+    Write-Host "Preview cleanup with: -Action stop-fargate-tasks"
+    Write-Host "Apply cleanup only when safe with: -Action stop-fargate-tasks -Apply"
   }
 }
 
@@ -637,7 +673,10 @@ if ($Action -eq "inspect" -or $Action -eq "inspect-pending-messages" -or $Action
       -SelectedProfile $Profile `
       -SelectedRegion $Region `
       -SelectedClusterName $ClusterName
-    Show-FargateTasks -Tasks $fargateTasks -SelectedUserId $UserId
+    Show-FargateTasks `
+      -Tasks $fargateTasks `
+      -SelectedUserId $UserId `
+      -SelectedStaleTaskAgeHours $StaleTaskAgeHours
   }
 
   Write-Host "No repair action selected. This was a read-only inspection."
@@ -677,7 +716,10 @@ if (-not $Apply) {
       -SelectedRegion $Region `
       -SelectedClusterName $ClusterName
     Write-Host "  - Stop running Fargate tasks owned by USER#$UserId only"
-    Show-FargateTasks -Tasks $fargateTasks -SelectedUserId $UserId
+    Show-FargateTasks `
+      -Tasks $fargateTasks `
+      -SelectedUserId $UserId `
+      -SelectedStaleTaskAgeHours $StaleTaskAgeHours
   }
   if ($RunSmokeAfterRepair) {
     Write-Host "  - Run synthetic Telegram smoke after repair: $SmokeScenario"

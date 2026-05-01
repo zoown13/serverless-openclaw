@@ -2136,6 +2136,28 @@ function buildDeterministicDecision(
   return "generic_openclaw";
 }
 
+function isStartNewTaskAction(action: ToolIntentAdvisorAction): boolean {
+  return action === "gmail" || action === "start_new_task";
+}
+
+function isContinueTaskAction(action: ToolIntentAdvisorAction): boolean {
+  return [
+    "continue_active_task",
+    "continue_task",
+    "refine_current_task",
+    "rerun_current_task",
+    "cancel_task",
+  ].includes(action);
+}
+
+function isSwitchToChatAction(action: ToolIntentAdvisorAction): boolean {
+  return action === "generic_openclaw" || action === "switch_to_chat";
+}
+
+function isClarifyAction(action: ToolIntentAdvisorAction): boolean {
+  return action === "clarify_source" || action === "clarify";
+}
+
 function shouldPreferPaymentSummaryTask(
   message: string,
   activeContext?: ToolTaskContext,
@@ -2174,7 +2196,7 @@ function normalizeTaskFamilyForMessage(
   activeContext?: ToolTaskContext,
 ): ToolTaskFamily {
   if (
-    (action === "gmail" || action === "continue_active_task") &&
+    (isStartNewTaskAction(action) || isContinueTaskAction(action)) &&
     taskFamily === "gmail_search" &&
     shouldPreferPaymentSummaryTask(message, activeContext)
   ) {
@@ -2430,7 +2452,7 @@ async function handleActiveTaskContext(
 ): Promise<ToolHandlerResult | undefined> {
   const trimmed = normalizeWhitespace(options.message);
   const followUpIntent = plannerHint?.followUpIntent;
-  if (followUpIntent === "cancel_task" || CANCEL_PATTERN.test(trimmed)) {
+  if (plannerHint?.action === "cancel_task" || followUpIntent === "cancel_task" || CANCEL_PATTERN.test(trimmed)) {
     await clearTaskContext(contextKey);
     emitToolEvent(options.onToolEvent, {
       type: "contextCleared",
@@ -2444,13 +2466,18 @@ async function handleActiveTaskContext(
     };
   }
 
+  if (plannerHint && isSwitchToChatAction(plannerHint.action)) {
+    return handoffActiveTaskContextToChat(contextKey, context, options, "advisor-topic-switch");
+  }
+
   if (isClearlyUnrelated(trimmed)) {
     return handoffActiveTaskContextToChat(contextKey, context, options, "topic-switch");
   }
 
   let effectiveContext = context;
   const plannerWantsPaymentSummary =
-    (plannerHint?.action === "continue_active_task" || plannerHint?.action === "gmail") &&
+    plannerHint !== undefined &&
+    (isStartNewTaskAction(plannerHint.action) || isContinueTaskAction(plannerHint.action)) &&
     plannerHint.taskFamily === "gmail_payment_summary" &&
     (plannerHint.sourceChoice === "gmail" || plannerHint.sourceChoice === null);
   if (
@@ -2609,13 +2636,20 @@ export async function maybeHandleCustomGmailRequest(
       confidence: advisorDecision?.confidence,
       slmBackend: advisorDecision?.slmBackend,
     });
-    if (advisorDecision?.action === "generic_openclaw") {
+    if (advisorDecision && isSwitchToChatAction(advisorDecision.action)) {
       return handoffActiveTaskContextToChat(
         contextKey,
         refreshedContext,
         options,
         "advisor-topic-switch",
       );
+    }
+    if (
+      advisorDecision?.action === "start_new_task" &&
+      advisorDecision.taskFamily === "gmail_payment_summary" &&
+      advisorDecision.sourceChoice === "gmail"
+    ) {
+      return restartPaymentTaskFromActiveContext(contextKey, refreshedContext, options);
     }
     if (isFreshPaymentLookupRequest(options.message, refreshedContext, advisorDecision)) {
       return restartPaymentTaskFromActiveContext(contextKey, refreshedContext, options);
@@ -2644,7 +2678,7 @@ export async function maybeHandleCustomGmailRequest(
   const finalDecision = advisorDecision ?? {
     action: deterministicAction,
     confidence: 0.5,
-    sourceChoice: deterministicAction === "gmail" ? "gmail" : null,
+    sourceChoice: isStartNewTaskAction(deterministicAction) ? "gmail" : null,
     taskFamily: looksLikePaymentQuestion(options.message)
       ? "gmail_payment_summary"
       : "gmail_search",
@@ -2676,7 +2710,7 @@ export async function maybeHandleCustomGmailRequest(
     slmBackend: advisorDecision?.slmBackend,
   });
 
-  if (finalDecision.action === "continue_active_task" && refreshedContext) {
+  if (isContinueTaskAction(finalDecision.action) && refreshedContext) {
     const handled = await handleActiveTaskContext(
       contextKey,
       refreshedContext,
@@ -2688,7 +2722,7 @@ export async function maybeHandleCustomGmailRequest(
     }
   }
 
-  if (finalDecision.action === "clarify_source") {
+  if (isClarifyAction(finalDecision.action)) {
     const taskFamily = finalDecision.taskFamily ?? "gmail_payment_summary";
     const nextContext: ToolTaskContext = {
       status: "awaiting_source",
@@ -2718,7 +2752,12 @@ export async function maybeHandleCustomGmailRequest(
     };
   }
 
-  if (finalDecision.action === "gmail") {
+  if (
+    isStartNewTaskAction(finalDecision.action) ||
+    (isContinueTaskAction(finalDecision.action) &&
+      !refreshedContext &&
+      finalDecision.sourceChoice === "gmail")
+  ) {
     if (!options.gmailReady) {
       return {
         kind: "direct",

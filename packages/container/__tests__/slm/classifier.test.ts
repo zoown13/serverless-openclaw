@@ -88,7 +88,7 @@ describe("slm/classifier", () => {
     });
 
     expect(decision).toEqual({
-      action: "gmail",
+      action: "start_new_task",
       taskFamily: "gmail_payment_summary",
       sourceChoice: "gmail",
       confidence: 0.9,
@@ -108,7 +108,7 @@ describe("slm/classifier", () => {
     });
 
     expect(decision).toEqual({
-      action: "continue_active_task",
+      action: "refine_current_task",
       taskFamily: "gmail_payment_summary",
       sourceChoice: "gmail",
       followUpIntent: "issuer_breakdown",

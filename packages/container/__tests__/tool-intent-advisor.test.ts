@@ -27,4 +27,32 @@ describe("tool-intent-advisor", () => {
       ),
     ).toBeNull();
   });
+
+  it("parses planner-v1 task control actions and follow-up intents", () => {
+    const parsed = parseToolIntentAdvisorResponse(
+      '{"action":"refine_current_task","taskFamily":"gmail_payment_summary","sourceChoice":"gmail","followUpIntent":"issuer_breakdown","confidence":0.91,"reason":"grouping active payment task"}',
+    );
+
+    expect(parsed).toEqual({
+      action: "refine_current_task",
+      taskFamily: "gmail_payment_summary",
+      sourceChoice: "gmail",
+      followUpIntent: "issuer_breakdown",
+      confidence: 0.91,
+      reason: "grouping active payment task",
+    });
+  });
+
+  it("parses planner-v1 chat handoff actions", () => {
+    const parsed = parseToolIntentAdvisorResponse(
+      '{"action":"switch_to_chat","taskFamily":"generic_tool_task","sourceChoice":"general","confidence":0.88}',
+    );
+
+    expect(parsed).toEqual({
+      action: "switch_to_chat",
+      taskFamily: "generic_tool_task",
+      sourceChoice: "general",
+      confidence: 0.88,
+    });
+  });
 });

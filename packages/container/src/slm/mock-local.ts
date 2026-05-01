@@ -31,7 +31,7 @@ function classifyActiveFollowUp(input: SlmClassificationInput): SlmTaskDecision 
 
   if (CANCEL_PATTERN.test(message)) {
     return {
-      action: "continue_active_task",
+      action: "cancel_task",
       taskFamily: input.activeTaskFamily,
       sourceChoice,
       followUpIntent: "cancel_task",
@@ -47,7 +47,7 @@ function classifyActiveFollowUp(input: SlmClassificationInput): SlmTaskDecision 
     !BODY_OPEN_PATTERN.test(message)
   ) {
     return {
-      action: "generic_openclaw",
+      action: "switch_to_chat",
       taskFamily: "generic_tool_task",
       sourceChoice: "general",
       confidence: 0.86,
@@ -56,7 +56,7 @@ function classifyActiveFollowUp(input: SlmClassificationInput): SlmTaskDecision 
   }
   if (BODY_OPEN_PATTERN.test(message)) {
     return {
-      action: "continue_active_task",
+      action: "continue_task",
       taskFamily: input.activeTaskFamily,
       sourceChoice,
       followUpIntent: "open_body",
@@ -66,7 +66,7 @@ function classifyActiveFollowUp(input: SlmClassificationInput): SlmTaskDecision 
   }
   if (TOPIC_REFINE_PATTERN.test(message)) {
     return {
-      action: "continue_active_task",
+      action: "refine_current_task",
       taskFamily: input.activeTaskFamily,
       sourceChoice,
       followUpIntent: "refine_topic",
@@ -76,7 +76,7 @@ function classifyActiveFollowUp(input: SlmClassificationInput): SlmTaskDecision 
   }
   if (DATE_REFINE_PATTERN.test(message)) {
     return {
-      action: "continue_active_task",
+      action: "refine_current_task",
       taskFamily: input.activeTaskFamily,
       sourceChoice,
       followUpIntent: "refine_date",
@@ -86,7 +86,7 @@ function classifyActiveFollowUp(input: SlmClassificationInput): SlmTaskDecision 
   }
   if (ISSUER_BREAKDOWN_PATTERN.test(message)) {
     return {
-      action: "continue_active_task",
+      action: "refine_current_task",
       taskFamily: input.activeTaskFamily,
       sourceChoice,
       followUpIntent: "issuer_breakdown",
@@ -96,7 +96,7 @@ function classifyActiveFollowUp(input: SlmClassificationInput): SlmTaskDecision 
   }
   if (MERCHANT_BREAKDOWN_PATTERN.test(message)) {
     return {
-      action: "continue_active_task",
+      action: "refine_current_task",
       taskFamily: input.activeTaskFamily,
       sourceChoice,
       followUpIntent: "merchant_breakdown",
@@ -106,7 +106,7 @@ function classifyActiveFollowUp(input: SlmClassificationInput): SlmTaskDecision 
   }
   if (AMOUNT_SUMMARY_PATTERN.test(message)) {
     return {
-      action: "continue_active_task",
+      action: "continue_task",
       taskFamily: input.activeTaskFamily,
       sourceChoice,
       followUpIntent: "amount_summary",
@@ -116,7 +116,7 @@ function classifyActiveFollowUp(input: SlmClassificationInput): SlmTaskDecision 
   }
   if (COVERAGE_CHECK_PATTERN.test(message)) {
     return {
-      action: "continue_active_task",
+      action: "rerun_current_task",
       taskFamily: input.activeTaskFamily,
       sourceChoice,
       followUpIntent: "coverage_check",
@@ -126,7 +126,7 @@ function classifyActiveFollowUp(input: SlmClassificationInput): SlmTaskDecision 
   }
   if (message.length <= 24) {
     return {
-      action: "continue_active_task",
+      action: "continue_task",
       taskFamily: input.activeTaskFamily,
       sourceChoice,
       followUpIntent: "continue_active_task",
@@ -147,7 +147,7 @@ function classifyFreshMessage(input: SlmClassificationInput): SlmTaskDecision | 
   if (looksLikePaymentLookup) {
     if (!input.gmailReady) {
       return {
-        action: "generic_openclaw",
+        action: "switch_to_chat",
         taskFamily: "generic_tool_task",
         sourceChoice: "general",
         confidence: 0.45,
@@ -155,7 +155,7 @@ function classifyFreshMessage(input: SlmClassificationInput): SlmTaskDecision | 
       };
     }
     return {
-      action: "gmail",
+      action: "start_new_task",
       taskFamily: "gmail_payment_summary",
       sourceChoice: "gmail",
       confidence: 0.9,
@@ -165,7 +165,7 @@ function classifyFreshMessage(input: SlmClassificationInput): SlmTaskDecision | 
 
   if (BODY_OPEN_PATTERN.test(message) && input.gmailReady) {
     return {
-      action: "gmail",
+      action: "start_new_task",
       taskFamily: "gmail_body_selection",
       sourceChoice: "gmail",
       confidence: 0.84,
@@ -175,7 +175,7 @@ function classifyFreshMessage(input: SlmClassificationInput): SlmTaskDecision | 
 
   if (EXPLICIT_GMAIL_PATTERN.test(message) && input.gmailReady) {
     return {
-      action: "gmail",
+      action: "start_new_task",
       taskFamily: "gmail_search",
       sourceChoice: "gmail",
       confidence: 0.8,
@@ -184,7 +184,7 @@ function classifyFreshMessage(input: SlmClassificationInput): SlmTaskDecision | 
   }
 
   return {
-    action: "generic_openclaw",
+    action: "switch_to_chat",
     taskFamily: "generic_tool_task",
     sourceChoice: "general",
     confidence: 0.4,

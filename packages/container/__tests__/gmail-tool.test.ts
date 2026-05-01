@@ -630,11 +630,10 @@ describe("gmail-tool", () => {
         confidence: 0.95,
       })
       .mockResolvedValueOnce({
-        action: "continue_active_task",
-        taskFamily: "gmail_payment_summary",
-        sourceChoice: "gmail",
-        followUpIntent: "continue_active_task",
-        confidence: 0.8,
+        action: "switch_to_chat",
+        taskFamily: "generic_tool_task",
+        sourceChoice: "general",
+        confidence: 0.9,
       });
 
     fetchMock
@@ -686,7 +685,7 @@ describe("gmail-tool", () => {
         confidence: 0.95,
       })
       .mockResolvedValueOnce({
-        action: "generic_openclaw",
+        action: "switch_to_chat",
         taskFamily: "generic_tool_task",
         sourceChoice: "general",
         confidence: 0.9,
@@ -944,11 +943,10 @@ describe("gmail-tool", () => {
         confidence: 0.95,
       })
       .mockResolvedValueOnce({
-        action: "continue_active_task",
+        action: "start_new_task",
         taskFamily: "gmail_payment_summary",
         sourceChoice: "gmail",
-        followUpIntent: "continue_active_task",
-        confidence: 0.8,
+        confidence: 0.9,
       });
 
     fetchMock

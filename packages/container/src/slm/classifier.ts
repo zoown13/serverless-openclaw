@@ -19,7 +19,7 @@ export function evaluateSlmDecisionPolicy(decision: Pick<SlmTaskDecision, "actio
   if (decision.confidence < SLM_FALLBACK_CONFIDENCE) {
     return "reject";
   }
-  return decision.action === "clarify_source" ? "clarify" : "fallback";
+  return decision.action === "clarify_source" || decision.action === "clarify" ? "clarify" : "fallback";
 }
 
 export function resolveSlmBackendKind(value = process.env.TOOL_SLM_BACKEND): SlmBackendKind {
@@ -47,15 +47,20 @@ function promptFor(input: SlmClassificationInput): string {
   return [
     "You are a strict routing classifier for a tool-capable OpenClaw runtime.",
     "Return JSON only.",
-    "Allowed action values: gmail, clarify_source, generic_openclaw, continue_active_task.",
+    "Allowed action values: gmail, clarify_source, generic_openclaw, continue_active_task, start_new_task, continue_task, refine_current_task, rerun_current_task, switch_to_chat, clarify, cancel_task.",
+    "Prefer planner-v1 actions over legacy actions: start_new_task, continue_task, refine_current_task, rerun_current_task, switch_to_chat, clarify, cancel_task.",
     "Allowed taskFamily values: gmail_payment_summary, gmail_search, gmail_body_selection, generic_tool_task.",
     "Allowed sourceChoice values: gmail, general, null.",
     "Optional followUpIntent values: continue_active_task, refine_topic, refine_date, issuer_breakdown, merchant_breakdown, amount_summary, coverage_check, open_body, cancel_task.",
-    "If gmailReady is false, never choose gmail.",
+    "If gmailReady is false, never choose gmail or any gmail-sourced start/continue/refine/rerun action.",
     "Prefer gmail for payment, receipt, statement, billing, or spending questions that likely need the user's own inbox history when gmailReady is true, even if the user did not explicitly mention Gmail.",
     "When the message asks for payment histories, spending totals, card issuer breakdowns, merchant breakdowns, or trip-related expenses, choose taskFamily gmail_payment_summary rather than gmail_search.",
-    "Choose clarify_source only when both Gmail lookup and general reasoning are plausible and you cannot safely choose one source.",
-    "Choose continue_active_task when the message looks like a follow-up to the active task context, even if it is short or does not repeat the original payment keywords.",
+    "Choose switch_to_chat when an active tool context exists but the user clearly moved to unrelated general chat.",
+    "Choose start_new_task when an active context exists but the user is clearly asking for a new lookup topic or period.",
+    "Choose continue_task when the message continues the active task without changing scope.",
+    "Choose refine_current_task when the user corrects, narrows, groups, or filters the active task.",
+    "Choose rerun_current_task when the user asks for more coverage or to search again inside the same task.",
+    "Choose clarify only when both Gmail lookup and general reasoning are plausible and you cannot safely choose one source.",
     "Respond with JSON: {\"action\":...,\"taskFamily\":...,\"sourceChoice\":...,\"followUpIntent\":optional,\"confidence\":0-1,\"reason\":optional}",
     `gmailReady: ${input.gmailReady}`,
     `message: ${JSON.stringify(truncate(input.message))}`,

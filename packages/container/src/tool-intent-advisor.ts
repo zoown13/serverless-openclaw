@@ -40,7 +40,21 @@ function toSlmInput(input: DecideToolIntentInput): SlmClassificationInput {
   };
 }
 
-export function parseToolIntentAdvisorResponse(text: string): ToolIntentAdvisorResult | null {
+function decisionNeedsGmail(decision: ToolIntentDecision): boolean {
+  return (
+    decision.sourceChoice === "gmail" &&
+    [
+      "gmail",
+      "start_new_task",
+      "continue_task",
+      "refine_current_task",
+      "rerun_current_task",
+      "continue_active_task",
+    ].includes(decision.action)
+  );
+}
+
+export function parseToolIntentAdvisorResponse(text: string): ToolIntentDecision | null {
   const parsed = parseSlmClassifierResponse(text);
   if (!parsed) {
     return null;
@@ -49,7 +63,9 @@ export function parseToolIntentAdvisorResponse(text: string): ToolIntentAdvisorR
     action: parsed.action,
     taskFamily: parsed.taskFamily,
     sourceChoice: parsed.sourceChoice,
+    ...(parsed.followUpIntent ? { followUpIntent: parsed.followUpIntent } : {}),
     confidence: parsed.confidence,
+    ...(parsed.reason ? { reason: parsed.reason } : {}),
   };
 }
 
@@ -64,7 +80,7 @@ export async function decideToolIntent(
   if (policy === "reject" || policy === "fallback") {
     return null;
   }
-  if (!input.gmailReady && decision.action === "gmail") {
+  if (!input.gmailReady && decisionNeedsGmail(decision)) {
     return null;
   }
   return {

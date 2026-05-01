@@ -9,6 +9,13 @@ export const TOOL_INTENT_ADVISOR_ACTIONS = [
   "clarify_source",
   "generic_openclaw",
   "continue_active_task",
+  "start_new_task",
+  "continue_task",
+  "refine_current_task",
+  "rerun_current_task",
+  "switch_to_chat",
+  "clarify",
+  "cancel_task",
 ] as const satisfies readonly ToolIntentAdvisorAction[];
 
 export const TOOL_TASK_FAMILIES = [

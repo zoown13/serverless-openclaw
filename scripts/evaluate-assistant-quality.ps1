@@ -86,7 +86,7 @@ function Get-CandidateCase {
 
   $cases = Get-PropertyValue -Object $Candidate -Name "cases"
   if ($cases) {
-    foreach ($candidateCase in (ConvertTo-List -Value $cases)) {
+    foreach ($candidateCase in @(ConvertTo-List -Value $cases)) {
       if ((Get-PropertyValue -Object $candidateCase -Name "id") -eq $CaseId) {
         return $candidateCase
       }
@@ -111,7 +111,7 @@ function Get-CandidateStep {
     $steps = $CandidateCase
   }
 
-  $stepList = ConvertTo-List -Value $steps
+  $stepList = @(ConvertTo-List -Value $steps)
   if ($StepIndex -ge $stepList.Count) {
     return $null
   }
@@ -166,7 +166,7 @@ function Get-AdditionalFetchEvidence {
   if ($null -ne $fetches) {
     return [pscustomobject]@{
       HasEvidence = $true
-      Count = (ConvertTo-List -Value $fetches).Count
+      Count = @(ConvertTo-List -Value $fetches).Count
     }
   }
 
@@ -185,7 +185,7 @@ function Get-AdditionalFetchEvidence {
 }
 
 $fixture = Read-JsonFile -Path $FixturePath
-$cases = ConvertTo-List -Value (Get-PropertyValue -Object $fixture -Name "cases")
+$cases = @(ConvertTo-List -Value (Get-PropertyValue -Object $fixture -Name "cases"))
 if ($cases.Count -eq 0) {
   throw "Fixture does not contain any cases: $FixturePath"
 }
@@ -204,17 +204,17 @@ $results = @()
 
 foreach ($case in $cases) {
   $caseId = [string](Get-PropertyValue -Object $case -Name "id")
-  $steps = ConvertTo-List -Value (Get-PropertyValue -Object $case -Name "steps")
+  $steps = @(ConvertTo-List -Value (Get-PropertyValue -Object $case -Name "steps"))
   $candidateCase = Get-CandidateCase -Candidate $candidate -CaseId $caseId
 
   for ($index = 0; $index -lt $steps.Count; $index++) {
     $step = $steps[$index]
     $totalSteps++
 
-    $expectIncludes = ConvertTo-List -Value (Get-PropertyValue -Object $step -Name "expectIncludes")
-    $expectExcludes = ConvertTo-List -Value (Get-PropertyValue -Object $step -Name "expectExcludes")
+    $expectIncludes = @(ConvertTo-List -Value (Get-PropertyValue -Object $step -Name "expectIncludes"))
+    $expectExcludes = @(ConvertTo-List -Value (Get-PropertyValue -Object $step -Name "expectExcludes"))
     $expectNoAdditionalFetch = [bool](Get-PropertyValue -Object $step -Name "expectNoAdditionalFetch")
-    $fullBodies = ConvertTo-List -Value (Get-PropertyValue -Object $step -Name "fullBodies")
+    $fullBodies = @(ConvertTo-List -Value (Get-PropertyValue -Object $step -Name "fullBodies"))
 
     $includeChecks += $expectIncludes.Count
     $excludeChecks += $expectExcludes.Count

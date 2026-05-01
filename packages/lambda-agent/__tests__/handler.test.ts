@@ -428,6 +428,45 @@ describe("handler", () => {
     });
   });
 
+  it("should deliver partial replies instead of a done-only Telegram message", async () => {
+    process.env.SSM_TELEGRAM_BOT_TOKEN = "/serverless-openclaw/secrets/telegram-bot-token";
+    mockResolveSecrets.mockResolvedValue(
+      new Map([
+        ["/serverless-openclaw/secrets/anthropic-api-key", "test-api-key"],
+        ["/serverless-openclaw/secrets/telegram-bot-token", "telegram-token"],
+      ]),
+    );
+    mockRunAgent.mockImplementationOnce(async (params: unknown) => {
+      (params as { onPartialReply?: (delta: string) => void }).onPartialReply?.(
+        "리눅스에서 파일을 찾을 때는 find 명령어를 씁니다.",
+      );
+      return {
+        payloads: [],
+        meta: {
+          durationMs: 1000,
+          agentMeta: { provider: "anthropic", model: "claude-sonnet-4-20250514" },
+        },
+      };
+    });
+
+    const handler = await loadHandler();
+    const result = await handler(
+      createEvent({
+        channel: "telegram",
+        connectionId: undefined,
+        callbackUrl: undefined,
+        telegramChatId: "8585874705",
+        message: "리눅스에서 파일 찾는 명령어 알려줘",
+      }),
+    ) as LambdaAgentResponse;
+
+    expect(result.success).toBe(true);
+    expect(result.payloads?.[0]?.text).toContain("find 명령어");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]?.[1]?.body)).toContain("find 명령어");
+    expect(String(fetchMock.mock.calls[0]?.[1]?.body)).not.toContain("✅ Done");
+  });
+
   it("should log Telegram delivery failures for non-ok responses", async () => {
     process.env.SSM_TELEGRAM_BOT_TOKEN = "/serverless-openclaw/secrets/telegram-bot-token";
     mockResolveSecrets.mockResolvedValue(

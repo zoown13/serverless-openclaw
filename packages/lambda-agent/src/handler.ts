@@ -239,6 +239,30 @@ async function pushPayloads(
   }
 }
 
+function normalizeAgentPayloads(
+  payloads: Array<{ text?: string; mediaUrl?: string; isError?: boolean }> | undefined,
+  partialReplyChunks: string[],
+  channel: "web" | "telegram",
+): Array<{ text?: string; mediaUrl?: string; isError?: boolean }> {
+  if (payloads?.some((payload) => payload.text && payload.text.trim().length > 0)) {
+    return payloads;
+  }
+
+  const partialReply = partialReplyChunks.join("").trim();
+  if (partialReply.length > 0) {
+    return [{ text: partialReply }];
+  }
+
+  if (channel === "telegram") {
+    return [{
+      text: "답변을 생성하지 못했습니다. 한 번만 다시 물어봐 주세요.",
+      isError: true,
+    }];
+  }
+
+  return payloads ?? [];
+}
+
 async function pushIdleStatus(
   canPush: boolean,
   traceId: string,
@@ -328,7 +352,7 @@ function buildExtraSystemPrompt(
 
   if (event.channel === "telegram" || !runtimeConfig.readiness.toolRuntimeReady) {
     prompts.push(
-      "You are replying inside a serverless runtime. Respond with plain text only. Do not output function_calls blocks, XML tool tags, or shell commands. Do not ask the user to restart gateway/daemon/processes. If execution capabilities are unavailable, explain briefly and continue with a normal assistant answer. Do not claim Gmail or other tools are connected unless they are explicitly available.",
+      "You are replying inside a serverless runtime. Respond with plain text only. Do not output function_calls blocks, XML tool tags, or shell commands. Do not ask the user to restart gateway/daemon/processes. If execution capabilities are unavailable, explain briefly and continue with a normal assistant answer. Do not claim Gmail or other tools are connected unless they are explicitly available. For normal chat questions, answer in the user's language with enough context to be useful, usually two to five concise sentences or bullets. Do not reply with only an acknowledgement or a single command unless the user explicitly asks for only that.",
     );
   }
 
@@ -525,6 +549,7 @@ export async function handler(
 
   try {
     try {
+      const partialReplyChunks: string[] = [];
       const result = await runAgent({
         sessionId,
         sessionFile,
@@ -544,12 +569,23 @@ export async function handler(
           !runtimeConfig.readiness.toolRuntimeReady,
         channel: event.channel,
         extraSystemPrompt: buildExtraSystemPrompt(event, runtimeConfig),
+        onPartialReply:
+          event.channel === "telegram"
+            ? (delta: string) => {
+                if (delta) partialReplyChunks.push(delta);
+              }
+            : undefined,
       });
+      const payloads = normalizeAgentPayloads(
+        result.payloads,
+        partialReplyChunks,
+        event.channel,
+      );
 
       // Always upload session after run (even if no payloads)
       await sync.upload(event.userId, sessionId);
 
-      await pushPayloads(result.payloads, {
+      await pushPayloads(payloads, {
         canPush,
         callbackUrl: event.callbackUrl,
         connectionId: event.connectionId,
@@ -560,20 +596,11 @@ export async function handler(
         channel: event.channel,
       });
 
-      if (isTelegram && telegramBotToken) {
-        await pushToTelegram(telegramBotToken, telegramChatId!, "✅ Done", {
-          traceId,
-          channel: event.channel,
-          deliveryType: "telegram",
-          deliveryTarget: { type: "telegram", chatId: telegramChatId! },
-        });
-      }
-
       await pushIdleStatus(canPush, traceId, event.callbackUrl, event.connectionId);
 
       return {
         success: true,
-        payloads: result.payloads,
+        payloads,
         durationMs: Date.now() - startTime,
         provider: result.meta.agentMeta.provider,
         model: result.meta.agentMeta.model,

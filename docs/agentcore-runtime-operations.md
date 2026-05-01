@@ -77,6 +77,80 @@ Gateway namespace marker is missing, redeploy `ApiStack` through
 `deploy-option-b-tool-runtime.ps1`. If the Runtime image marker is missing,
 redeploy the AgentCore Runtime with `deploy-agentcore-runtime.ps1`.
 
+## Smoke scenarios
+
+Run at least one direct payment-context smoke and one handoff smoke after every
+tool runtime cutover.
+
+Payment context continuity:
+
+```powershell
+powershell -File .\scripts\synthetic-telegram-smoke.ps1 `
+  -ChatId "<chat-id>" `
+  -TelegramId "<telegram-id>" `
+  -Scenario PaymentCoverageFollowUp `
+  -TailLogs
+```
+
+Travel payment refinement and chat handoff:
+
+```powershell
+powershell -File .\scripts\synthetic-telegram-smoke.ps1 `
+  -ChatId "<chat-id>" `
+  -TelegramId "<telegram-id>" `
+  -Scenario TravelPaymentThenChatHandoff `
+  -TailLogs
+```
+
+The first smoke protects payment follow-ups such as `합계만`, `더 있을텐데`,
+and `5개 밖에 없어?`. The second smoke protects the Japan travel payment flow,
+topic refinement, card issuer breakdown, and the return to Lambda chat-only.
+
+## Quality guardrails
+
+The curated Gmail/payment quality evaluation lives in:
+
+```text
+packages/container/__tests__/fixtures/gmail-quality-eval.json
+```
+
+The evaluation must keep at least 80% pass coverage and should include cases for:
+
+- topic-filtered travel payments
+- noisy daily-life merchants
+- card issuer breakdowns
+- amount-only follow-ups
+- coverage follow-ups
+- limited body checks for ambiguous travel or issuer evidence
+
+Card issuer refinement may inspect at most two candidate message bodies. This is
+only allowed inside an active Gmail payment context and only for records whose
+issuer is unavailable from headers/snippets. Attachments remain disabled.
+
+## Runtime readiness interpretation
+
+AgentCore logs use separate readiness events for the direct Gmail fast-path and
+the OpenClaw fallback path.
+
+Expected direct tool path events:
+
+```text
+bridge.message.accepted
+bridge.tool.intent.decided
+bridge.delivery.success
+```
+
+Expected optional fallback readiness events:
+
+```text
+bridge.openclaw_fallback.starting
+bridge.openclaw_fallback.ready
+```
+
+If `bridge.openclaw_fallback.unavailable` appears, Gmail/payment fast-path can
+still be healthy when `directToolFastPathAvailable=true`. Treat this as a
+generic OpenClaw/browser fallback readiness issue, not as a Gmail/payment outage.
+
 ## Rollback
 
 Rollback is a flag and namespace change, not a code rewrite.

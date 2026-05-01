@@ -1337,6 +1337,40 @@ function buildPaymentRecord(
   };
 }
 
+async function refineUnknownIssuersWithBodyChecks(
+  accessToken: string,
+  records: ParsedPaymentRecord[],
+  maxBodyChars: number,
+): Promise<{
+  records: ParsedPaymentRecord[];
+  bodyCheckedCount: number;
+}> {
+  const refined = records.map((record) => ({ ...record }));
+  const candidates = refined
+    .filter((record) => !record.cardIssuer)
+    .filter((record) => Boolean(record.amount || record.merchant))
+    .sort((a, b) => (b.amount ?? 0) - (a.amount ?? 0))
+    .slice(0, MAX_TOPIC_BODY_CHECKS);
+
+  for (const candidate of candidates) {
+    const full = await fetchMessageBody(accessToken, candidate.messageId);
+    const bodySlice = full.body.slice(0, maxBodyChars);
+    const issuer = extractCardIssuer(`${full.subject}\n${full.snippet}\n${bodySlice}`);
+    if (issuer) {
+      candidate.cardIssuer = issuer;
+      candidate.source = "body";
+      if (candidate.matchedBy !== "query") {
+        candidate.matchedBy = "body";
+      }
+    }
+  }
+
+  return {
+    records: refined,
+    bodyCheckedCount: candidates.length,
+  };
+}
+
 function formatCurrency(amount: number): string {
   return `KRW ${amount.toLocaleString("en-US")}`;
 }
@@ -1363,6 +1397,13 @@ function formatDisplayTopicLabel(topicKeywords: string[]): string {
 
 function formatIssuerLabel(issuer?: string): string {
   return issuer ?? "카드사 확인 불가";
+}
+
+function isIssuerBreakdownFollowUp(
+  message: string,
+  followUpIntent?: ToolFollowUpIntent,
+): boolean {
+  return followUpIntent === "issuer_breakdown" || /카드사|issuer/i.test(message);
 }
 
 function buildEvidenceList(messages: GmailMessageSummary[]): string {
@@ -2399,8 +2440,43 @@ async function handleActiveTaskContext(
     if (followUpIntent === "refine_topic" || isTopicRefinementFollowUp(trimmed)) {
       return refineActivePaymentContextByTopic(contextKey, nextContext, options);
     }
+    let followUpContext = nextContext;
+    if (
+      isIssuerBreakdownFollowUp(trimmed, followUpIntent) &&
+      (nextContext.parsedPaymentRecords ?? []).some((record) => !record.cardIssuer)
+    ) {
+      const credentials = options.gmailReady ? await loadGmailCredentials() : null;
+      if (credentials) {
+        const accessToken = await refreshAccessToken(credentials);
+        if (accessToken) {
+          const refined = await refineUnknownIssuersWithBodyChecks(
+            accessToken,
+            nextContext.parsedPaymentRecords ?? [],
+            options.emailTokenBudget.maxBodyChars,
+          );
+          if (refined.bodyCheckedCount > 0) {
+            followUpContext = {
+              ...nextContext,
+              parsedPaymentRecords: refined.records,
+              lastActivityAt: nowIso(),
+              expiresAt: futureIso(DEFAULT_CONTEXT_TTL_MS),
+            };
+            await setTaskContext(contextKey, followUpContext);
+            emitToolEvent(options.onToolEvent, {
+              type: "paymentRefineUsedBodyCheck",
+              taskFamily: followUpContext.taskFamily,
+              topicKeywords: followUpContext.topicKeywords ?? [],
+              candidateCount: nextContext.parsedPaymentRecords?.length ?? 0,
+              filteredCount: refined.records.filter((record) => Boolean(record.cardIssuer)).length,
+              bodyCheckedCount: refined.bodyCheckedCount,
+              queryMode: "cached-context",
+            });
+          }
+        }
+      }
+    }
     return formatPaymentFollowUp(
-      nextContext,
+      followUpContext,
       trimmed,
       options.emailTokenBudget.maxMessages,
       followUpIntent,

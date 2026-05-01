@@ -561,6 +561,66 @@ describe("gmail-tool", () => {
     expect(followUp?.message).toContain("- 현대카드: KRW 45,000 (1건)");
   });
 
+  it("uses limited body checks to improve unknown card issuer breakdowns", async () => {
+    decideToolIntentMock
+      .mockResolvedValueOnce({
+        action: "gmail",
+        taskFamily: "gmail_payment_summary",
+        sourceChoice: "gmail",
+        confidence: 0.95,
+      })
+      .mockResolvedValueOnce({
+        action: "continue_active_task",
+        taskFamily: "gmail_payment_summary",
+        sourceChoice: "gmail",
+        followUpIntent: "issuer_breakdown",
+        confidence: 0.95,
+      });
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m1" }] } }))
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "해외 결제 알림",
+          "Card Co <billing@example.com>",
+          "Fri, 03 Apr 2026 09:00:00 +0000",
+          "결제금액 98,590원 가맹점명 GU",
+          "m1",
+        ),
+      );
+
+    await maybeHandleCustomGmailRequest({
+      userId: "user-issuer-body-check",
+      sessionKey: "session-issuer-body-check",
+      message: "이번주 결제한 금액이 어느정도 되려나?",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    fetchMock.mockReset();
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(
+        fullBodyResponse("GU 결제금액 98590원 카드종류 국민카드 해외승인"),
+      );
+
+    const followUp = await maybeHandleCustomGmailRequest({
+      userId: "user-issuer-body-check",
+      sessionKey: "session-issuer-body-check",
+      message: "카드사별로 보여줘",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    const bodyCalls = fetchMock.mock.calls.filter((call) =>
+      String(call[0]).includes("/messages/m1?format=full"),
+    );
+    expect(bodyCalls.length).toBeLessThanOrEqual(1);
+    expect(followUp?.kind).toBe("direct");
+    expect(followUp?.message).toContain("- 국민카드: KRW 98,590 (1건)");
+  });
+
   it("hands clearly unrelated active payment turns back to chat-only runtime", async () => {
     decideToolIntentMock
       .mockResolvedValueOnce({

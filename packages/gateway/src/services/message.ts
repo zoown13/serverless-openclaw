@@ -380,6 +380,11 @@ function validateLambdaDeliveryTarget(deps: RouteDeps): void {
   }
 }
 
+function resolveLambdaSessionId(deps: RouteDeps, runtimeClass: RuntimeClass): string {
+  const baseSessionId = deps.sessionId ?? `session-${deps.userId}`;
+  return runtimeClass === "chat-only" ? `${baseSessionId}:chat` : baseSessionId;
+}
+
 async function routeFargate(
   deps: RouteDeps,
   taskState: TaskStateItem | null,
@@ -668,7 +673,7 @@ async function invokeLambdaRoute(
   const invokeResult = await deps.invokeLambdaAgent({
     functionArn: deps.lambdaAgentFunctionArn,
     userId: deps.userId,
-    sessionId: deps.sessionId ?? `session-${deps.userId}`,
+    sessionId: resolveLambdaSessionId(deps, runtimeClass),
     traceId: deps.traceId,
     message,
     channel: deps.channel,

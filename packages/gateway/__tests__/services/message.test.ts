@@ -640,7 +640,7 @@ describe("message service", () => {
         expect.objectContaining({
           functionArn: "arn:aws:lambda:us-east-1:123:function:agent",
           userId: "user-123",
-          sessionId: "session-456",
+          sessionId: "session-456:chat",
           message: "hello",
           channel: "web",
         }),
@@ -939,6 +939,7 @@ describe("message service", () => {
         expect.objectContaining({
           message: "리눅스에서 파일 찾는 명령어 알려줘",
           channel: "web",
+          sessionId: "session-user-123:chat",
         }),
       );
       expect(deps.sendClarification).not.toHaveBeenCalled();

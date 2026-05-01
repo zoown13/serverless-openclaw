@@ -203,15 +203,24 @@ export async function startContainer(opts: StartContainerOptions): Promise<void>
   };
 
   if (agentCoreMode) {
+    logBridgeEvent("bridge.openclaw_fallback.starting", {
+      runtime: "agentcore",
+      directToolFastPathAvailable: true,
+      timeoutMs: 120000,
+    });
     void initializeOpenClaw()
       .then(() => {
-        console.log(`AgentCore OpenClaw fallback ready in ${tClient - tS3}ms`);
+        logBridgeEvent("bridge.openclaw_fallback.ready", {
+          runtime: "agentcore",
+          durationMs: tClient - tS3,
+        });
       })
       .catch((err) => {
-        console.warn(
-          "AgentCore OpenClaw fallback startup failed; direct tool fast-path remains available:",
-          err,
-        );
+        logBridgeEvent("bridge.openclaw_fallback.unavailable", {
+          runtime: "agentcore",
+          directToolFastPathAvailable: true,
+          error: err instanceof Error ? err.message : String(err),
+        });
       });
   } else {
     await initializeOpenClaw();

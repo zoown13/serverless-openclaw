@@ -77,6 +77,9 @@ if ($ToolRuntimeProvider -eq "agentcore") {
   if ([string]::IsNullOrWhiteSpace($AgentCoreRuntimeArn)) {
     throw "AGENTCORE_RUNTIME_ARN is required when TOOL_RUNTIME_PROVIDER=agentcore. Run scripts/deploy-agentcore-runtime.ps1 first, then pass -AgentCoreRuntimeArn."
   }
+  if ([string]::IsNullOrWhiteSpace($AgentCoreSessionNamespace)) {
+    Write-Warning "AGENTCORE_SESSION_NAMESPACE is empty. Existing AgentCore runtime sessions may continue to serve an older container image. Pass -AgentCoreSessionNamespace with the deployed image tag for production cutovers."
+  }
 
   $env:AGENTCORE_RUNTIME_ARN = $AgentCoreRuntimeArn.Trim()
   if (-not [string]::IsNullOrWhiteSpace($AgentCoreRuntimeQualifier)) {

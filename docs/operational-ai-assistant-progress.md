@@ -8,7 +8,7 @@ The percentages are not feature-count completion. They represent operational rea
 
 ## Current snapshot
 
-Overall readiness: **67%**
+Overall readiness: **69%**
 
 Updated: **2026-05-01**
 
@@ -20,7 +20,7 @@ Updated: **2026-05-01**
 | Planner/advisor quality | 14% | 65% | Remote planner handles the core task flow and chat handoff; broader eval coverage is still needed. |
 | Operational Copilot | 12% | 60% | Diagnostics can summarize the latest trace, DynamoDB state, likely failing layer, pending queue state, Fargate task state, and link to guarded repair actions through a read-only health check wrapper. |
 | Self-healing runbook | 12% | 60% | Dry-run-first repair script can inspect state, inspect/clear pending messages, reset fallback locks, stop stale owned Fargate tasks by default, clear stale affinity/task state, and optionally run post-repair smoke. |
-| Cost guardrails | 8% | 60% | Cost-aware architecture constraints remain in place, and the health check now flags stale owned Fargate tasks by age. Active AgentCore cost tracking is still shallow. |
+| Cost guardrails | 8% | 75% | Cost-aware architecture constraints remain in place, the health check flags stale owned Fargate tasks by age, and AgentCore invoke logs now produce conservative runtime cost projections. |
 | Regression/smoke automation | 8% | 60% | Synthetic Telegram smoke exists, can be launched from the repair runbook after an applied repair, and is now part of the health-check workflow surface. |
 | Documentation / portfolio narrative | 6% | 55% | DevOps story exists; AgentCore and Operational Copilot updates need to be reflected consistently. |
 
@@ -28,7 +28,7 @@ Weighted readiness calculation:
 
 ```text
 0.12*85 + 0.14*70 + 0.14*75 + 0.14*65 + 0.12*60
-+ 0.12*60 + 0.08*60 + 0.08*60 + 0.06*55 = 66.9%
++ 0.12*60 + 0.08*75 + 0.08*60 + 0.06*55 = 68.1%
 ```
 
 ## Reporting format
@@ -65,3 +65,4 @@ If the work is exploratory or does not materially improve readiness, keep the pe
 | 2026-05-01 | 64% | Added age-based stale Fargate task cost guardrail warnings to the repair runbook. |
 | 2026-05-01 | 65% | Made Fargate stop repair safer by stopping stale owned tasks by default and requiring `-IncludeFreshFargateTasks` for fresh tasks. |
 | 2026-05-01 | 67% | Added a read-only operational health check wrapper that runs latest trace diagnosis, pending queue inspection, and Fargate cost guardrail inspection together. |
+| 2026-05-01 | 69% | Added conservative AgentCore Runtime usage and cost projection from Gateway invoke logs to the health check workflow. |

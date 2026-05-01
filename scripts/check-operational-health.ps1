@@ -16,6 +16,7 @@ $ErrorActionPreference = "Stop"
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $diagnosePath = Join-Path $scriptRoot "diagnose-operational-copilot.ps1"
 $repairPath = Join-Path $scriptRoot "repair-operational-copilot.ps1"
+$agentCoreCostPath = Join-Path $scriptRoot "estimate-agentcore-cost.ps1"
 
 if (-not (Test-Path -LiteralPath $diagnosePath)) {
   throw "Diagnostic script not found: $diagnosePath"
@@ -23,6 +24,10 @@ if (-not (Test-Path -LiteralPath $diagnosePath)) {
 
 if (-not (Test-Path -LiteralPath $repairPath)) {
   throw "Repair runbook script not found: $repairPath"
+}
+
+if (-not (Test-Path -LiteralPath $agentCoreCostPath)) {
+  throw "AgentCore cost guardrail script not found: $agentCoreCostPath"
 }
 
 function Invoke-CheckedScript {
@@ -85,6 +90,15 @@ Invoke-CheckedScript -Command (@(
   "-Action", "inspect-fargate-tasks",
   "-StaleTaskAgeHours", "$StaleTaskAgeHours"
 ) + $identityArgs)
+
+Write-Host ""
+Write-Host "== 4. AgentCore cost guardrail estimate =="
+Invoke-CheckedScript -Command @(
+  "powershell", "-File", $agentCoreCostPath,
+  "-Profile", $Profile,
+  "-Region", $Region,
+  "-SinceHours", "$([Math]::Max(1, [Math]::Ceiling($SinceMinutes / 60.0)))"
+)
 
 Write-Host ""
 Write-Host "Operational health check complete."

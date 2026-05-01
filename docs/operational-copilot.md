@@ -51,6 +51,16 @@ powershell -File .\scripts\check-operational-health.ps1 `
   -SinceMinutes 120
 ```
 
+Estimate AgentCore Runtime usage and conservative cost from Gateway invoke logs:
+
+```powershell
+powershell -File .\scripts\estimate-agentcore-cost.ps1 `
+  -SinceHours 24 `
+  -MonthlyBudgetUsd 1
+```
+
+The estimate uses the public AgentCore Runtime rates for CPU and memory, but it is intentionally conservative because Gateway wall-clock invoke duration includes I/O wait that may not be billed as active CPU consumption.
+
 By default, when a user or Telegram id is provided without an explicit trace id, the script focuses the output on the latest correlated trace. Use `-AllEvents` to inspect the full time window.
 
 Diagnose a specific trace:

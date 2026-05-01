@@ -93,9 +93,42 @@ The script maps log evidence to one of these layers:
 
 ## Next step
 
-The next version should add guarded self-healing actions behind explicit flags:
+Operational Copilot also includes a guarded repair runbook. The repair script is dry-run by default and mutates AWS state only when `-Apply` is provided.
 
-- clear stale active tool affinity
+Inspect the current user runtime state:
+
+```powershell
+powershell -File .\scripts\repair-operational-copilot.ps1 `
+  -TelegramId 8585874705 `
+  -Action inspect
+```
+
+Preview clearing stale tool affinity:
+
+```powershell
+powershell -File .\scripts\repair-operational-copilot.ps1 `
+  -TelegramId 8585874705 `
+  -Action clear-active-tool-affinity
+```
+
+Apply the repair only after checking the preview:
+
+```powershell
+powershell -File .\scripts\repair-operational-copilot.ps1 `
+  -TelegramId 8585874705 `
+  -Action clear-active-tool-affinity `
+  -Apply
+```
+
+Supported v1 repair actions:
+
+- `inspect`: read-only state inspection
+- `clear-active-tool-affinity`: clears `SETTING#active-tool:{channel}` for the user
+- `clear-task-state`: clears the user's `TaskState` item
+- `clear-runtime-state`: clears both active tool affinity and task state
+
+The next version should add more repair actions behind the same explicit `-Apply` guard:
+
 - inspect and redrive pending messages
 - reset fallback provider lock
 - stop a stuck Fargate task

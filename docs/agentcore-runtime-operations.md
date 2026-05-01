@@ -34,9 +34,15 @@ powershell -File .\scripts\deploy-agentcore-runtime.ps1 `
   -ImageTag $tag `
   -AiProvider bedrock `
   -AiModel "global.anthropic.claude-haiku-4-5-20251001-v1:0" `
-  -ToolSlmBackend mock-local `
+  -ToolSlmBackend remote-api `
   -ResponseFormatVersion ko-payment-v1
 ```
+
+`remote-api` is the preferred AgentCore setting for planner-v1 semantics. It uses
+the configured Bedrock model with a small token budget to decide only among the
+closed tool taxonomy. If cost, latency, or provider availability regresses, pass
+`-ToolSlmBackend mock-local` to roll back to the deterministic local classifier
+without changing the runtime architecture.
 
 3. Deploy the Gateway with the image tag as `AGENTCORE_SESSION_NAMESPACE`.
 
@@ -70,6 +76,7 @@ AgentCore Runtime logs must include:
 ```text
 "runtimeImageTag":"<image-tag>"
 "responseFormatVersion":"ko-payment-v1"
+"slmBackend":"remote-api"
 ```
 
 The smoke is not considered complete until both markers are present. If the

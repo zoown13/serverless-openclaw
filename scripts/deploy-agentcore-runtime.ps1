@@ -6,7 +6,8 @@
   [string]$UserId = "system:agentcore",
   [string]$AiProvider = "bedrock",
   [string]$AiModel = "global.anthropic.claude-haiku-4-5-20251001-v1:0",
-  [string]$ToolSlmBackend = "mock-local",
+  [ValidateSet("remote-api", "mock-local")]
+  [string]$ToolSlmBackend = "remote-api",
   [string]$ResponseFormatVersion = "ko-payment-v1"
 )
 

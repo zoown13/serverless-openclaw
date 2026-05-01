@@ -849,7 +849,7 @@ describe("gmail-tool", () => {
     expect(response?.kind).toBe("direct");
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain("%EC%9D%BC%EB%B3%B8");
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain("maxResults=10");
-    expect(String(fetchMock.mock.calls[2]?.[0])).toContain("maxResults=15");
+    expect(String(fetchMock.mock.calls[2]?.[0])).toContain("maxResults=30");
     expect(response?.message).toContain("일본/여행/eSIM 관련 결제만");
     expect(response?.message).toContain("마이리얼트립(일반)");
     expect(response?.message).toContain("/ 삼성카드");
@@ -933,6 +933,71 @@ describe("gmail-tool", () => {
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain("%EC%98%A4%EC%82%AC%EC%B9%B4");
     expect(response?.message).toContain("KLOOK");
     expect(response?.message).toContain("확인 가능한 합계: KRW 18,400 (1건)");
+  });
+
+  it("restarts payment lookup when a new topic payment request arrives inside an active context", async () => {
+    decideToolIntentMock
+      .mockResolvedValueOnce({
+        action: "gmail",
+        taskFamily: "gmail_payment_summary",
+        sourceChoice: "gmail",
+        confidence: 0.95,
+      })
+      .mockResolvedValueOnce({
+        action: "continue_active_task",
+        taskFamily: "gmail_payment_summary",
+        sourceChoice: "gmail",
+        followUpIntent: "continue_active_task",
+        confidence: 0.8,
+      });
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m1" }] } }))
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "카드 결제 알림",
+          "Card Co <billing@example.com>",
+          "Fri, 03 Apr 2026 09:00:00 +0000",
+          "결제금액 12300원 카드종류 삼성카드 가맹점명 스타벅스",
+          "m1",
+        ),
+      );
+
+    await maybeHandleCustomGmailRequest({
+      userId: "user-new-topic-payment",
+      sessionKey: "session-new-topic-payment",
+      message: "이번주 결제한 금액이 어느정도 되려나?",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    fetchMock.mockReset();
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m2" }] } }))
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "마이리얼트립(일반)의 결제 내역입니다.",
+          '"NHN KCP 발신전용" <pgadmcust@kcp.co.kr>',
+          "Sat, 04 Apr 2026 17:40:51 +0900",
+          "결제금액 9215 원 카드종류 삼성카드 주문상품명 [eSIM/로컬] 일본 사이트",
+          "m2",
+        ),
+      );
+
+    const restarted = await maybeHandleCustomGmailRequest({
+      userId: "user-new-topic-payment",
+      sessionKey: "session-new-topic-payment",
+      message: "일본 여행가는데 결제한 내역들 알려줘",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("%EC%9D%BC%EB%B3%B8");
+    expect(restarted?.kind).toBe("direct");
+    expect(restarted?.message).toContain("마이리얼트립(일반)");
+    expect(restarted?.message).not.toContain("스타벅스");
   });
 
   it("refines an active payment context to Japan-related records without falling back", async () => {
@@ -1091,7 +1156,7 @@ describe("gmail-tool", () => {
     expect(followUp?.kind).toBe("direct");
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain("%EC%9D%BC%EB%B3%B8");
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain("maxResults=10");
-    expect(String(fetchMock.mock.calls[2]?.[0])).toContain("maxResults=15");
+    expect(String(fetchMock.mock.calls[2]?.[0])).toContain("maxResults=30");
     expect(followUp?.message).toContain("마이리얼트립(일반)");
   });
 

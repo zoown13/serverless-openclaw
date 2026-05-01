@@ -72,7 +72,7 @@ const PAYMENT_AMOUNT_PATTERNS: RegExp[] = [
   /([0-9][0-9,]*)\s*원/gi,
 ];
 const DEFAULT_TOPIC_CANDIDATE_MESSAGES = 10;
-const EXPANDED_TOPIC_CANDIDATE_MESSAGES = 15;
+const EXPANDED_TOPIC_CANDIDATE_MESSAGES = 30;
 const MAX_TOPIC_BODY_CHECKS = 2;
 const CARD_ISSUER_PATTERNS: RegExp[] = [
   /(삼성카드|신한카드|현대카드|KB국민카드|국민카드|우리카드|롯데카드|하나카드|비씨카드|BC카드|NH카드|농협카드|카카오뱅크|토스뱅크)/i,
@@ -2210,6 +2210,82 @@ function isClearlyUnrelated(message: string): boolean {
     !isTopicRefinementFollowUp(message);
 }
 
+function isFreshPaymentLookupRequest(
+  message: string,
+  activeContext: ToolTaskContext,
+  plannerHint?: ToolIntentDecision | null,
+): boolean {
+  const trimmed = normalizeWhitespace(message);
+  if (activeContext.status !== "active") {
+    return false;
+  }
+  if (
+    CANCEL_PATTERN.test(trimmed) ||
+    isBodyRequest(trimmed) ||
+    isAttachmentRequest(trimmed) ||
+    !looksLikePaymentQuestion(trimmed)
+  ) {
+    return false;
+  }
+
+  const followUpIntent = plannerHint?.followUpIntent;
+  if (followUpIntent && followUpIntent !== "continue_active_task") {
+    return false;
+  }
+
+  if (extractTopicKeywords(trimmed).length > 0) {
+    return true;
+  }
+
+  if (isPaymentFollowUp(trimmed) || isTopicRefinementFollowUp(trimmed)) {
+    return false;
+  }
+
+  return (
+    trimmed.length > 12 &&
+    /(내역|조회|검색|찾아|알려|이번\s*주|이번주|지난\s*주|지난주|최근|오늘|어제|이번\s*달|이번달|지난\s*달|지난달|20\d{2})/i.test(trimmed)
+  );
+}
+
+async function restartPaymentTaskFromActiveContext(
+  contextKey: string,
+  context: ToolTaskContext,
+  options: MaybeHandleCustomGmailRequestOptions,
+): Promise<ToolHandlerResult> {
+  await clearTaskContext(contextKey);
+  emitToolEvent(options.onToolEvent, {
+    type: "contextCleared",
+    taskFamily: context.taskFamily,
+    sourceChoice: context.sourceChoice,
+    reason: "new-payment-request",
+  });
+
+  if (!options.gmailReady) {
+    return {
+      kind: "direct",
+      message: buildGmailUnavailableMessage(),
+      source: "gmail-fallback",
+    };
+  }
+
+  const credentials = await loadGmailCredentials();
+  if (!credentials) {
+    return {
+      kind: "direct",
+      message: buildGmailUnavailableMessage(),
+      source: "gmail-fallback",
+    };
+  }
+
+  return runGmailTask(
+    contextKey,
+    options,
+    "gmail_payment_summary",
+    options.message,
+    credentials,
+  );
+}
+
 async function handleAwaitingSourceContext(
   contextKey: string,
   context: ToolTaskContext,
@@ -2540,6 +2616,9 @@ export async function maybeHandleCustomGmailRequest(
         options,
         "advisor-topic-switch",
       );
+    }
+    if (isFreshPaymentLookupRequest(options.message, refreshedContext, advisorDecision)) {
+      return restartPaymentTaskFromActiveContext(contextKey, refreshedContext, options);
     }
     const handled = await handleActiveTaskContext(
       contextKey,

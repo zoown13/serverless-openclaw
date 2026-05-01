@@ -8,6 +8,7 @@ param(
   [string]$Channel = "telegram",
   [int]$SinceMinutes = 30,
   [int]$Limit = 250,
+  [switch]$AllEvents,
   [switch]$IncludeRawEvents
 )
 
@@ -553,6 +554,53 @@ function Select-OperationalEvents {
   })
 }
 
+function Select-FocusedTraceEvents {
+  param(
+    [Parameter(Mandatory = $true)]$Events,
+    [string]$SelectedTraceId,
+    [switch]$ShowAllEvents
+  )
+
+  if ($ShowAllEvents -or $SelectedTraceId) {
+    return [pscustomobject]@{
+      TraceId = $SelectedTraceId
+      Events = @($Events)
+      Focused = [bool]$SelectedTraceId
+    }
+  }
+
+  $latestTraceId = @(
+    $Events |
+      Sort-Object Timestamp -Descending |
+      ForEach-Object {
+        $traceIdValue = Get-OptionalProperty -Object $_.Json -Name "traceId"
+        if ($traceIdValue) {
+          $traceIdValue
+        }
+      } |
+      Where-Object { $_ } |
+      Select-Object -First 1
+  )
+
+  if ($latestTraceId.Count -eq 0) {
+    return [pscustomobject]@{
+      TraceId = $null
+      Events = @($Events)
+      Focused = $false
+    }
+  }
+
+  $selected = [string]$latestTraceId[0]
+  return [pscustomobject]@{
+    TraceId = $selected
+    Events = @($Events | Where-Object {
+      $message = Get-OptionalProperty -Object $_ -Name "Message"
+      $message -like "*$selected*"
+    })
+    Focused = $true
+  }
+}
+
 function Test-HasEvent {
   param(
     [Parameter(Mandatory = $true)]$Events,
@@ -574,6 +622,7 @@ function Get-Diagnosis {
   $hasPlannerDecision = Test-HasEvent -Events $Events -Name "bridge.tool.intent.decided"
   $hasBridgeDelivery = Test-HasEvent -Events $Events -Name "bridge.delivery.success"
   $hasLambdaInvoked = Test-HasEvent -Events $Events -Name "route.lambda.invoked"
+  $hasLambdaAccepted = Test-HasEvent -Events $Events -Name "lambda.request.accepted"
   $hasLambdaDelivery = (
     Test-HasEvent -Events $Events -Name "lambda.delivery.telegram.success"
   ) -or (
@@ -581,6 +630,24 @@ function Get-Diagnosis {
   )
   $hasBridgeFailure = Test-HasEvent -Events $Events -Name "bridge.delivery.failed"
   $hasOpenClawFallbackUnavailable = Test-HasEvent -Events $Events -Name "bridge.openclaw_fallback.unavailable"
+
+  if ($hasLambdaAccepted -and $hasLambdaDelivery -and -not ($hasGateway -or $hasBridgeAccepted -or $hasAgentCoreStarted)) {
+    return [pscustomobject]@{
+      Status = "healthy"
+      Layer = "lambda-agent"
+      Summary = "The latest focused trace was handled directly by the Lambda chat runtime and delivered successfully."
+      NextAction = "No action needed. If this was expected to use tools, inspect the Gateway route for the preceding user turn or run with -AllEvents."
+    }
+  }
+
+  if ($hasLambdaAccepted -and -not $hasLambdaDelivery -and -not ($hasGateway -or $hasBridgeAccepted -or $hasAgentCoreStarted)) {
+    return [pscustomobject]@{
+      Status = "attention"
+      Layer = "lambda-agent"
+      Summary = "The Lambda chat runtime accepted the latest focused trace, but no delivery success was observed."
+      NextAction = "Inspect /aws/lambda/serverless-openclaw-agent for provider, Bedrock, or Telegram delivery errors."
+    }
+  }
 
   if (-not $hasGateway -and -not $hasBridgeAccepted -and -not $hasLambdaInvoked) {
     return [pscustomobject]@{
@@ -702,7 +769,12 @@ $events = Read-AllOperationalEvents `
   -SelectedLimit $Limit `
   -SelectedTraceId $TraceId `
   -SelectedUserId $UserId
-$operationalEvents = Select-OperationalEvents -Events $events
+$allOperationalEvents = Select-OperationalEvents -Events $events
+$focus = Select-FocusedTraceEvents `
+  -Events $allOperationalEvents `
+  -SelectedTraceId $TraceId `
+  -ShowAllEvents:$AllEvents
+$operationalEvents = @($focus.Events)
 $diagnosis = Get-Diagnosis -Events $operationalEvents
 $dynamoState = if ($UserId) {
   Read-DynamoState `
@@ -719,8 +791,10 @@ Write-Host "  Region       : $Region"
 Write-Host "  Window       : last $SinceMinutes minute(s)"
 Write-Host "  Channel      : $Channel"
 Write-Host "  TraceId      : $(if ($TraceId) { $TraceId } else { 'not provided' })"
+Write-Host "  FocusTraceId : $(if ($focus.TraceId) { $focus.TraceId } else { 'none' })"
+Write-Host "  FocusMode    : $(if ($focus.Focused) { 'latest trace' } elseif ($AllEvents) { 'all events' } else { 'all events (no trace found)' })"
 Write-Host "  UserId       : $(if ($UserId) { $UserId } else { 'not provided' })"
-Write-Host "  Events       : $($operationalEvents.Count) operational / $($events.Count) total"
+Write-Host "  Events       : $($operationalEvents.Count) focused / $($allOperationalEvents.Count) operational / $($events.Count) total"
 Write-Host ""
 
 Show-DynamoState -State $dynamoState

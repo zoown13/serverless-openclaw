@@ -43,6 +43,8 @@ powershell -File .\scripts\diagnose-operational-copilot.ps1 `
   -SinceMinutes 30
 ```
 
+By default, when a user or Telegram id is provided without an explicit trace id, the script focuses the output on the latest correlated trace. Use `-AllEvents` to inspect the full time window.
+
 Diagnose a specific trace:
 
 ```powershell
@@ -58,6 +60,15 @@ powershell -File .\scripts\diagnose-operational-copilot.ps1 `
   -TelegramId 8585874705 `
   -SinceMinutes 30 `
   -IncludeRawEvents
+```
+
+Show the full operational timeline instead of the latest trace only:
+
+```powershell
+powershell -File .\scripts\diagnose-operational-copilot.ps1 `
+  -TelegramId 8585874705 `
+  -SinceMinutes 30 `
+  -AllEvents
 ```
 
 ## Diagnosis model

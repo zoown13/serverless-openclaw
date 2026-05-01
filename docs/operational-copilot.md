@@ -124,10 +124,13 @@ Supported v1 repair actions:
 
 - `inspect`: read-only state inspection
 - `inspect-pending-messages`: read-only pending queue inspection
+- `inspect-fargate-tasks`: read-only running Fargate task inspection
 - `clear-active-tool-affinity`: clears `SETTING#active-tool:{channel}` for the user
 - `clear-task-state`: clears the user's `TaskState` item
 - `clear-runtime-state`: clears both active tool affinity and task state
 - `clear-pending-messages`: clears pending messages for the user after explicit `-Apply`
+- `reset-fallback-provider-lock`: clears active tool affinity only when it is locked to Fargate fallback
+- `stop-fargate-tasks`: stops running Fargate tasks owned by the selected user only
 
 Preview pending queue cleanup:
 
@@ -147,8 +150,31 @@ powershell -File .\scripts\repair-operational-copilot.ps1 `
   -RunSmokeAfterRepair
 ```
 
+Preview fallback lock reset:
+
+```powershell
+powershell -File .\scripts\repair-operational-copilot.ps1 `
+  -TelegramId 8585874705 `
+  -Action reset-fallback-provider-lock
+```
+
+Inspect running Fargate tasks:
+
+```powershell
+powershell -File .\scripts\repair-operational-copilot.ps1 `
+  -TelegramId 8585874705 `
+  -Action inspect-fargate-tasks
+```
+
+Preview stopping owned Fargate tasks:
+
+```powershell
+powershell -File .\scripts\repair-operational-copilot.ps1 `
+  -TelegramId 8585874705 `
+  -Action stop-fargate-tasks
+```
+
 The next version should add more repair actions behind the same explicit `-Apply` guard:
 
-- reset fallback provider lock
-- stop a stuck Fargate task
 - true pending message redrive instead of cleanup-only repair
+- stronger task ownership detection when ECS task overrides are missing

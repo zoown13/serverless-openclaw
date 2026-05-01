@@ -6,8 +6,9 @@ param(
   [long]$ChatId,
   [ValidateSet("telegram", "web")]
   [string]$Channel = "telegram",
-  [ValidateSet("inspect", "inspect-pending-messages", "clear-active-tool-affinity", "clear-task-state", "clear-runtime-state", "clear-pending-messages")]
+  [ValidateSet("inspect", "inspect-pending-messages", "inspect-fargate-tasks", "clear-active-tool-affinity", "clear-task-state", "clear-runtime-state", "clear-pending-messages", "reset-fallback-provider-lock", "stop-fargate-tasks")]
   [string]$Action = "inspect",
+  [string]$ClusterName = "serverless-openclaw",
   [ValidateSet("PaymentFollowUp", "PaymentCoverageFollowUp", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff")]
   [string]$SmokeScenario = "TravelPaymentThenChatHandoff",
   [int]$SmokePauseSeconds = 10,
@@ -429,6 +430,139 @@ function Remove-PendingMessages {
   return $messages.Count
 }
 
+function Get-ContainerEnvironmentValue {
+  param(
+    $Task,
+    [Parameter(Mandatory = $true)][string[]]$Names
+  )
+
+  $overrides = Get-OptionalProperty -Object $Task -Name "overrides"
+  $containerOverrides = Get-OptionalProperty -Object $overrides -Name "containerOverrides"
+  foreach ($containerOverride in @($containerOverrides)) {
+    $environment = Get-OptionalProperty -Object $containerOverride -Name "environment"
+    foreach ($entry in @($environment)) {
+      $name = Get-OptionalProperty -Object $entry -Name "name"
+      $value = Get-OptionalProperty -Object $entry -Name "value"
+      if ($name -and ($Names -contains $name)) {
+        return $value
+      }
+    }
+  }
+
+  return $null
+}
+
+function Read-FargateTasks {
+  param(
+    [Parameter(Mandatory = $true)][string]$SelectedProfile,
+    [Parameter(Mandatory = $true)][string]$SelectedRegion,
+    [Parameter(Mandatory = $true)][string]$SelectedClusterName
+  )
+
+  $listed = Invoke-AwsJson `
+    -Arguments @(
+      "ecs", "list-tasks",
+      "--cluster", $SelectedClusterName,
+      "--desired-status", "RUNNING",
+      "--output", "json",
+      "--profile", $SelectedProfile,
+      "--region", $SelectedRegion
+    ) `
+    -AllowFailure
+
+  $taskArns = @()
+  if ($listed) {
+    $taskArns = @(Get-OptionalProperty -Object $listed -Name "taskArns" | Where-Object { $_ })
+  }
+
+  if ($taskArns.Count -eq 0) {
+    return @()
+  }
+
+  $arguments = @(
+    "ecs", "describe-tasks",
+    "--cluster", $SelectedClusterName,
+    "--output", "json",
+    "--profile", $SelectedProfile,
+    "--region", $SelectedRegion,
+    "--tasks"
+  ) + $taskArns
+
+  $described = Invoke-AwsJson -Arguments $arguments -AllowFailure
+  $tasks = if ($described) { Get-OptionalProperty -Object $described -Name "tasks" } else { @() }
+
+  return @($tasks | ForEach-Object {
+    $taskArn = Get-OptionalProperty -Object $_ -Name "taskArn"
+    $lastStatus = Get-OptionalProperty -Object $_ -Name "lastStatus"
+    $desiredStatus = Get-OptionalProperty -Object $_ -Name "desiredStatus"
+    $startedAt = Get-OptionalProperty -Object $_ -Name "startedAt"
+    $userId = Get-ContainerEnvironmentValue -Task $_ -Names @("USER_ID", "OPENCLAW_USER_ID")
+    $runtime = Get-ContainerEnvironmentValue -Task $_ -Names @("OPENCLAW_RUNTIME", "RUNTIME")
+
+    [pscustomobject]@{
+      TaskArn = $taskArn
+      LastStatus = $lastStatus
+      DesiredStatus = $desiredStatus
+      StartedAt = $startedAt
+      UserId = $userId
+      Runtime = $runtime
+    }
+  })
+}
+
+function Show-FargateTasks {
+  param(
+    $Tasks,
+    [string]$SelectedUserId
+  )
+
+  $visibleTasks = @($Tasks | Where-Object { $null -ne $_ })
+  if ($visibleTasks.Count -eq 0) {
+    Write-Host "Fargate tasks: none"
+    return
+  }
+
+  Write-Host "Fargate tasks:"
+  foreach ($task in $visibleTasks) {
+    $owned = (Get-OptionalProperty -Object $task -Name "UserId") -eq $SelectedUserId
+    Write-Host "  - taskArn  : $($task.TaskArn)"
+    Write-Host "    status   : $($task.LastStatus) / desired=$($task.DesiredStatus)"
+    Write-Host "    userId   : $(if ($task.UserId) { $task.UserId } else { 'unknown' })"
+    Write-Host "    runtime  : $(if ($task.Runtime) { $task.Runtime } else { 'unknown' })"
+    Write-Host "    startedAt: $(if ($task.StartedAt) { $task.StartedAt } else { 'unknown' })"
+    Write-Host "    selected : $owned"
+  }
+}
+
+function Stop-OwnedFargateTasks {
+  param(
+    [Parameter(Mandatory = $true)][string]$SelectedProfile,
+    [Parameter(Mandatory = $true)][string]$SelectedRegion,
+    [Parameter(Mandatory = $true)][string]$SelectedClusterName,
+    [Parameter(Mandatory = $true)][string]$SelectedUserId
+  )
+
+  $tasks = Read-FargateTasks `
+    -SelectedProfile $SelectedProfile `
+    -SelectedRegion $SelectedRegion `
+    -SelectedClusterName $SelectedClusterName
+
+  $selectedTasks = @($tasks | Where-Object { $_.UserId -eq $SelectedUserId })
+  foreach ($task in $selectedTasks) {
+    Invoke-AwsNoJson `
+      -Arguments @(
+        "ecs", "stop-task",
+        "--cluster", $SelectedClusterName,
+        "--task", $task.TaskArn,
+        "--reason", "Operational Copilot guarded repair for user runtime",
+        "--profile", $SelectedProfile,
+        "--region", $SelectedRegion
+      )
+  }
+
+  return $selectedTasks.Count
+}
+
 function Invoke-PostRepairSmoke {
   param(
     [Parameter(Mandatory = $true)][long]$SelectedChatId,
@@ -474,6 +608,7 @@ Write-Host "  Region  : $Region"
 Write-Host "  UserId  : $UserId"
 Write-Host "  Channel : $Channel"
 Write-Host "  Action  : $Action"
+Write-Host "  Cluster : $ClusterName"
 Write-Host "  Apply   : $Apply"
 Write-Host "  Smoke   : $(if ($RunSmokeAfterRepair) { $SmokeScenario } else { 'disabled' })"
 Write-Host ""
@@ -488,7 +623,7 @@ Write-Host "Before:"
 Show-RuntimeState -State $beforeState
 Write-Host ""
 
-if ($Action -eq "inspect" -or $Action -eq "inspect-pending-messages") {
+if ($Action -eq "inspect" -or $Action -eq "inspect-pending-messages" -or $Action -eq "inspect-fargate-tasks") {
   if ($Action -eq "inspect-pending-messages") {
     $pendingMessages = Read-PendingMessages `
       -SelectedProfile $Profile `
@@ -496,6 +631,13 @@ if ($Action -eq "inspect" -or $Action -eq "inspect-pending-messages") {
       -SelectedUserId $UserId `
       -SelectedLimit 25
     Show-PendingMessages -Messages $pendingMessages
+  }
+  if ($Action -eq "inspect-fargate-tasks") {
+    $fargateTasks = Read-FargateTasks `
+      -SelectedProfile $Profile `
+      -SelectedRegion $Region `
+      -SelectedClusterName $ClusterName
+    Show-FargateTasks -Tasks $fargateTasks -SelectedUserId $UserId
   }
 
   Write-Host "No repair action selected. This was a read-only inspection."
@@ -520,6 +662,22 @@ if (-not $Apply) {
       -SelectedLimit 25
     Write-Host "  - Delete PendingMessages items for USER#$UserId"
     Show-PendingMessages -Messages $pendingMessages
+  }
+  if ($Action -eq "reset-fallback-provider-lock") {
+    $affinityValue = Get-OptionalProperty -Object $beforeState.ActiveToolAffinity -Name "value"
+    $provider = Get-OptionalProperty -Object $affinityValue -Name "provider"
+    $fallbackProvider = Get-OptionalProperty -Object $affinityValue -Name "fallbackProvider"
+    Write-Host "  - Delete active tool affinity only if it is locked to fallback provider"
+    Write-Host "    current provider        : $(if ($provider) { $provider } else { 'none' })"
+    Write-Host "    current fallbackProvider: $(if ($fallbackProvider) { $fallbackProvider } else { 'none' })"
+  }
+  if ($Action -eq "stop-fargate-tasks") {
+    $fargateTasks = Read-FargateTasks `
+      -SelectedProfile $Profile `
+      -SelectedRegion $Region `
+      -SelectedClusterName $ClusterName
+    Write-Host "  - Stop running Fargate tasks owned by USER#$UserId only"
+    Show-FargateTasks -Tasks $fargateTasks -SelectedUserId $UserId
   }
   if ($RunSmokeAfterRepair) {
     Write-Host "  - Run synthetic Telegram smoke after repair: $SmokeScenario"
@@ -548,6 +706,33 @@ if ($Action -eq "clear-pending-messages") {
     -SelectedRegion $Region `
     -SelectedUserId $UserId
   Write-Host "Deleted pending messages: $deletedCount"
+}
+
+if ($Action -eq "reset-fallback-provider-lock") {
+  $affinityValue = Get-OptionalProperty -Object $beforeState.ActiveToolAffinity -Name "value"
+  $provider = Get-OptionalProperty -Object $affinityValue -Name "provider"
+  $fallbackProvider = Get-OptionalProperty -Object $affinityValue -Name "fallbackProvider"
+  $isFallbackLocked = $provider -eq "fargate" -or $fallbackProvider -eq "fargate"
+
+  if ($isFallbackLocked) {
+    Remove-ActiveToolAffinity `
+      -SelectedProfile $Profile `
+      -SelectedRegion $Region `
+      -SelectedUserId $UserId `
+      -SelectedChannel $Channel
+    Write-Host "Fallback provider lock cleared."
+  } else {
+    Write-Host "No fallback provider lock found. No state was changed."
+  }
+}
+
+if ($Action -eq "stop-fargate-tasks") {
+  $stoppedCount = Stop-OwnedFargateTasks `
+    -SelectedProfile $Profile `
+    -SelectedRegion $Region `
+    -SelectedClusterName $ClusterName `
+    -SelectedUserId $UserId
+  Write-Host "Stopped owned Fargate tasks: $stoppedCount"
 }
 
 $afterState = Read-RuntimeState `

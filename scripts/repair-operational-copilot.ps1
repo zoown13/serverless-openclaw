@@ -11,6 +11,7 @@ param(
   [string]$ClusterName = "serverless-openclaw",
   [int]$StaleTaskAgeHours = 6,
   [switch]$IncludeFreshFargateTasks,
+  [switch]$FailOnStaleFargateTasks,
   [ValidateSet("PaymentFollowUp", "PaymentCoverageFollowUp", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff")]
   [string]$SmokeScenario = "TravelPaymentThenChatHandoff",
   [int]$SmokePauseSeconds = 10,
@@ -689,6 +690,14 @@ if ($Action -eq "inspect" -or $Action -eq "inspect-pending-messages" -or $Action
       -SelectedUserId $UserId `
       -SelectedStaleTaskAgeHours $StaleTaskAgeHours `
       -SelectFreshTasks:$IncludeFreshFargateTasks
+    $staleTaskCount = @($fargateTasks | Where-Object {
+      $_.UserId -eq $UserId -and
+      $null -ne $_.AgeHours -and
+      $_.AgeHours -ge $StaleTaskAgeHours
+    }).Count
+    if ($FailOnStaleFargateTasks -and $staleTaskCount -gt 0) {
+      exit 2
+    }
   }
 
   Write-Host "No repair action selected. This was a read-only inspection."

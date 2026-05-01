@@ -51,12 +51,31 @@ powershell -File .\scripts\check-operational-health.ps1 `
   -SinceMinutes 120
 ```
 
+For automation, fail the health check when operational guardrails are violated:
+
+```powershell
+powershell -File .\scripts\check-operational-health.ps1 `
+  -TelegramId 8585874705 `
+  -SinceMinutes 120 `
+  -FailOnWarnings
+```
+
 Estimate AgentCore Runtime usage and conservative cost from Gateway invoke logs:
 
 ```powershell
 powershell -File .\scripts\estimate-agentcore-cost.ps1 `
   -SinceHours 24 `
   -MonthlyBudgetUsd 1
+```
+
+The cost estimator can also fail automation when a budget or terminal-event guardrail is violated:
+
+```powershell
+powershell -File .\scripts\estimate-agentcore-cost.ps1 `
+  -SinceHours 24 `
+  -MonthlyBudgetUsd 1 `
+  -FailOnBudgetExceeded `
+  -FailOnMissingTerminals
 ```
 
 The estimate uses the public AgentCore Runtime rates for CPU and memory, but it is intentionally conservative because Gateway wall-clock invoke duration includes I/O wait that may not be billed as active CPU consumption.

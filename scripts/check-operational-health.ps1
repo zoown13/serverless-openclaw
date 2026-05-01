@@ -7,6 +7,8 @@ param(
   [string]$Channel = "telegram",
   [int]$SinceMinutes = 120,
   [int]$StaleTaskAgeHours = 6,
+  [double]$MonthlyBudgetUsd = 1.0,
+  [switch]$FailOnWarnings,
   [switch]$AllEvents
 )
 
@@ -55,6 +57,8 @@ Write-Host "  Region        : $Region"
 Write-Host "  Channel       : $Channel"
 Write-Host "  SinceMinutes  : $SinceMinutes"
 Write-Host "  StaleTaskAgeH : $StaleTaskAgeHours"
+Write-Host "  BudgetUsd     : $MonthlyBudgetUsd"
+Write-Host "  FailWarnings  : $FailOnWarnings"
 Write-Host ""
 
 Write-Host "== 1. Latest trace diagnosis =="
@@ -72,33 +76,43 @@ Invoke-CheckedScript -Command $diagnoseCommand
 
 Write-Host ""
 Write-Host "== 2. Pending queue inspection =="
-Invoke-CheckedScript -Command (@(
+$pendingCommand = @(
   "powershell", "-File", $repairPath,
   "-Profile", $Profile,
   "-Region", $Region,
   "-Channel", $Channel,
   "-Action", "inspect-pending-messages"
-) + $identityArgs)
+) + $identityArgs
+Invoke-CheckedScript -Command $pendingCommand
 
 Write-Host ""
 Write-Host "== 3. Fargate cost guardrail inspection =="
-Invoke-CheckedScript -Command (@(
+$fargateCommand = @(
   "powershell", "-File", $repairPath,
   "-Profile", $Profile,
   "-Region", $Region,
   "-Channel", $Channel,
   "-Action", "inspect-fargate-tasks",
   "-StaleTaskAgeHours", "$StaleTaskAgeHours"
-) + $identityArgs)
+) + $identityArgs
+if ($FailOnWarnings) {
+  $fargateCommand += "-FailOnStaleFargateTasks"
+}
+Invoke-CheckedScript -Command $fargateCommand
 
 Write-Host ""
 Write-Host "== 4. AgentCore cost guardrail estimate =="
-Invoke-CheckedScript -Command @(
+$agentCoreCostCommand = @(
   "powershell", "-File", $agentCoreCostPath,
   "-Profile", $Profile,
   "-Region", $Region,
-  "-SinceHours", "$([Math]::Max(1, [Math]::Ceiling($SinceMinutes / 60.0)))"
+  "-SinceHours", "$([Math]::Max(1, [Math]::Ceiling($SinceMinutes / 60.0)))",
+  "-MonthlyBudgetUsd", "$MonthlyBudgetUsd"
 )
+if ($FailOnWarnings) {
+  $agentCoreCostCommand += @("-FailOnBudgetExceeded", "-FailOnMissingTerminals")
+}
+Invoke-CheckedScript -Command $agentCoreCostCommand
 
 Write-Host ""
 Write-Host "Operational health check complete."

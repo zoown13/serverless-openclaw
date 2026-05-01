@@ -7,7 +7,9 @@ param(
   [double]$MemoryGb = 0.5,
   [double]$CpuUsdPerVcpuHour = 0.0895,
   [double]$MemoryUsdPerGbHour = 0.00945,
-  [double]$MonthlyBudgetUsd = 1.0
+  [double]$MonthlyBudgetUsd = 1.0,
+  [switch]$FailOnBudgetExceeded,
+  [switch]$FailOnMissingTerminals
 )
 
 Set-StrictMode -Version Latest
@@ -248,3 +250,7 @@ if ($monthlyProjection -gt $MonthlyBudgetUsd) {
 
 Write-Host ""
 Write-Host "Note: this is a conservative wall-clock estimate from Gateway logs. AgentCore Runtime billing is based on active CPU consumption and peak memory consumed per second, so actual billed runtime cost may be lower during I/O wait."
+
+if (($FailOnBudgetExceeded -and $monthlyProjection -gt $MonthlyBudgetUsd) -or ($FailOnMissingTerminals -and $missingCount -gt 0)) {
+  exit 2
+}

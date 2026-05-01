@@ -33,6 +33,8 @@ const TRAVEL_CONTEXT_PATTERN =
   /(?:여행|출장|일본|도쿄|오사카|교토|후쿠오카|삿포로|오키나와|항공|비행|호텔|숙소|eSIM|\btravel\b|\btrip\b|\bflight\b|\bhotel\b|\blodging\b|\besim\b)/i;
 const PAYMENT_RECORD_PATTERN =
   /(?:결제한?\s*내역(?:들)?|지출\s*내역(?:들)?|사용\s*내역(?:들)?|사용한\s*돈|쓴\s*돈|소비\s*내역(?:들)?|여행\s*경비|출장\s*경비|카드사별|결제처별|\brecords?\b|\bhistory\b)/i;
+const GENERAL_HOW_TO_PATTERN =
+  /(?:명령어|방법|개념|뜻|의미|차이|예시|문법|코드|command|how\s+to|example).*(?:알려|설명|추천|작성|가르쳐|뭐야|무엇|show|explain|recommend|write)|(?:알려|설명|추천|작성|가르쳐|뭐야|무엇|show|explain|recommend|write).*(?:명령어|방법|개념|뜻|의미|차이|예시|문법|코드|command|how\s+to|example)/i;
 
 function normalizeIntentMessage(message: string): string {
   return message.normalize("NFKC").replace(/\s+/gu, " ").trim();
@@ -66,9 +68,14 @@ export function getRouteClassificationSignals(
 
 export function classifyRouteRuntimeClass(message: string): RuntimeClass {
   const signals = getRouteClassificationSignals(message);
+  const normalized = normalizeIntentMessage(message);
 
   if (signals.hasFargateHint) {
     return "tool-enabled";
+  }
+
+  if (GENERAL_HOW_TO_PATTERN.test(normalized)) {
+    return "chat-only";
   }
 
   if (signals.hasPrivateDataTarget && signals.hasPrivateDataAction) {

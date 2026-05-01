@@ -561,6 +561,72 @@ describe("gmail-tool", () => {
     expect(followUp?.message).toContain("- 현대카드: KRW 45,000 (1건)");
   });
 
+  it("uses advisor coverage_check to rerun active payment lookup from the canonical goal", async () => {
+    decideToolIntentMock
+      .mockResolvedValueOnce({
+        action: "gmail",
+        taskFamily: "gmail_payment_summary",
+        sourceChoice: "gmail",
+        confidence: 0.95,
+      })
+      .mockResolvedValueOnce({
+        action: "rerun_current_task",
+        taskFamily: "gmail_payment_summary",
+        sourceChoice: "gmail",
+        followUpIntent: "coverage_check",
+        confidence: 0.95,
+      });
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m1" }] } }))
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "카드 결제 알림",
+          "Card Co <billing@example.com>",
+          "Fri, 03 Apr 2026 09:00:00 +0000",
+          "결제금액 12,300원 카드종류 삼성카드 가맹점명 스타벅스",
+          "m1",
+        ),
+      );
+
+    await maybeHandleCustomGmailRequest({
+      userId: "user-advisor-coverage-check",
+      sessionKey: "session-advisor-coverage-check",
+      message: "이번주 결제한 금액이 어느정도 되려나?",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    fetchMock.mockReset();
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m2" }] } }))
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "카드 결제 알림",
+          "Card Co <billing@example.com>",
+          "Sat, 04 Apr 2026 09:00:00 +0000",
+          "결제금액 45,000원 카드종류 현대카드 가맹점명 쿠팡",
+          "m2",
+        ),
+      );
+
+    const followUp = await maybeHandleCustomGmailRequest({
+      userId: "user-advisor-coverage-check",
+      sessionKey: "session-advisor-coverage-check",
+      message: "결제 내역이 더 있을텐데",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    expect(fetchMock).toHaveBeenCalled();
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("q=");
+    expect(followUp?.kind).toBe("direct");
+    expect(followUp?.message).toContain("쿠팡");
+    expect(followUp?.message).not.toContain("스타벅스");
+  });
+
   it("uses limited body checks to improve unknown card issuer breakdowns", async () => {
     decideToolIntentMock
       .mockResolvedValueOnce({

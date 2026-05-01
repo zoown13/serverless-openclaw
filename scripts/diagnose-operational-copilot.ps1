@@ -26,7 +26,7 @@ function Write-Utf8NoBomJson {
 
 function Get-OptionalProperty {
   param(
-    [Parameter(Mandatory = $true)]$Object,
+    $Object,
     [Parameter(Mandatory = $true)][string]$Name
   )
 
@@ -96,7 +96,14 @@ function Invoke-AwsJson {
     [switch]$AllowFailure
   )
 
-  $output = & aws @Arguments 2>$null
+  $previousErrorActionPreference = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $output = & aws @Arguments 2>$null
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+  }
+
   if ($LASTEXITCODE -ne 0) {
     if ($AllowFailure) {
       return $null
@@ -291,6 +298,46 @@ function Read-AllOperationalEvents {
       -FilterPattern $filterPattern
   }
 
+  if ($SelectedUserId -and -not $SelectedTraceId -and $events.Count -gt 0) {
+    $traceIds = @(
+      $events |
+        ForEach-Object {
+          $traceIdValue = Get-OptionalProperty -Object $_.Json -Name "traceId"
+          if ($traceIdValue) {
+            $traceIdValue
+          }
+        } |
+        Where-Object { $_ } |
+        Select-Object -Unique
+    )
+
+    if ($traceIds.Count -gt 0) {
+      $traceLinkedEvents = @()
+      foreach ($logGroup in $logGroups) {
+        $traceLinkedEvents += Read-LogEvents `
+          -SelectedProfile $SelectedProfile `
+          -SelectedRegion $SelectedRegion `
+          -LogGroup $logGroup `
+          -StartTimeMs $StartTimeMs `
+          -SelectedLimit $SelectedLimit
+      }
+
+      $events += @(
+        $traceLinkedEvents |
+          Where-Object {
+            $message = Get-OptionalProperty -Object $_ -Name "Message"
+            foreach ($traceIdValue in $traceIds) {
+              if ($message -like "*$traceIdValue*") {
+                return $true
+              }
+            }
+
+            return $false
+          }
+      )
+    }
+  }
+
   if ($events.Count -eq 0 -and $filterPattern) {
     foreach ($logGroup in $logGroups) {
       $events += Read-LogEvents `
@@ -304,12 +351,27 @@ function Read-AllOperationalEvents {
 
   return @(
     $events |
+      Sort-Object Timestamp, LogGroup, LogStream, Message -Unique |
       Where-Object {
         $matchesFilter = $true
         if ($SelectedTraceId) {
           $matchesFilter = ($_.Message -like "*$SelectedTraceId*")
         } elseif ($SelectedUserId) {
-          $matchesFilter = (
+          $linkedTraceIds = @(
+            $events |
+              ForEach-Object { Get-OptionalProperty -Object $_.Json -Name "traceId" } |
+              Where-Object { $_ } |
+              Select-Object -Unique
+          )
+          $matchesTrace = $false
+          foreach ($traceIdValue in $linkedTraceIds) {
+            if ($_.Message -like "*$traceIdValue*") {
+              $matchesTrace = $true
+              break
+            }
+          }
+
+          $matchesFilter = $matchesTrace -or (
             $_.Message -like "*$SelectedUserId*" -or
             $_.Message -like "*session-$SelectedUserId*"
           )
@@ -512,8 +574,11 @@ function Get-Diagnosis {
   $hasPlannerDecision = Test-HasEvent -Events $Events -Name "bridge.tool.intent.decided"
   $hasBridgeDelivery = Test-HasEvent -Events $Events -Name "bridge.delivery.success"
   $hasLambdaInvoked = Test-HasEvent -Events $Events -Name "route.lambda.invoked"
-  $hasLambdaDelivery = Test-HasEvent -Events $Events -Name "lambda.delivery.telegram.success" -or
+  $hasLambdaDelivery = (
+    Test-HasEvent -Events $Events -Name "lambda.delivery.telegram.success"
+  ) -or (
     Test-HasEvent -Events $Events -Name "lambda.delivery.web.success"
+  )
   $hasBridgeFailure = Test-HasEvent -Events $Events -Name "bridge.delivery.failed"
   $hasOpenClawFallbackUnavailable = Test-HasEvent -Events $Events -Name "bridge.openclaw_fallback.unavailable"
 

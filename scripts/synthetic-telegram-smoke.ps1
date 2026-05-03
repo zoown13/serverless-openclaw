@@ -256,31 +256,25 @@ function Send-TelegramWebhookEvent {
     [Parameter(Mandatory = $true)][string]$JsonBody
   )
 
-  $tempPath = Join-Path `
-    ([System.IO.Path]::GetTempPath()) `
-    ("telegram-webhook-{0}.json" -f [Guid]::NewGuid().ToString("N"))
-
   try {
-    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
-    [System.IO.File]::WriteAllText($tempPath, $JsonBody, $utf8NoBom)
-
-    $response = & curl.exe `
-      --silent `
-      --show-error `
-      --fail `
-      --request POST `
-      --header "X-Telegram-Bot-Api-Secret-Token: $Secret" `
-      --header "Content-Type: application/json; charset=utf-8" `
-      --data-binary "@$tempPath" `
-      $Uri 2>&1
-
-    if ($LASTEXITCODE -ne 0) {
-      throw "Webhook POST failed: $response"
+    $headers = @{
+      "X-Telegram-Bot-Api-Secret-Token" = $Secret
     }
-  } finally {
-    if (Test-Path -LiteralPath $tempPath) {
-      Remove-Item -LiteralPath $tempPath -Force
+    $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($JsonBody)
+
+    $response = Invoke-WebRequest `
+      -Uri $Uri `
+      -Method Post `
+      -Headers $headers `
+      -ContentType "application/json; charset=utf-8" `
+      -Body $bodyBytes `
+      -UseBasicParsing
+
+    if ($response.StatusCode -lt 200 -or $response.StatusCode -ge 300) {
+      throw "Webhook POST failed with HTTP $($response.StatusCode)."
     }
+  } catch {
+    throw "Webhook POST failed: $($_.Exception.Message)"
   }
 }
 

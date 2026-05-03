@@ -42,6 +42,8 @@ const CANCEL_PATTERN = /^(?:취소|그만|끝|됐어|done|cancel|stop)(?:[.!?])?
 const ATTACHMENT_PATTERN = /(첨부|attachment|pdf|파일|download)/i;
 const BODY_REQUEST_PATTERN =
   /(자세히|본문|내용 보여|본문 보여|열어줘|open|full body|details?)/i;
+const EXPANDED_PAYMENT_SCAN_PATTERN =
+  /(전체|전부|모두|제한\s*(?:풀|해제|없이)|한도\s*(?:풀|해제|없이)|더\s*넓게|더\s*많이|가능한\s*많이|최대한|끝까지|all|everything|no\s*limit|full\s*scan)/i;
 const POLICY_NOTICE_PATTERN =
   /(약관|개정\s*안내|기본약관|이용약관|정책\s*안내|표준\s*전자금융거래|전자금융거래\s*기본약관|terms?|policy)/i;
 const TRAVEL_REFINEMENT_PATTERN =
@@ -935,7 +937,18 @@ function resolveExpandedTopicCandidateLimit(maxMessages: number): number {
   return Math.max(maxMessages, EXPANDED_TOPIC_CANDIDATE_MESSAGES);
 }
 
-function resolvePaymentScanLimit(emailTokenBudget: EmailTokenBudgetPolicy): number {
+function isExpandedPaymentScanRequest(message: string): boolean {
+  return EXPANDED_PAYMENT_SCAN_PATTERN.test(message);
+}
+
+function resolvePaymentScanLimit(
+  emailTokenBudget: EmailTokenBudgetPolicy,
+  message = "",
+): number {
+  if (isExpandedPaymentScanRequest(message)) {
+    return MAX_PAYMENT_SCAN_MESSAGES;
+  }
+
   return Math.min(
     Math.max(
       emailTokenBudget.maxMessages,
@@ -943,6 +956,12 @@ function resolvePaymentScanLimit(emailTokenBudget: EmailTokenBudgetPolicy): numb
     ),
     MAX_PAYMENT_SCAN_MESSAGES,
   );
+}
+
+function buildPaymentRerunMessage(canonicalGoal: string, followUpMessage: string): string {
+  return isExpandedPaymentScanRequest(followUpMessage)
+    ? `${canonicalGoal}\n${followUpMessage}`
+    : canonicalGoal;
 }
 
 function isTopicRefinementFollowUp(message: string): boolean {
@@ -1627,7 +1646,9 @@ async function searchTopicAwarePaymentCandidates(
   usedBodyCheck: boolean;
 }> {
   const initialCandidateLimit = resolveInitialTopicCandidateLimit(
-    emailTokenBudget.maxMessages,
+    isExpandedPaymentScanRequest(message)
+      ? MAX_PAYMENT_SCAN_MESSAGES
+      : emailTokenBudget.maxMessages,
   );
   const expandedCandidateLimit = resolveExpandedTopicCandidateLimit(
     initialCandidateLimit,
@@ -1883,7 +1904,7 @@ function formatPaymentFollowUp(
   const total = records.reduce((sum, record) => sum + (record.amount ?? 0), 0);
   const normalized = message.toLowerCase();
   const displayLimit = emailTokenBudget.maxMessages;
-  const scanLimit = resolvePaymentScanLimit(emailTokenBudget);
+  const scanLimit = resolvePaymentScanLimit(emailTokenBudget, message);
 
   if (followUpIntent === "coverage_check" || /더\s*(있|찾|보)|밖에\s*없|몇\s*개|개수|건수|limit/i.test(normalized)) {
     const inspectedCount = context.lastMessages?.length ?? records.length;
@@ -1901,6 +1922,9 @@ function formatPaymentFollowUp(
       message:
         `${capMessage}\n\n` +
         `상세 목록은 한 번에 최대 ${displayLimit}건만 보여주지만, 현재 합계는 스캔된 결제성 메일 ${records.length}건 기준 ${formatCurrency(total)}입니다.\n` +
+        (scanLimit >= MAX_PAYMENT_SCAN_MESSAGES
+          ? `명시적 요청에 따라 이번 단계에서는 hard safety cap ${MAX_PAYMENT_SCAN_MESSAGES}건까지 넓게 보는 모드입니다.\n`
+          : "") +
         "더 넓게 보려면 기간, 보낸 사람, 카드사, 결제처 중 하나로 범위를 좁혀주세요.",
       source: "gmail-context",
     };
@@ -2095,7 +2119,7 @@ async function runGmailTask(
   } else {
     const scanLimit =
       taskFamily === "gmail_payment_summary"
-        ? resolvePaymentScanLimit(options.emailTokenBudget)
+        ? resolvePaymentScanLimit(options.emailTokenBudget, sourceMessage)
         : options.emailTokenBudget.maxMessages;
     const standardResult = await fetchPaymentMessages(
       accessToken,
@@ -2635,7 +2659,7 @@ async function handleActiveTaskContext(
         contextKey,
         options,
         "gmail_payment_summary",
-        nextContext.canonicalGoal,
+        buildPaymentRerunMessage(nextContext.canonicalGoal, trimmed),
         credentials,
       );
     }

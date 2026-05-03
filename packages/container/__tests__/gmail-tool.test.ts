@@ -179,6 +179,31 @@ describe("gmail-tool", () => {
     expect(fetchMock).toHaveBeenCalled();
   });
 
+  it("expands payment metadata scans to the hard safety cap when the user explicitly asks for all results", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m1" }] } }))
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "카드 결제 알림",
+          "Card Co <billing@example.com>",
+          "Fri, 03 Apr 2026 09:00:00 +0000",
+          "결제금액 12,300원 카드종류 삼성카드 가맹점명 스타벅스",
+        ),
+      );
+
+    const response = await maybeHandleCustomGmailRequest({
+      userId: "user-expanded-payment-scan",
+      sessionKey: "session-expanded-payment-scan",
+      message: "이번주 결제한 금액 전체 다 봐줘. 제한 풀고 가능한 많이 확인해줘",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    expect(response?.kind).toBe("direct");
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("maxResults=50");
+  });
+
   it("upgrades advisor-decided gmail_search into gmail_payment_summary for payment lookups", async () => {
     decideToolIntentMock.mockResolvedValueOnce({
       action: "gmail",

@@ -2475,11 +2475,25 @@ async function handleActiveTaskContext(
   }
 
   let effectiveContext = context;
-  const plannerWantsPaymentSummary =
+  const plannerWantsCurrentPaymentTask =
     plannerHint !== undefined &&
-    (isStartNewTaskAction(plannerHint.action) || isContinueTaskAction(plannerHint.action)) &&
     plannerHint.taskFamily === "gmail_payment_summary" &&
     (plannerHint.sourceChoice === "gmail" || plannerHint.sourceChoice === null);
+  const plannerWantsPaymentSummary =
+    plannerWantsCurrentPaymentTask &&
+    plannerHint !== undefined &&
+    (isStartNewTaskAction(plannerHint.action) || isContinueTaskAction(plannerHint.action)) &&
+    plannerHint.taskFamily === "gmail_payment_summary";
+  const plannerRequestsPaymentRerun =
+    plannerWantsCurrentPaymentTask &&
+    plannerHint !== undefined &&
+    (plannerHint.action === "rerun_current_task" || followUpIntent === "coverage_check");
+  const plannerRequestsTopicRefinement =
+    followUpIntent === "refine_topic" ||
+    (plannerWantsCurrentPaymentTask &&
+      plannerHint !== undefined &&
+      plannerHint.action === "refine_current_task" &&
+      extractTopicKeywords(trimmed).length > 0);
   if (
     context.taskFamily === "gmail_search" &&
     context.sourceChoice === "gmail" &&
@@ -2540,7 +2554,27 @@ async function handleActiveTaskContext(
       taskFamily: nextContext.taskFamily,
       sourceChoice: nextContext.sourceChoice,
     });
-    if (followUpIntent === "refine_topic" || isTopicRefinementFollowUp(trimmed)) {
+    if (plannerRequestsPaymentRerun) {
+      if ((nextContext.topicKeywords ?? []).length > 0) {
+        return refineActivePaymentContextByTopic(contextKey, nextContext, options);
+      }
+      const credentials = options.gmailReady ? await loadGmailCredentials() : null;
+      if (!credentials) {
+        return {
+          kind: "direct",
+          message: buildGmailUnavailableMessage(),
+          source: "gmail-fallback",
+        };
+      }
+      return runGmailTask(
+        contextKey,
+        options,
+        "gmail_payment_summary",
+        nextContext.canonicalGoal,
+        credentials,
+      );
+    }
+    if (plannerRequestsTopicRefinement || isTopicRefinementFollowUp(trimmed)) {
       return refineActivePaymentContextByTopic(contextKey, nextContext, options);
     }
     let followUpContext = nextContext;

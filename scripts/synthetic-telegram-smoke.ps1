@@ -422,7 +422,7 @@ function Wait-BridgeSignals {
   if ($requiresPaymentCoverageSignals) {
     $requiredSignals += @(
       '"followUpIntent":"amount_summary"',
-      '"followUpIntent":"coverage_check"'
+      '"action":"rerun_current_task"'
     )
   }
 

@@ -101,6 +101,22 @@ function ConvertTo-Utf8JsonFile {
   [System.IO.File]::WriteAllText($Path, $json, $utf8)
 }
 
+function Get-TempDirectory {
+  $candidates = @(
+    $env:TEMP,
+    $env:TMPDIR,
+    [System.IO.Path]::GetTempPath()
+  )
+
+  foreach ($candidate in $candidates) {
+    if (-not [string]::IsNullOrWhiteSpace($candidate)) {
+      return $candidate
+    }
+  }
+
+  throw "Unable to resolve a temporary directory for deployment files."
+}
+
 function Get-StorageOutput {
   param([Parameter(Mandatory = $true)] [string]$Key)
 
@@ -124,8 +140,9 @@ function Ensure-AgentCoreRuntimeRole {
     [Parameter(Mandatory = $true)] [string]$EcrRepositoryArn
   )
 
-  $trustFile = Join-Path $env:TEMP "serverless-openclaw-agentcore-trust.json"
-  $policyFile = Join-Path $env:TEMP "serverless-openclaw-agentcore-policy.json"
+  $tempDir = Get-TempDirectory
+  $trustFile = Join-Path $tempDir "serverless-openclaw-agentcore-trust.json"
+  $policyFile = Join-Path $tempDir "serverless-openclaw-agentcore-policy.json"
 
   ConvertTo-Utf8JsonFile -Path $trustFile -Value @{
     Version = "2012-10-17"
@@ -321,8 +338,9 @@ if ($AiProvider -ne "bedrock") {
   $environmentVariables.SSM_ANTHROPIC_API_KEY = "/serverless-openclaw/secrets/anthropic-api-key"
 }
 
-$runtimeFile = Join-Path $env:TEMP "serverless-openclaw-agentcore-runtime.json"
-$environmentVariablesFile = Join-Path $env:TEMP "serverless-openclaw-agentcore-env.json"
+$tempDir = Get-TempDirectory
+$runtimeFile = Join-Path $tempDir "serverless-openclaw-agentcore-runtime.json"
+$environmentVariablesFile = Join-Path $tempDir "serverless-openclaw-agentcore-env.json"
 ConvertTo-Utf8JsonFile -Path $environmentVariablesFile -Value $environmentVariables
 ConvertTo-Utf8JsonFile -Path $runtimeFile -Value @{
   agentRuntimeName = $RuntimeName

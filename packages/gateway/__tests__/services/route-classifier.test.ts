@@ -95,6 +95,12 @@ describe("classifyRouteRuntimeClass", () => {
     expect(classifyRouteRuntimeClass("hello there")).toBe("chat-only");
   });
 
+  it("classifies general file command how-to questions as chat-only", () => {
+    expect(classifyRouteRuntimeClass("리눅스에서 파일 찾는 명령어 알려줘")).toBe(
+      "chat-only",
+    );
+  });
+
   it("classifies /heavy hint as tool-enabled", () => {
     expect(classifyRouteRuntimeClass("/heavy analyze this")).toBe("tool-enabled");
   });

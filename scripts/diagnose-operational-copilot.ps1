@@ -762,14 +762,14 @@ if ($TelegramId -and -not $UserId) {
 }
 
 $startTimeMs = [DateTimeOffset]::UtcNow.AddMinutes(-1 * $SinceMinutes).ToUnixTimeMilliseconds()
-$events = Read-AllOperationalEvents `
+$events = @(Read-AllOperationalEvents `
   -SelectedProfile $Profile `
   -SelectedRegion $Region `
   -StartTimeMs $startTimeMs `
   -SelectedLimit $Limit `
   -SelectedTraceId $TraceId `
-  -SelectedUserId $UserId
-$allOperationalEvents = Select-OperationalEvents -Events $events
+  -SelectedUserId $UserId)
+$allOperationalEvents = @(Select-OperationalEvents -Events $events)
 $focus = Select-FocusedTraceEvents `
   -Events $allOperationalEvents `
   -SelectedTraceId $TraceId `

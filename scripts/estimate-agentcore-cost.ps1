@@ -198,12 +198,16 @@ foreach ($logGroup in $gatewayLogGroups) {
     -SelectedLimit $Limit
 }
 
-$invocations = New-AgentCoreInvocationSummary -Events $events
+$invocations = @(New-AgentCoreInvocationSummary -Events $events)
 $completed = @($invocations | Where-Object { $null -ne $_.DurationMs })
 $durationsSeconds = @($completed | ForEach-Object { [double]$_.DurationMs / 1000.0 })
 $totalSeconds = if ($durationsSeconds.Count -gt 0) { ($durationsSeconds | Measure-Object -Sum).Sum } else { 0.0 }
 $avgSeconds = if ($durationsSeconds.Count -gt 0) { ($durationsSeconds | Measure-Object -Average).Average } else { 0.0 }
-$p95Seconds = Get-Percentile -Values ([double[]]$durationsSeconds) -Percentile 95
+$p95Seconds = if ($durationsSeconds.Count -gt 0) {
+  Get-Percentile -Values ([double[]]$durationsSeconds) -Percentile 95
+} else {
+  0.0
+}
 $cpuCost = ($totalSeconds / 3600.0) * $CpuVcpu * $CpuUsdPerVcpuHour
 $memoryCost = ($totalSeconds / 3600.0) * $MemoryGb * $MemoryUsdPerGbHour
 $estimatedCost = $cpuCost + $memoryCost

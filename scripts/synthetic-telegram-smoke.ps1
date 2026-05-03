@@ -433,19 +433,13 @@ function Wait-BridgeSignals {
     )
   }
 
-  if ($requiresChatHandoff) {
-    $requiredSignals += @(
-      "bridge.tool.handoff.chat_only"
-    )
-  }
-
   $requiredGatewaySignals = @()
   $requiredLambdaSignals = @()
 
   if ($requiresChatHandoff) {
     $requiredGatewaySignals = @(
-      "agentcore.invoke.handoff",
       "route.affinity.cleared",
+      '"runtimeClass":"chat-only"',
       "route.lambda.invoked"
     )
     $requiredLambdaSignals = @(

@@ -401,11 +401,11 @@ function Remove-PendingMessages {
     [Parameter(Mandatory = $true)][string]$SelectedUserId
   )
 
-  $messages = Read-PendingMessages `
+  $messages = @(Read-PendingMessages `
     -SelectedProfile $SelectedProfile `
     -SelectedRegion $SelectedRegion `
     -SelectedUserId $SelectedUserId `
-    -SelectedLimit 100
+    -SelectedLimit 100)
 
   foreach ($message in $messages) {
     $sk = Get-OptionalProperty -Object $message -Name "SK"

@@ -24,6 +24,16 @@ on:
           - fast
           - full
         default: full
+      smoke-scenario:
+        description: "Synthetic Telegram scenario to run"
+        required: false
+        type: choice
+        options:
+          - PaymentFollowUp
+          - PaymentCoverageFollowUp
+          - TravelPaymentFollowUp
+          - TravelPaymentThenChatHandoff
+        default: TravelPaymentThenChatHandoff
 
 permissions:
   id-token: write
@@ -75,12 +85,12 @@ jobs:
           fi
 
           SESSION_NAMESPACE="agentcore-production"
-          SMOKE_SCENARIO="PaymentFollowUp"
+          SMOKE_SCENARIO="${{ github.event_name == 'workflow_dispatch' && inputs['smoke-scenario'] || 'PaymentFollowUp' }}"
           if [ "${RUNTIME_CHANGED}" = "true" ]; then
             SESSION_NAMESPACE="${IMAGE_TAG}"
           fi
-          if [ "${DEPLOYMENT_MODE}" = "full" ]; then
-            SMOKE_SCENARIO="PaymentCoverageFollowUp"
+          if [ "${DEPLOYMENT_MODE}" = "full" ] && [ "${GITHUB_EVENT_NAME}" != "workflow_dispatch" ]; then
+            SMOKE_SCENARIO="TravelPaymentThenChatHandoff"
           fi
 
           echo "short_sha=${SHORT_SHA}" >> "${GITHUB_OUTPUT}"

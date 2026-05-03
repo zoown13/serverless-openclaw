@@ -43,6 +43,43 @@ powershell -File .\scripts\diagnose-operational-copilot.ps1 `
   -SinceMinutes 30
 ```
 
+Run the read-only health check that combines latest trace diagnosis, pending queue inspection, and Fargate cost guardrail inspection:
+
+```powershell
+powershell -File .\scripts\check-operational-health.ps1 `
+  -TelegramId 8585874705 `
+  -SinceMinutes 120
+```
+
+For automation, fail the health check when operational guardrails are violated:
+
+```powershell
+powershell -File .\scripts\check-operational-health.ps1 `
+  -TelegramId 8585874705 `
+  -SinceMinutes 120 `
+  -FailOnWarnings
+```
+
+Estimate AgentCore Runtime usage and conservative cost from Gateway invoke logs:
+
+```powershell
+powershell -File .\scripts\estimate-agentcore-cost.ps1 `
+  -SinceHours 24 `
+  -MonthlyBudgetUsd 1
+```
+
+The cost estimator can also fail automation when a budget or terminal-event guardrail is violated:
+
+```powershell
+powershell -File .\scripts\estimate-agentcore-cost.ps1 `
+  -SinceHours 24 `
+  -MonthlyBudgetUsd 1 `
+  -FailOnBudgetExceeded `
+  -FailOnMissingTerminals
+```
+
+The estimate uses the public AgentCore Runtime rates for CPU and memory, but it is intentionally conservative because Gateway wall-clock invoke duration includes I/O wait that may not be billed as active CPU consumption.
+
 By default, when a user or Telegram id is provided without an explicit trace id, the script focuses the output on the latest correlated trace. Use `-AllEvents` to inspect the full time window.
 
 Diagnose a specific trace:
@@ -166,6 +203,15 @@ powershell -File .\scripts\repair-operational-copilot.ps1 `
   -Action inspect-fargate-tasks
 ```
 
+The Fargate inspection includes an age-based cost guardrail. By default, owned tasks older than 6 hours are marked as stale. Adjust the threshold when needed:
+
+```powershell
+powershell -File .\scripts\repair-operational-copilot.ps1 `
+  -TelegramId 8585874705 `
+  -Action inspect-fargate-tasks `
+  -StaleTaskAgeHours 2
+```
+
 Preview stopping owned Fargate tasks:
 
 ```powershell
@@ -173,6 +219,8 @@ powershell -File .\scripts\repair-operational-copilot.ps1 `
   -TelegramId 8585874705 `
   -Action stop-fargate-tasks
 ```
+
+By default, `stop-fargate-tasks` stops only owned tasks older than `-StaleTaskAgeHours`. To include fresh owned tasks, explicitly add `-IncludeFreshFargateTasks`.
 
 The next version should add more repair actions behind the same explicit `-Apply` guard:
 

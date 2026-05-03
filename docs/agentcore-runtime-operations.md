@@ -121,6 +121,21 @@ The curated Gmail/payment quality evaluation lives in:
 packages/container/__tests__/fixtures/gmail-quality-eval.json
 ```
 
+Run the local quality harness before turning the fixture into a blocking gate:
+
+```powershell
+powershell -File .\scripts\evaluate-assistant-quality.ps1
+```
+
+This default mode is an offline fixture audit only. To score candidate assistant
+answers against the 80% quality target, pass a candidate transcript file:
+
+```powershell
+powershell -File .\scripts\evaluate-assistant-quality.ps1 `
+  -CandidatePath .\tmp\assistant-quality-candidates.json `
+  -FailOnBelowTarget
+```
+
 The evaluation must keep at least 80% pass coverage and should include cases for:
 
 - topic-filtered travel payments
@@ -133,6 +148,9 @@ The evaluation must keep at least 80% pass coverage and should include cases for
 Card issuer refinement may inspect at most two candidate message bodies. This is
 only allowed inside an active Gmail payment context and only for records whose
 issuer is unavailable from headers/snippets. Attachments remain disabled.
+
+See `docs/quality-evaluation.md` for the candidate transcript schema and the
+planned bridge from opt-in synthetic Telegram smoke runs to local scoring.
 
 ## Runtime readiness interpretation
 

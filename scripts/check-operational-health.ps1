@@ -1,0 +1,118 @@
+param(
+  [string]$Profile = $(if ($env:AWS_PROFILE) { $env:AWS_PROFILE } else { "default" }),
+  [string]$Region = $(if ($env:AWS_REGION) { $env:AWS_REGION } else { "ap-northeast-2" }),
+  [string]$UserId,
+  [long]$TelegramId,
+  [ValidateSet("telegram", "web")]
+  [string]$Channel = "telegram",
+  [int]$SinceMinutes = 120,
+  [int]$StaleTaskAgeHours = 6,
+  [double]$MonthlyBudgetUsd = 1.0,
+  [switch]$FailOnWarnings,
+  [switch]$AllEvents
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+$scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$diagnosePath = Join-Path $scriptRoot "diagnose-operational-copilot.ps1"
+$repairPath = Join-Path $scriptRoot "repair-operational-copilot.ps1"
+$agentCoreCostPath = Join-Path $scriptRoot "estimate-agentcore-cost.ps1"
+
+if (-not (Test-Path -LiteralPath $diagnosePath)) {
+  throw "Diagnostic script not found: $diagnosePath"
+}
+
+if (-not (Test-Path -LiteralPath $repairPath)) {
+  throw "Repair runbook script not found: $repairPath"
+}
+
+if (-not (Test-Path -LiteralPath $agentCoreCostPath)) {
+  throw "AgentCore cost guardrail script not found: $agentCoreCostPath"
+}
+
+function Invoke-CheckedScript {
+  param([Parameter(Mandatory = $true)][string[]]$Command)
+
+  & $Command[0] @($Command | Select-Object -Skip 1)
+  if ($LASTEXITCODE -ne 0) {
+    throw "Operational health check step failed: $($Command -join ' ')"
+  }
+}
+
+$identityArgs = @()
+if ($TelegramId) {
+  $identityArgs += @("-TelegramId", "$TelegramId")
+}
+if ($UserId) {
+  $identityArgs += @("-UserId", $UserId)
+}
+if ($identityArgs.Count -eq 0) {
+  throw "Provide either -TelegramId or -UserId."
+}
+
+Write-Host "Operational health check"
+Write-Host "  Region        : $Region"
+Write-Host "  Channel       : $Channel"
+Write-Host "  SinceMinutes  : $SinceMinutes"
+Write-Host "  StaleTaskAgeH : $StaleTaskAgeHours"
+Write-Host "  BudgetUsd     : $MonthlyBudgetUsd"
+Write-Host "  FailWarnings  : $FailOnWarnings"
+Write-Host ""
+
+Write-Host "== 1. Latest trace diagnosis =="
+$diagnoseCommand = @(
+  "powershell", "-File", $diagnosePath,
+  "-Profile", $Profile,
+  "-Region", $Region,
+  "-Channel", $Channel,
+  "-SinceMinutes", "$SinceMinutes"
+) + $identityArgs
+if ($AllEvents) {
+  $diagnoseCommand += "-AllEvents"
+}
+Invoke-CheckedScript -Command $diagnoseCommand
+
+Write-Host ""
+Write-Host "== 2. Pending queue inspection =="
+$pendingCommand = @(
+  "powershell", "-File", $repairPath,
+  "-Profile", $Profile,
+  "-Region", $Region,
+  "-Channel", $Channel,
+  "-Action", "inspect-pending-messages"
+) + $identityArgs
+Invoke-CheckedScript -Command $pendingCommand
+
+Write-Host ""
+Write-Host "== 3. Fargate cost guardrail inspection =="
+$fargateCommand = @(
+  "powershell", "-File", $repairPath,
+  "-Profile", $Profile,
+  "-Region", $Region,
+  "-Channel", $Channel,
+  "-Action", "inspect-fargate-tasks",
+  "-StaleTaskAgeHours", "$StaleTaskAgeHours"
+) + $identityArgs
+if ($FailOnWarnings) {
+  $fargateCommand += "-FailOnStaleFargateTasks"
+}
+Invoke-CheckedScript -Command $fargateCommand
+
+Write-Host ""
+Write-Host "== 4. AgentCore cost guardrail estimate =="
+$agentCoreCostCommand = @(
+  "powershell", "-File", $agentCoreCostPath,
+  "-Profile", $Profile,
+  "-Region", $Region,
+  "-SinceHours", "$([Math]::Max(1, [Math]::Ceiling($SinceMinutes / 60.0)))",
+  "-MonthlyBudgetUsd", "$MonthlyBudgetUsd"
+)
+if ($FailOnWarnings) {
+  $agentCoreCostCommand += @("-FailOnBudgetExceeded", "-FailOnMissingTerminals")
+}
+Invoke-CheckedScript -Command $agentCoreCostCommand
+
+Write-Host ""
+Write-Host "Operational health check complete."

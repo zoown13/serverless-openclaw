@@ -6,6 +6,7 @@ export type RuntimeCapability = "chat-only" | "tool-enabled";
 export interface EmailTokenBudget {
   mode: "headers-first";
   maxMessages: number;
+  paymentScanMessages: number;
   maxSnippetChars: number;
   maxBodyChars: number;
   requireExplicitBodyAccess: boolean;
@@ -37,6 +38,7 @@ interface ProviderRuntimeEnv {
   AI_MODEL?: string;
   AWS_REGION?: string;
   GMAIL_TOOL_MAX_MESSAGES?: string;
+  GMAIL_PAYMENT_MAX_SCAN_MESSAGES?: string;
   GMAIL_TOOL_MAX_SNIPPET_CHARS?: string;
   GMAIL_TOOL_MAX_BODY_CHARS?: string;
   GMAIL_TOOL_REQUIRE_EXPLICIT_BODY?: string;
@@ -204,6 +206,10 @@ export function resolveEmailTokenBudget(env?: ProviderRuntimeEnv): EmailTokenBud
   return {
     mode: "headers-first",
     maxMessages: parsePositiveInteger(resolved.GMAIL_TOOL_MAX_MESSAGES, 5),
+    paymentScanMessages: parsePositiveInteger(
+      resolved.GMAIL_PAYMENT_MAX_SCAN_MESSAGES,
+      25,
+    ),
     maxSnippetChars: parsePositiveInteger(
       resolved.GMAIL_TOOL_MAX_SNIPPET_CHARS,
       240,

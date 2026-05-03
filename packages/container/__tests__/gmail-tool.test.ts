@@ -19,6 +19,7 @@ import { maybeHandleCustomGmailRequest } from "../src/gmail-tool.js";
 const EMAIL_BUDGET: EmailTokenBudgetPolicy = {
   mode: "headers-first",
   maxMessages: 5,
+  paymentScanMessages: 25,
   maxSnippetChars: 120,
   maxBodyChars: 80,
   requireExplicitBodyAccess: true,
@@ -863,6 +864,7 @@ describe("gmail-tool", () => {
       emailTokenBudget: EMAIL_BUDGET,
     });
 
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("maxResults=25");
     fetchMock.mockReset();
 
     const followUp = await maybeHandleCustomGmailRequest({
@@ -875,8 +877,8 @@ describe("gmail-tool", () => {
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(followUp?.kind).toBe("direct");
-    expect(followUp?.message).toContain("먼저 5건까지만");
-    expect(followUp?.message).toContain("더 있을 수 있습니다");
+    expect(followUp?.message).toContain("집계 스캔 제한 25건에는 걸리지 않았습니다");
+    expect(followUp?.message).toContain("상세 목록은 한 번에 최대 5건");
   });
 
   it("builds a topic-aware travel payment query and excludes policy notices", async () => {

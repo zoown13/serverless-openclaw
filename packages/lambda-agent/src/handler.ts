@@ -337,7 +337,8 @@ function buildEmailTokenBudgetPrompt(runtimeConfig: ResolvedRuntimeConfig): stri
 
   return [
     "When handling Gmail or email requests, operate in headers-first safe mode to control token usage.",
-    `Inspect at most ${budget.maxMessages} messages per step.`,
+    `Show at most ${budget.maxMessages} detailed Gmail messages per step.`,
+    `For payment summaries, scan up to ${budget.paymentScanMessages} headers/snippets for aggregation before showing a short evidence list.`,
     `Prefer sender, subject, date, and snippet previews truncated to ${budget.maxSnippetChars} characters.`,
     bodyAccessInstruction,
     `If body access is needed, read at most ${budget.maxBodyChars} characters from one message at a time and summarize incrementally before reading more.`,

@@ -167,6 +167,7 @@ describe("Bridge HTTP Server", () => {
           emailTokenBudget: {
             mode: "headers-first",
             maxMessages: 3,
+            paymentScanMessages: 12,
             maxSnippetChars: 120,
             maxBodyChars: 800,
             requireExplicitBodyAccess: true,
@@ -178,7 +179,7 @@ describe("Bridge HTTP Server", () => {
       await vi.waitFor(() => {
         expect(deps.openclawClient.sendMessage).toHaveBeenCalledWith(
           "user-1",
-          expect.stringContaining("Inspect at most 3 items per step"),
+          expect.stringContaining("Show at most 3 detailed Gmail items per step"),
         );
       });
       expect(deps.openclawClient.sendMessage).toHaveBeenCalledWith(

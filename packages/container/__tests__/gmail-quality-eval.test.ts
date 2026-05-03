@@ -20,6 +20,7 @@ import { maybeHandleCustomGmailRequest } from "../src/gmail-tool.js";
 const EMAIL_BUDGET: EmailTokenBudgetPolicy = {
   mode: "headers-first",
   maxMessages: 5,
+  paymentScanMessages: 25,
   maxSnippetChars: 120,
   maxBodyChars: 80,
   requireExplicitBodyAccess: true,

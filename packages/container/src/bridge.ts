@@ -155,14 +155,16 @@ function buildToolEnabledPrefix(
   const bodyAccessInstruction = budget.requireExplicitBodyAccess
     ? "Do not read full message bodies or attachments unless the user explicitly asks for a specific message."
     : "Only read a message body when the task truly needs it, and keep the scope narrow.";
+  const paymentScanMessages = budget.paymentScanMessages ?? 25;
 
-  return `[System: Operate in headers-first safe mode to control Gmail and browser token usage. Inspect at most ${budget.maxMessages} items per step. Prefer sender, subject, date, and snippet previews truncated to ${budget.maxSnippetChars} characters. ${bodyAccessInstruction} If the user clearly identifies one Gmail result, open only that single message body. Never inspect attachments in this runtime. If body access is needed, read at most ${budget.maxBodyChars} characters from one item at a time and summarize incrementally before reading more.]`;
+  return `[System: Operate in headers-first safe mode to control Gmail and browser token usage. Show at most ${budget.maxMessages} detailed Gmail items per step, but payment summaries may scan up to ${paymentScanMessages} headers/snippets for aggregation before showing a short evidence list. Prefer sender, subject, date, and snippet previews truncated to ${budget.maxSnippetChars} characters. ${bodyAccessInstruction} If the user clearly identifies one Gmail result, open only that single message body. Never inspect attachments in this runtime. If body access is needed, read at most ${budget.maxBodyChars} characters from one item at a time and summarize incrementally before reading more.]`;
 }
 
 function defaultEmailTokenBudget(): EmailTokenBudgetPolicy {
   return {
     mode: "headers-first",
     maxMessages: 5,
+    paymentScanMessages: 25,
     maxSnippetChars: 240,
     maxBodyChars: 1600,
     requireExplicitBodyAccess: true,

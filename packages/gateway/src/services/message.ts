@@ -188,6 +188,10 @@ function resolveEmailTokenBudgetPolicy(): EmailTokenBudgetPolicy {
   return {
     mode: "headers-first",
     maxMessages: parsePositiveInteger(process.env.GMAIL_TOOL_MAX_MESSAGES, 5),
+    paymentScanMessages: parsePositiveInteger(
+      process.env.GMAIL_PAYMENT_MAX_SCAN_MESSAGES,
+      25,
+    ),
     maxSnippetChars: parsePositiveInteger(
       process.env.GMAIL_TOOL_MAX_SNIPPET_CHARS,
       240,

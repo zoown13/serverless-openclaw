@@ -32,6 +32,7 @@ const {
       emailTokenBudget: {
         mode: "headers-first",
         maxMessages: 5,
+        paymentScanMessages: 25,
         maxSnippetChars: 240,
         maxBodyChars: 1600,
         requireExplicitBodyAccess: true,
@@ -303,6 +304,7 @@ describe("handler", () => {
         emailTokenBudget: {
           mode: "headers-first",
           maxMessages: 5,
+          paymentScanMessages: 25,
           maxSnippetChars: 240,
           maxBodyChars: 1600,
           requireExplicitBodyAccess: true,
@@ -347,6 +349,7 @@ describe("handler", () => {
         emailTokenBudget: {
           mode: "headers-first",
           maxMessages: 5,
+          paymentScanMessages: 25,
           maxSnippetChars: 240,
           maxBodyChars: 1600,
           requireExplicitBodyAccess: true,
@@ -388,7 +391,7 @@ describe("handler", () => {
 
     expect(mockRunAgent).toHaveBeenCalledWith(
       expect.objectContaining({
-        extraSystemPrompt: expect.stringContaining("Inspect at most 5 messages"),
+        extraSystemPrompt: expect.stringContaining("Show at most 5 detailed Gmail messages"),
       }),
     );
     expect(mockRunAgent).toHaveBeenCalledWith(

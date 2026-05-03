@@ -137,6 +137,7 @@ describe("resolveProviderConfig", () => {
     expect(config.emailTokenBudget).toEqual({
       mode: "headers-first",
       maxMessages: 5,
+      paymentScanMessages: 25,
       maxSnippetChars: 240,
       maxBodyChars: 1600,
       requireExplicitBodyAccess: true,
@@ -172,6 +173,7 @@ describe("resolveProviderConfig", () => {
     const config = resolveProviderConfig({
       AI_PROVIDER: "anthropic",
       GMAIL_TOOL_MAX_MESSAGES: "3",
+      GMAIL_PAYMENT_MAX_SCAN_MESSAGES: "12",
       GMAIL_TOOL_MAX_SNIPPET_CHARS: "120",
       GMAIL_TOOL_MAX_BODY_CHARS: "800",
       GMAIL_TOOL_REQUIRE_EXPLICIT_BODY: "false",
@@ -180,6 +182,7 @@ describe("resolveProviderConfig", () => {
     expect(config.emailTokenBudget).toEqual({
       mode: "headers-first",
       maxMessages: 3,
+      paymentScanMessages: 12,
       maxSnippetChars: 120,
       maxBodyChars: 800,
       requireExplicitBodyAccess: false,

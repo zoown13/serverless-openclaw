@@ -33,6 +33,7 @@ export type ClarificationKind = "payment_source";
 export interface EmailTokenBudgetPolicy {
   mode: "headers-first";
   maxMessages: number;
+  paymentScanMessages?: number;
   maxSnippetChars: number;
   maxBodyChars: number;
   requireExplicitBodyAccess: boolean;

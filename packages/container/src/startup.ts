@@ -52,6 +52,7 @@ function defaultEmailTokenBudget(): EmailTokenBudgetPolicy {
   return {
     mode: "headers-first",
     maxMessages: 5,
+    paymentScanMessages: 25,
     maxSnippetChars: 240,
     maxBodyChars: 1600,
     requireExplicitBodyAccess: true,

@@ -71,6 +71,8 @@ const PAYMENT_AMOUNT_PATTERNS: RegExp[] = [
   /(amount|total)\s*[:：]?\s*(?:krw\s*)?([0-9][0-9,]*)/gi,
   /([0-9][0-9,]*)\s*원/gi,
 ];
+const DEFAULT_PAYMENT_SCAN_MESSAGES = 25;
+const MAX_PAYMENT_SCAN_MESSAGES = 50;
 const DEFAULT_TOPIC_CANDIDATE_MESSAGES = 10;
 const EXPANDED_TOPIC_CANDIDATE_MESSAGES = 30;
 const MAX_TOPIC_BODY_CHECKS = 2;
@@ -92,6 +94,7 @@ interface ToolTaskContext {
   lastQueryMode?: "payment_summary" | "topic_filtered_payment_summary";
   refinedFromFollowUp?: boolean;
   lastCandidateCount?: number;
+  lastResultEstimate?: number;
   parsedPaymentRecords?: ParsedPaymentRecord[];
   lastMessages?: GmailMessageSummary[];
   lastResultSummary?: string;
@@ -155,6 +158,8 @@ interface GmailListResponse {
     id: string;
     threadId: string;
   }>;
+  nextPageToken?: string;
+  resultSizeEstimate?: number;
 }
 
 interface GmailMessageResponse {
@@ -930,6 +935,16 @@ function resolveExpandedTopicCandidateLimit(maxMessages: number): number {
   return Math.max(maxMessages, EXPANDED_TOPIC_CANDIDATE_MESSAGES);
 }
 
+function resolvePaymentScanLimit(emailTokenBudget: EmailTokenBudgetPolicy): number {
+  return Math.min(
+    Math.max(
+      emailTokenBudget.maxMessages,
+      emailTokenBudget.paymentScanMessages ?? DEFAULT_PAYMENT_SCAN_MESSAGES,
+    ),
+    MAX_PAYMENT_SCAN_MESSAGES,
+  );
+}
+
 function isTopicRefinementFollowUp(message: string): boolean {
   const extracted = extractTopicKeywords(message);
   return extracted.length > 0 || TRAVEL_REFINEMENT_PATTERN.test(message);
@@ -1406,32 +1421,54 @@ function isIssuerBreakdownFollowUp(
   return followUpIntent === "issuer_breakdown" || /카드사|issuer/i.test(message);
 }
 
-function buildEvidenceList(messages: GmailMessageSummary[]): string {
-  return messages
+function buildEvidenceList(
+  messages: GmailMessageSummary[],
+  displayLimit = messages.length,
+): string {
+  const visibleMessages = messages.slice(0, displayLimit);
+  const hiddenCount = Math.max(0, messages.length - visibleMessages.length);
+  const evidence = visibleMessages
     .map((message, index) => {
       return `${index + 1}. ${message.subject}\nFrom: ${message.from}\nDate: ${message.date}\nSnippet: ${message.snippet}`;
     })
     .join("\n\n");
+
+  return hiddenCount > 0
+    ? `${evidence}\n\n... ${hiddenCount} more header/snippet candidate(s) scanned but not expanded in the response.`
+    : evidence;
 }
 
 function buildPaymentSummaryResponse(
   query: string,
   messages: GmailMessageSummary[],
   records: ParsedPaymentRecord[],
+  displayLimit: number,
+  resultEstimate?: number,
 ): string {
   const total = records.reduce((sum, record) => sum + (record.amount ?? 0), 0);
   const merchants = [...new Set(records.map((record) => record.merchant).filter(Boolean))];
   const issuers = [...new Set(records.map((record) => record.cardIssuer).filter(Boolean))];
+  const shownCount = Math.min(messages.length, displayLimit);
 
   const summaryLines = [
-    `I checked Gmail headers-first with query "${query}" and inspected ${messages.length} message(s).`,
+    `I scanned Gmail headers/snippets with query "${query}" and inspected ${messages.length} candidate message(s).`,
     "I did not open full bodies or attachments.",
   ];
+  if (typeof resultEstimate === "number" && resultEstimate > messages.length) {
+    summaryLines.push(
+      `Gmail estimates about ${resultEstimate} matching message(s); this response aggregates the first ${messages.length} scanned candidate(s).`,
+    );
+  }
 
   if (records.length > 0) {
     summaryLines.push(
       `Estimated total from visible headers/snippets: ${formatCurrency(total)} across ${records.length} matched payment message(s). This is a rough headers-first estimate only.`,
     );
+    if (messages.length > shownCount) {
+      summaryLines.push(
+        `Showing ${shownCount} representative header/snippet item(s) below; the total above uses all parsed records from the scan.`,
+      );
+    }
     if (issuers.length > 0) {
       summaryLines.push(`Observed card issuers: ${issuers.join(", ")}.`);
     }
@@ -1444,7 +1481,7 @@ function buildPaymentSummaryResponse(
     );
   }
 
-  return `${summaryLines.join("\n")}\n\n${buildEvidenceList(messages)}`;
+  return `${summaryLines.join("\n")}\n\n${buildEvidenceList(messages, displayLimit)}`;
 }
 
 function filterRecordsByTopic(
@@ -1509,6 +1546,7 @@ async function fetchPaymentMessages(
   topicKeywords: string[] = [],
 ): Promise<{
   candidateCount: number;
+  resultEstimate?: number;
   messages: GmailMessageSummary[];
   records: ParsedPaymentRecord[];
 }> {
@@ -1524,6 +1562,7 @@ async function fetchPaymentMessages(
 
   return {
     candidateCount: messages.length,
+    resultEstimate: listJson.resultSizeEstimate,
     messages,
     records,
   };
@@ -1579,6 +1618,7 @@ async function searchTopicAwarePaymentCandidates(
 ): Promise<{
   query: string;
   candidateCount: number;
+  resultEstimate?: number;
   filteredCount: number;
   bodyCheckedCount: number;
   queryMode: "topic-filtered" | "broad-fallback";
@@ -1596,6 +1636,7 @@ async function searchTopicAwarePaymentCandidates(
   let query = narrowedQuery;
   let queryMode: "topic-filtered" | "broad-fallback" = "topic-filtered";
   let candidateCount = 0;
+  let resultEstimate: number | undefined;
   let filteredCount = 0;
   let bodyCheckedCount = 0;
   let usedBodyCheck = false;
@@ -1607,6 +1648,7 @@ async function searchTopicAwarePaymentCandidates(
     topicKeywords,
   );
   candidateCount = narrowedResult.candidateCount;
+  resultEstimate = narrowedResult.resultEstimate;
   let messages = narrowedResult.messages;
   let records = narrowedResult.records;
   let matched = filterRecordsByTopic(records, topicKeywords);
@@ -1638,6 +1680,7 @@ async function searchTopicAwarePaymentCandidates(
         topicKeywords,
       );
       candidateCount = broadResult.candidateCount;
+      resultEstimate = broadResult.resultEstimate;
       messages = broadResult.messages;
       records = broadResult.records;
       matched = filterRecordsByTopic(records, topicKeywords);
@@ -1662,6 +1705,7 @@ async function searchTopicAwarePaymentCandidates(
   return {
     query,
     candidateCount,
+    resultEstimate,
     filteredCount,
     bodyCheckedCount,
     queryMode,
@@ -1789,6 +1833,7 @@ async function refineActivePaymentContextByTopic(
       lastQueryMode: "topic_filtered_payment_summary",
       refinedFromFollowUp: true,
       lastCandidateCount: searchResult.candidateCount,
+      lastResultEstimate: searchResult.resultEstimate,
       parsedPaymentRecords: searchResult.records,
       lastMessages: searchResult.messages,
       lastSearchQuery: searchResult.query,
@@ -1822,7 +1867,7 @@ async function refineActivePaymentContextByTopic(
 function formatPaymentFollowUp(
   context: ToolTaskContext,
   message: string,
-  maxMessages: number,
+  emailTokenBudget: EmailTokenBudgetPolicy,
   followUpIntent?: ToolFollowUpIntent,
 ): ToolHandlerResult | undefined {
   const records = context.parsedPaymentRecords ?? [];
@@ -1837,19 +1882,25 @@ function formatPaymentFollowUp(
 
   const total = records.reduce((sum, record) => sum + (record.amount ?? 0), 0);
   const normalized = message.toLowerCase();
+  const displayLimit = emailTokenBudget.maxMessages;
+  const scanLimit = resolvePaymentScanLimit(emailTokenBudget);
 
   if (followUpIntent === "coverage_check" || /더\s*(있|찾|보)|밖에\s*없|몇\s*개|개수|건수|limit/i.test(normalized)) {
     const inspectedCount = context.lastMessages?.length ?? records.length;
-    const hitSafetyCap = inspectedCount >= maxMessages;
-    const capMessage = hitSafetyCap
-      ? `현재 안전 정책상 헤더/스니펫 기준으로 먼저 ${maxMessages}건까지만 확인했습니다. 그래서 이 범위 밖에 결제 메일이 더 있을 수 있습니다.`
-      : `현재 헤더/스니펫 확인 범위에서는 ${inspectedCount}건을 봤고, ${maxMessages}건 제한에는 걸리지 않았습니다.`;
+    const resultEstimate = context.lastResultEstimate;
+    const maybeMore = typeof resultEstimate === "number" && resultEstimate > inspectedCount;
+    const hitScanCap = inspectedCount >= scanLimit;
+    const capMessage = maybeMore
+      ? `현재 Gmail 검색 결과는 약 ${resultEstimate}건으로 추정되고, 안전 정책상 헤더/스니펫 기준으로 먼저 ${inspectedCount}건까지 스캔했습니다. 이 범위 밖에 결제 메일이 더 있을 수 있습니다.`
+      : hitScanCap
+        ? `현재 안전 정책상 헤더/스니펫 기준으로 먼저 ${scanLimit}건까지 스캔했습니다. 이 범위 밖에 결제 메일이 더 있을 수 있습니다.`
+        : `현재 헤더/스니펫 기준으로 ${inspectedCount}건을 스캔했고, 집계 스캔 제한 ${scanLimit}건에는 걸리지 않았습니다.`;
 
     return {
       kind: "direct",
       message:
         `${capMessage}\n\n` +
-        `현재 보이는 결제 문맥에서는 결제성 메일 ${records.length}건, 확인 가능한 합계 ${formatCurrency(total)}입니다.\n` +
+        `상세 목록은 한 번에 최대 ${displayLimit}건만 보여주지만, 현재 합계는 스캔된 결제성 메일 ${records.length}건 기준 ${formatCurrency(total)}입니다.\n` +
         "더 넓게 보려면 기간, 보낸 사람, 카드사, 결제처 중 하나로 범위를 좁혀주세요.",
       source: "gmail-context",
     };
@@ -2022,6 +2073,7 @@ async function runGmailTask(
   const primaryQuery = buildPaymentSearchQuery(sourceMessage, unreadOnly, topicKeywords);
   let query = primaryQuery;
   let candidateCount = options.emailTokenBudget.maxMessages;
+  let resultEstimate: number | undefined;
   let messages: GmailMessageSummary[] = [];
   let paymentRecords: ParsedPaymentRecord[] = [];
   let usedBodyCheck = false;
@@ -2036,17 +2088,23 @@ async function runGmailTask(
     );
     query = searchResult.query;
     candidateCount = searchResult.candidateCount;
+    resultEstimate = searchResult.resultEstimate;
     messages = searchResult.messages;
     paymentRecords = searchResult.records;
     usedBodyCheck = searchResult.usedBodyCheck;
   } else {
+    const scanLimit =
+      taskFamily === "gmail_payment_summary"
+        ? resolvePaymentScanLimit(options.emailTokenBudget)
+        : options.emailTokenBudget.maxMessages;
     const standardResult = await fetchPaymentMessages(
       accessToken,
       primaryQuery,
-      options.emailTokenBudget.maxMessages,
+      scanLimit,
       topicKeywords,
     );
     candidateCount = standardResult.candidateCount;
+    resultEstimate = standardResult.resultEstimate;
     messages = standardResult.messages;
     paymentRecords = standardResult.records;
   }
@@ -2073,6 +2131,7 @@ async function runGmailTask(
       topicKeywords.length > 0 ? "topic_filtered_payment_summary" : "payment_summary",
     refinedFromFollowUp: false,
     lastCandidateCount: candidateCount,
+    lastResultEstimate: resultEstimate,
     parsedPaymentRecords: paymentRecords,
     lastMessages: messages,
     lastResultSummary: messages.map((item) => item.subject).join(" | "),
@@ -2112,7 +2171,13 @@ async function runGmailTask(
               topicKeywords,
               usedBodyCheck,
             )
-          : buildPaymentSummaryResponse(query, messages, paymentRecords)
+          : buildPaymentSummaryResponse(
+              query,
+              messages,
+              paymentRecords,
+              options.emailTokenBudget.maxMessages,
+              resultEstimate,
+            )
         : `${messages.length === 0 ? "I did not find matching Gmail messages." : `I checked Gmail headers-first with query "${query}" and inspected ${messages.length} message(s).`}\n\n${buildEvidenceList(messages)}`,
     source: "gmail",
   };
@@ -2615,7 +2680,7 @@ async function handleActiveTaskContext(
     return formatPaymentFollowUp(
       followUpContext,
       trimmed,
-      options.emailTokenBudget.maxMessages,
+      options.emailTokenBudget,
       followUpIntent,
     );
   }

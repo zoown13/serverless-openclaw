@@ -16,6 +16,14 @@ on:
         required: false
         type: boolean
         default: true
+      deployment-mode:
+        description: "Deployment speed profile"
+        required: false
+        type: choice
+        options:
+          - fast
+          - full
+        default: full
 
 permissions:
   id-token: write
@@ -41,6 +49,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
       - name: Set deployment metadata
         id: meta
@@ -48,9 +58,42 @@ jobs:
         run: |
           SHORT_SHA="${GITHUB_SHA::7}"
           IMAGE_TAG="agentcore-${SHORT_SHA}-gzip"
+          DEPLOYMENT_MODE="${{ github.event_name == 'workflow_dispatch' && inputs['deployment-mode'] || 'fast' }}"
+          RUNTIME_CHANGED="false"
+
+          if [ "${DEPLOYMENT_MODE}" = "full" ]; then
+            RUNTIME_CHANGED="true"
+          elif [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            RUNTIME_CHANGED="true"
+          elif [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+            RUNTIME_CHANGED="true"
+          else
+            CHANGED_FILES="$(git diff --name-only "${{ github.event.before }}" "${GITHUB_SHA}" || true)"
+            if echo "${CHANGED_FILES}" | grep -E '^(packages/container/|packages/shared/|package\.json$|package-lock\.json$|tsconfig\.json$)' >/dev/null; then
+              RUNTIME_CHANGED="true"
+            fi
+          fi
+
+          SESSION_NAMESPACE="agentcore-production"
+          SMOKE_SCENARIO="PaymentFollowUp"
+          if [ "${RUNTIME_CHANGED}" = "true" ]; then
+            SESSION_NAMESPACE="${IMAGE_TAG}"
+          fi
+          if [ "${DEPLOYMENT_MODE}" = "full" ]; then
+            SMOKE_SCENARIO="PaymentCoverageFollowUp"
+          fi
+
           echo "short_sha=${SHORT_SHA}" >> "${GITHUB_OUTPUT}"
           echo "image_tag=${IMAGE_TAG}" >> "${GITHUB_OUTPUT}"
+          echo "deployment_mode=${DEPLOYMENT_MODE}" >> "${GITHUB_OUTPUT}"
+          echo "runtime_changed=${RUNTIME_CHANGED}" >> "${GITHUB_OUTPUT}"
+          echo "session_namespace=${SESSION_NAMESPACE}" >> "${GITHUB_OUTPUT}"
+          echo "smoke_scenario=${SMOKE_SCENARIO}" >> "${GITHUB_OUTPUT}"
           echo "openclaw_version=${{ github.event.inputs['openclaw-version'] || 'latest' }}" >> "${GITHUB_OUTPUT}"
+          echo "Deployment mode: ${DEPLOYMENT_MODE}"
+          echo "Runtime image changed: ${RUNTIME_CHANGED}"
+          echo "Session namespace: ${SESSION_NAMESPACE}"
+          echo "Smoke scenario: ${SMOKE_SCENARIO}"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -101,24 +144,30 @@ jobs:
           aws sts get-caller-identity
 
       - name: Login to Amazon ECR
+        if: ${{ steps.meta.outputs.runtime_changed == 'true' }}
         id: ecr-login
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Set up QEMU for ARM64
+        if: ${{ steps.meta.outputs.runtime_changed == 'true' }}
         uses: docker/setup-qemu-action@v3
         with:
           platforms: arm64
 
       - name: Set up Docker Buildx
+        if: ${{ steps.meta.outputs.runtime_changed == 'true' }}
         uses: docker/setup-buildx-action@v3
 
       - name: Build and push AgentCore gzip image
+        if: ${{ steps.meta.outputs.runtime_changed == 'true' }}
         uses: docker/build-push-action@v6
         with:
           context: .
           file: packages/container/Dockerfile
           platforms: linux/arm64
           push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           tags: |
             ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
             ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.meta.outputs.image_tag }}
@@ -127,6 +176,7 @@ jobs:
           provenance: false
 
       - name: Verify pushed image
+        if: ${{ steps.meta.outputs.runtime_changed == 'true' }}
         shell: bash
         run: |
           aws ecr describe-images \
@@ -137,6 +187,7 @@ jobs:
             --region "${AWS_REGION}"
 
       - name: Deploy AgentCore Runtime
+        if: ${{ steps.meta.outputs.runtime_changed == 'true' }}
         shell: pwsh
         run: |
           ./scripts/deploy-agentcore-runtime.ps1 `
@@ -175,7 +226,7 @@ jobs:
             -Region "${{ env.AWS_REGION }}" `
             -ToolRuntimeProvider "agentcore" `
             -AgentCoreRuntimeArn "${{ steps.runtime.outputs.runtime_arn }}" `
-            -AgentCoreSessionNamespace "${{ steps.meta.outputs.image_tag }}"
+            -AgentCoreSessionNamespace "${{ steps.meta.outputs.session_namespace }}"
 
       - name: Synthetic Telegram smoke
         if: ${{ github.event_name == 'push' || inputs['run-smoke'] }}
@@ -198,7 +249,7 @@ jobs:
             -Region "${{ env.AWS_REGION }}" `
             -ChatId $chatId `
             -TelegramId $telegramId `
-            -Scenario "PaymentCoverageFollowUp" `
+            -Scenario "${{ steps.meta.outputs.smoke_scenario }}" `
             -BridgeSignalTimeoutSeconds 300 `
             -TailLogs
 
@@ -211,8 +262,11 @@ jobs:
             echo ""
             echo "- Branch: ${GITHUB_REF_NAME}"
             echo "- Commit: ${GITHUB_SHA}"
+            echo "- Deployment mode: ${{ steps.meta.outputs.deployment_mode }}"
+            echo "- Runtime image changed: ${{ steps.meta.outputs.runtime_changed }}"
             echo "- Image tag: ${{ steps.meta.outputs.image_tag }}"
             echo "- Runtime ARN: ${{ steps.runtime.outputs.runtime_arn }}"
             echo "- Runtime ID: ${{ steps.runtime.outputs.runtime_id }}"
-            echo "- Gateway session namespace: ${{ steps.meta.outputs.image_tag }}"
+            echo "- Gateway session namespace: ${{ steps.meta.outputs.session_namespace }}"
+            echo "- Smoke scenario: ${{ steps.meta.outputs.smoke_scenario }}"
           } >> "${GITHUB_STEP_SUMMARY}"

@@ -70,6 +70,14 @@ jobs:
       - name: Run payment runtime regression tests
         run: npx vitest run packages/container/__tests__/gmail-tool.test.ts -t "payment"
 
+      - name: Validate deployment secrets
+        shell: bash
+        run: |
+          if [ -z "${{ secrets.AWS_OIDC_ROLE_ARN }}" ]; then
+            echo "::error::AWS_OIDC_ROLE_ARN is not configured. Run scripts/setup-github-actions-oidc.ps1, then add the printed RoleArn as the GitHub Actions secret AWS_OIDC_ROLE_ARN."
+            exit 1
+          fi
+
       - name: Configure AWS credentials through OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:

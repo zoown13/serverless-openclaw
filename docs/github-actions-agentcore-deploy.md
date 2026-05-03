@@ -27,6 +27,15 @@ The workflow intentionally uses a separate path from the Fargate image workflow:
 |---|---|
 | `AWS_OIDC_ROLE_ARN` | IAM role assumed by GitHub Actions through OIDC. |
 
+Create the AWS role once with:
+
+```powershell
+powershell -File .\scripts\setup-github-actions-oidc.ps1
+```
+
+Then add the printed `RoleArn` as the GitHub Actions secret
+`AWS_OIDC_ROLE_ARN`.
+
 ## Optional GitHub secrets
 
 | Secret | Purpose |

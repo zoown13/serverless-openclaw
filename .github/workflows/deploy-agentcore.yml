@@ -1,0 +1,210 @@
+name: Deploy AgentCore Production
+
+on:
+  push:
+    branches:
+      - "**"
+  workflow_dispatch:
+    inputs:
+      openclaw-version:
+        description: "OpenClaw version installed in the tool runtime image"
+        required: false
+        type: string
+        default: "latest"
+      run-smoke:
+        description: "Run synthetic Telegram smoke after deployment"
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: serverless-openclaw-agentcore-production
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ap-northeast-2
+  ECR_REPOSITORY: serverless-openclaw
+  AGENTCORE_RUNTIME_NAME: ServerlessOpenClawToolRuntime
+  TELEGRAM_SMOKE_CHAT_ID: ${{ secrets.TELEGRAM_SMOKE_CHAT_ID }}
+  TELEGRAM_SMOKE_TELEGRAM_ID: ${{ secrets.TELEGRAM_SMOKE_TELEGRAM_ID }}
+
+jobs:
+  deploy:
+    name: Build, deploy, and smoke AgentCore
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set deployment metadata
+        id: meta
+        shell: bash
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          IMAGE_TAG="agentcore-${SHORT_SHA}-gzip"
+          echo "short_sha=${SHORT_SHA}" >> "${GITHUB_OUTPUT}"
+          echo "image_tag=${IMAGE_TAG}" >> "${GITHUB_OUTPUT}"
+          echo "openclaw_version=${{ github.event.inputs['openclaw-version'] || 'latest' }}" >> "${GITHUB_OUTPUT}"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Run payment runtime regression tests
+        run: npx vitest run packages/container/__tests__/gmail-tool.test.ts -t "payment"
+
+      - name: Configure AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Create default AWS profile for deployment scripts
+        shell: bash
+        run: |
+          mkdir -p "${HOME}/.aws"
+          {
+            echo "[default]"
+            echo "aws_access_key_id=${AWS_ACCESS_KEY_ID}"
+            echo "aws_secret_access_key=${AWS_SECRET_ACCESS_KEY}"
+            echo "aws_session_token=${AWS_SESSION_TOKEN}"
+          } > "${HOME}/.aws/credentials"
+          {
+            echo "[default]"
+            echo "region=${AWS_REGION}"
+          } > "${HOME}/.aws/config"
+          aws sts get-caller-identity
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up QEMU for ARM64
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push AgentCore gzip image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packages/container/Dockerfile
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+            ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.meta.outputs.image_tag }}
+          build-args: |
+            OPENCLAW_VERSION=${{ steps.meta.outputs.openclaw_version }}
+          provenance: false
+
+      - name: Verify pushed image
+        shell: bash
+        run: |
+          aws ecr describe-images \
+            --repository-name "${ECR_REPOSITORY}" \
+            --image-ids "imageTag=${{ steps.meta.outputs.image_tag }}" \
+            --query 'imageDetails[0].{digest:imageDigest,size:imageSizeInBytes,pushedAt:imagePushedAt}' \
+            --output json \
+            --region "${AWS_REGION}"
+
+      - name: Deploy AgentCore Runtime
+        shell: pwsh
+        run: |
+          ./scripts/deploy-agentcore-runtime.ps1 `
+            -Region "${{ env.AWS_REGION }}" `
+            -RuntimeName "${{ env.AGENTCORE_RUNTIME_NAME }}" `
+            -ImageTag "${{ steps.meta.outputs.image_tag }}" `
+            -AiProvider "bedrock" `
+            -ToolSlmBackend "remote-api" `
+            -ResponseFormatVersion "ko-payment-v1"
+
+      - name: Resolve AgentCore Runtime ARN
+        id: runtime
+        shell: pwsh
+        run: |
+          $runtimeList = aws bedrock-agentcore-control list-agent-runtimes `
+            --region "${{ env.AWS_REGION }}" `
+            --output json | ConvertFrom-Json
+          $runtime = $runtimeList.agentRuntimes |
+            Where-Object { $_.agentRuntimeName -eq "${{ env.AGENTCORE_RUNTIME_NAME }}" } |
+            Select-Object -First 1
+          if (-not $runtime) {
+            throw "AgentCore runtime not found: ${{ env.AGENTCORE_RUNTIME_NAME }}"
+          }
+          "runtime_arn=$($runtime.agentRuntimeArn)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "runtime_id=$($runtime.agentRuntimeId)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "RuntimeArn: $($runtime.agentRuntimeArn)"
+          Write-Host "RuntimeId : $($runtime.agentRuntimeId)"
+
+      - name: Deploy Gateway and tool runtime wiring
+        shell: pwsh
+        env:
+          DEPLOY_WEB: "false"
+        run: |
+          ./scripts/deploy-option-b-tool-runtime.ps1 `
+            -SkipEnvFile `
+            -Region "${{ env.AWS_REGION }}" `
+            -ToolRuntimeProvider "agentcore" `
+            -AgentCoreRuntimeArn "${{ steps.runtime.outputs.runtime_arn }}" `
+            -AgentCoreSessionNamespace "${{ steps.meta.outputs.image_tag }}"
+
+      - name: Synthetic Telegram smoke
+        if: ${{ github.event_name == 'push' || inputs['run-smoke'] }}
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace("${{ env.TELEGRAM_SMOKE_CHAT_ID }}")) {
+            Write-Warning "TELEGRAM_SMOKE_CHAT_ID is not configured. Skipping synthetic Telegram smoke."
+            exit 0
+          }
+
+          $chatId = [long]"${{ env.TELEGRAM_SMOKE_CHAT_ID }}"
+          $telegramIdValue = "${{ env.TELEGRAM_SMOKE_TELEGRAM_ID }}"
+          if ([string]::IsNullOrWhiteSpace($telegramIdValue)) {
+            $telegramIdValue = "${{ env.TELEGRAM_SMOKE_CHAT_ID }}"
+          }
+          $telegramId = [long]$telegramIdValue
+
+          $env:AGENTCORE_RUNTIME_ID = "${{ steps.runtime.outputs.runtime_id }}"
+          ./scripts/synthetic-telegram-smoke.ps1 `
+            -Region "${{ env.AWS_REGION }}" `
+            -ChatId $chatId `
+            -TelegramId $telegramId `
+            -Scenario "PaymentCoverageFollowUp" `
+            -BridgeSignalTimeoutSeconds 300 `
+            -TailLogs
+
+      - name: Deployment summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## AgentCore production deployment"
+            echo ""
+            echo "- Branch: ${GITHUB_REF_NAME}"
+            echo "- Commit: ${GITHUB_SHA}"
+            echo "- Image tag: ${{ steps.meta.outputs.image_tag }}"
+            echo "- Runtime ARN: ${{ steps.runtime.outputs.runtime_arn }}"
+            echo "- Runtime ID: ${{ steps.runtime.outputs.runtime_id }}"
+            echo "- Gateway session namespace: ${{ steps.meta.outputs.image_tag }}"
+          } >> "${GITHUB_STEP_SUMMARY}"

@@ -134,7 +134,7 @@ export type RouteResult =
   | "agentcore"
   | "clarify";
 
-const TOOL_AFFINITY_TTL_MS = 5 * 60 * 1000;
+const TOOL_AFFINITY_TTL_MS = 30 * 60 * 1000;
 const TOOL_AFFINITY_CANCEL_PATTERN = /^(?:취소|그만|끝|됐어|done|cancel|stop)$/i;
 const TOOL_AFFINITY_OBVIOUS_TOPIC_SWITCH_PATTERN =
   /^(?:안녕|안녕하세요|hello|hi|hey|고마워|감사|thanks?|thank you|잘가|bye|날씨|weather|번역|translate|농담|joke)(?:$|[!?.,\s])/i;

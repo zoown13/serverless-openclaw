@@ -137,6 +137,11 @@ describe("classifyRouteRuntimeClass", () => {
     expect(classifyRouteRuntimeClass("이번주 카드값이 얼마나 나왔을까")).toBe("tool-enabled");
   });
 
+  it("classifies compact temporal amount questions as tool-enabled", () => {
+    expect(classifyRouteRuntimeClass("이번주는 얼마")).toBe("tool-enabled");
+    expect(classifyRouteRuntimeClass("이번달은 얼마야")).toBe("tool-enabled");
+  });
+
   it("classifies Korean travel payment lookup questions as tool-enabled", () => {
     expect(
       classifyRouteRuntimeClass("일본 여행가는데 결제한 내역들 알려줘"),
@@ -181,6 +186,14 @@ describe("getRouteClassificationSignals", () => {
       hasHangul: true,
     });
   });
+
+  it("captures compact temporal amount lookup signals", () => {
+    expect(getRouteClassificationSignals("이번주는 얼마")).toMatchObject({
+      hasTemporalAmountLookup: true,
+      hasDataLookupAction: true,
+      hasHangul: true,
+    });
+  });
 });
 
 describe("classifyRoute payment routing", () => {
@@ -196,6 +209,15 @@ describe("classifyRoute payment routing", () => {
   it("routes compact Korean payment summary questions to tool-enabled compute", () => {
     const result = classifyRoute({
       message: "이번주 카드값이 얼마나 나왔을까",
+      taskState: runningTask,
+    });
+
+    expect(result).toBe("fargate-reuse");
+  });
+
+  it("routes compact temporal amount questions to tool-enabled compute", () => {
+    const result = classifyRoute({
+      message: "이번주는 얼마",
       taskState: runningTask,
     });
 

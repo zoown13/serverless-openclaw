@@ -14,6 +14,7 @@ export interface RouteClassificationSignals {
   hasPrivateDataTarget: boolean;
   hasPrivateDataAction: boolean;
   hasFinanceLookup: boolean;
+  hasTemporalAmountLookup: boolean;
   hasDataLookupAction: boolean;
   hasTravelContext: boolean;
   hasPaymentRecord: boolean;
@@ -27,6 +28,8 @@ const PRIVATE_DATA_ACTION_PATTERN =
   /(?:\baccess\b|\bconnect\b|\bintegrat(?:e|ion)?\b|\bfetch\b|\bload\b|\bget\b|\bcheck\b|\bread\b|\bopen\b|\bsearch\b|\bsend\b|\bsummar(?:ize|ise)\b|\banaly[sz]e\b|\breview\b|\btriage\b|\bbody\b|\bcontent\b|\bdetails?\b|\bbrowse\b|\bvisit\b|\bnavigate\b|\blook up\b|접근|연동|연결|가져오|불러오|조회|확인|읽|열|검색|보내|요약|분석|정리|분류|찾|살펴|보여|봐|본문|내용|자세히|상세|둘러|탐색|접속)/i;
 const FINANCE_LOOKUP_PATTERN =
   /(?:결제|지출|지출액|사용금액|사용 금액|사용한\s*돈|쓴\s*돈|썼던\s*돈|소비|소비내역|비용|승인내역|카드값|카드\s*(?:사용|결제)|여행\s*경비|출장\s*경비|청구서|영수증|명세서|\bpayment(?:s)?\b|\bcharge(?:s|d)?\b|\btransaction(?:s)?\b|\bspent\b|\bspend(?:ing)?\b|\bexpense(?:s)?\b|\bcosts?\b|\bbilling\b|\binvoice\b|\breceipt\b|\bstatement\b)/i;
+const TEMPORAL_AMOUNT_LOOKUP_PATTERN =
+  /(?:(?:이번|지난)\s*(?:주|달|월)|이번주|지난주|이번달|지난달|오늘|어제|최근).*(?:얼마(?:야|냐|지|일까|였|였어|인지)?|총액|합계|썼|쓴|나왔|사용|지출|결제)|(?:얼마(?:야|냐|지|일까|였|였어|인지)?|총액|합계|썼|쓴|나왔).*(?:(?:이번|지난)\s*(?:주|달|월)|이번주|지난주|이번달|지난달|오늘|어제|최근)/i;
 const DATA_LOOKUP_ACTION_PATTERN =
   /(?:얼마|총액|합계|총합|어느 정도|어느정도|얼마나|계산|정리|요약|찾|알려|보여|확인|분석|내역|\bhow much\b|\btotal\b|\bsum\b|\bshow\b|\bcheck\b|\bfind\b|\bsummary\b|\bbreakdown\b)/i;
 const TRAVEL_CONTEXT_PATTERN =
@@ -59,6 +62,7 @@ export function getRouteClassificationSignals(
     hasPrivateDataTarget: PRIVATE_DATA_TARGET_PATTERN.test(normalized),
     hasPrivateDataAction: PRIVATE_DATA_ACTION_PATTERN.test(normalized),
     hasFinanceLookup: FINANCE_LOOKUP_PATTERN.test(normalized),
+    hasTemporalAmountLookup: TEMPORAL_AMOUNT_LOOKUP_PATTERN.test(normalized),
     hasDataLookupAction: DATA_LOOKUP_ACTION_PATTERN.test(normalized),
     hasTravelContext: TRAVEL_CONTEXT_PATTERN.test(normalized),
     hasPaymentRecord: PAYMENT_RECORD_PATTERN.test(normalized),
@@ -91,6 +95,10 @@ export function classifyRouteRuntimeClass(message: string): RuntimeClass {
   }
 
   if (signals.hasFinanceLookup && signals.hasDataLookupAction) {
+    return "tool-enabled";
+  }
+
+  if (signals.hasTemporalAmountLookup && signals.hasDataLookupAction) {
     return "tool-enabled";
   }
 

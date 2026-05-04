@@ -1,9 +1,6 @@
 name: Deploy AgentCore Production
 
 on:
-  push:
-    branches:
-      - "**"
   workflow_dispatch:
     inputs:
       openclaw-version:
@@ -280,7 +277,7 @@ jobs:
             -LambdaAgentImageTag "${{ steps.meta.outputs.lambda_agent_image_tag }}"
 
       - name: Synthetic Telegram smoke
-        if: ${{ github.event_name == 'push' || inputs['run-smoke'] }}
+        if: ${{ inputs['run-smoke'] }}
         shell: pwsh
         run: |
           if ([string]::IsNullOrWhiteSpace("${{ env.TELEGRAM_SMOKE_CHAT_ID }}")) {

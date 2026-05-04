@@ -133,6 +133,10 @@ describe("classifyRouteRuntimeClass", () => {
     expect(classifyRouteRuntimeClass("이번주 결제한 금액이 어느정도 되려나?")).toBe("tool-enabled");
   });
 
+  it("classifies explicit expanded payment scan requests as tool-enabled", () => {
+    expect(classifyRouteRuntimeClass("이번주 결제한 금액 전체로 제한 풀고 봐줘")).toBe("tool-enabled");
+  });
+
   it("classifies compact Korean payment summary questions as tool-enabled", () => {
     expect(classifyRouteRuntimeClass("이번주 카드값이 얼마나 나왔을까")).toBe("tool-enabled");
   });
@@ -195,12 +199,31 @@ describe("getRouteClassificationSignals", () => {
       hasHangul: true,
     });
   });
+
+  it("captures expanded payment scan requests as personal data lookups", () => {
+    expect(getRouteClassificationSignals("이번주 결제한 금액 전체로 제한 풀고 봐줘")).toMatchObject({
+      hasSensitiveDataCue: true,
+      hasTemporalContext: true,
+      hasDataLookupAction: true,
+      hasAmbiguousPersonalLookup: true,
+      hasHangul: true,
+    });
+  });
 });
 
 describe("classifyRoute coarse tool routing", () => {
   it("routes Korean payment summary questions to tool-enabled compute", () => {
     const result = classifyRoute({
       message: "이번주 결제한 금액이 어느정도 되려나?",
+      taskState: runningTask,
+    });
+
+    expect(result).toBe("fargate-reuse");
+  });
+
+  it("routes explicit expanded payment scans to tool-enabled compute", () => {
+    const result = classifyRoute({
+      message: "이번주 결제한 금액 전체로 제한 풀고 봐줘",
       taskState: runningTask,
     });
 

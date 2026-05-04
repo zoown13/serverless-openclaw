@@ -24,6 +24,10 @@ export class OpenClawClient {
   private readyResolve!: () => void;
   private readyReject!: (reason: Error) => void;
   private readyPromise: Promise<void>;
+  private ready = false;
+  private closed = false;
+  private connectAttempts = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(baseUrl: string, token: string) {
     this.gatewayUrl = baseUrl;
@@ -40,15 +44,29 @@ export class OpenClawClient {
   }
 
   private connect(): void {
-    this.ws = new WebSocket(this.gatewayUrl);
+    if (this.closed) {
+      return;
+    }
 
-    this.ws.on("error", (err) => {
-      this.readyReject(
-        err instanceof Error ? err : new Error(String(err)),
-      );
+    const socket = new WebSocket(this.gatewayUrl);
+    this.ws = socket;
+
+    socket.on("error", (err) => {
+      const error = err instanceof Error ? err : new Error(String(err));
+      if (!this.ready && this.isRetryableConnectFailure(error.message)) {
+        this.scheduleReconnect(error.message, socket);
+        return;
+      }
+      this.readyReject(error);
     });
 
-    this.ws.on("message", (raw: WebSocket.Data) => {
+    socket.on("close", () => {
+      if (!this.ready && !this.closed) {
+        this.scheduleReconnect("gateway websocket closed before ready", socket);
+      }
+    });
+
+    socket.on("message", (raw: WebSocket.Data) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const msg = JSON.parse(raw.toString()) as any;
 
@@ -77,7 +95,7 @@ export class OpenClawClient {
             userAgent: "serverless-openclaw-bridge/1.0",
           },
         };
-        this.ws!.send(JSON.stringify(connectReq));
+        socket.send(JSON.stringify(connectReq));
         return;
       }
 
@@ -90,6 +108,8 @@ export class OpenClawClient {
             "Gateway handshake complete, sessionKey:",
             this.sessionKey,
           );
+          this.ready = true;
+          this.connectAttempts = 0;
           this.readyResolve();
           return;
         }
@@ -97,9 +117,12 @@ export class OpenClawClient {
 
       // Gateway connect error
       if (msg.type === "res" && msg.id === "connect-1" && msg.ok === false) {
-        this.readyReject(
-          new Error(`Gateway connect failed: ${msg.error?.message ?? JSON.stringify(msg)}`),
-        );
+        const errorMessage = msg.error?.message ?? JSON.stringify(msg);
+        if (this.isRetryableConnectFailure(errorMessage)) {
+          this.scheduleReconnect(errorMessage, socket);
+          return;
+        }
+        this.readyReject(new Error(`Gateway connect failed: ${errorMessage}`));
         return;
       }
 
@@ -183,6 +206,41 @@ export class OpenClawClient {
     });
   }
 
+  private isRetryableConnectFailure(message: string): boolean {
+    return /gateway starting|retry shortly|websocket closed before ready|ECONNREFUSED|socket hang up/i.test(
+      message,
+    );
+  }
+
+  private scheduleReconnect(reason: string, socket: WebSocket | null): void {
+    if (this.closed || this.ready || this.reconnectTimer) {
+      return;
+    }
+
+    this.connectAttempts += 1;
+    if (this.connectAttempts > 60) {
+      this.readyReject(new Error(`Gateway connect failed after retries: ${reason}`));
+      return;
+    }
+
+    socket?.removeAllListeners("close");
+    socket?.removeAllListeners("error");
+    try {
+      socket?.close();
+    } catch {
+      // Ignore close failures while retrying startup handshakes.
+    }
+
+    const delayMs = Math.min(250 * this.connectAttempts, 2000);
+    console.warn(
+      `Gateway not ready yet; retrying bridge connection in ${delayMs}ms (${reason})`,
+    );
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect();
+    }, delayMs);
+  }
+
   async *sendMessage(
     _userId: string,
     message: string,
@@ -264,6 +322,11 @@ export class OpenClawClient {
   }
 
   close(): void {
+    this.closed = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     if (this.ws) {
       this.ws.close();
     }

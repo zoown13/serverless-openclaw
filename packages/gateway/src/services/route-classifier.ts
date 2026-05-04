@@ -33,7 +33,7 @@ const TEMPORAL_CONTEXT_PATTERN =
 const PERSONAL_REFERENCE_PATTERN =
   /(?:\bmy\b|\bme\b|\bmine\b|내|나의|내가|저의|제가|제\s|우리)/i;
 const DATA_LOOKUP_ACTION_PATTERN =
-  /(?:얼마|총액|합계|총합|어느 정도|어느정도|얼마나|계산|정리|요약|찾|알려|보여|확인|분석|내역|\bhow much\b|\btotal\b|\bsum\b|\bshow\b|\bcheck\b|\bfind\b|\bsummary\b|\bbreakdown\b)/i;
+  /(?:얼마|금액|총액|합계|총합|어느 정도|어느정도|얼마나|계산|정리|요약|찾|알려|보여|봐|확인|분석|내역|\bhow much\b|\bamount\b|\btotal\b|\bsum\b|\bshow\b|\bcheck\b|\bfind\b|\bsummary\b|\bbreakdown\b)/i;
 const TRAVEL_CONTEXT_PATTERN =
   /(?:여행|출장|일본|도쿄|오사카|교토|후쿠오카|삿포로|오키나와|항공|비행|호텔|숙소|eSIM|\btravel\b|\btrip\b|\bflight\b|\bhotel\b|\blodging\b|\besim\b)/i;
 const GENERAL_HOW_TO_PATTERN =

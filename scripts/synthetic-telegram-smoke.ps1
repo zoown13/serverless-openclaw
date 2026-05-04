@@ -7,7 +7,7 @@ param(
   [long]$ChatId,
   [long]$TelegramId,
   [string]$UserId,
-  [ValidateSet("PaymentFollowUp", "PaymentCoverageFollowUp", "PaymentDateRange", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff")]
+  [ValidateSet("PaymentFollowUp", "PaymentCoverageFollowUp", "PaymentExpandedFirstTurn", "PaymentDateRange", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff")]
   [string]$Scenario = "PaymentFollowUp",
   [int]$PauseSeconds = 10,
   [int]$BridgeSignalTimeoutSeconds = 180,
@@ -194,6 +194,11 @@ function Get-ScenarioMessages {
         "합계만",
         "더 있을텐데",
         "5개 밖에 없어?"
+      )
+    }
+    "PaymentExpandedFirstTurn" {
+      return @(
+        "이번주 결제한 금액 전체로 제한 풀고 봐줘"
       )
     }
     "PaymentDateRange" {
@@ -559,7 +564,7 @@ if (-not $WebhookSecret) {
   $WebhookSecret = Resolve-WebhookSecret -SelectedProfile $Profile -SelectedRegion $Region
 }
 
-$messages = Get-ScenarioMessages -SelectedScenario $Scenario
+$messages = @(Get-ScenarioMessages -SelectedScenario $Scenario)
 $webhookUri = "$ApiEndpoint/telegram"
 $baseUpdateId = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 $scenarioStartTimeMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()

@@ -28,6 +28,7 @@ on:
         options:
           - PaymentFollowUp
           - PaymentCoverageFollowUp
+          - PaymentExpandedFirstTurn
           - PaymentDateRange
           - TravelPaymentFollowUp
           - TravelPaymentThenChatHandoff

@@ -136,6 +136,72 @@ describe("agentcore service", () => {
     expect(capturedSignal?.aborted).toBe(false);
   });
 
+  it("passes AssistantRuntimeContext through the AgentCore invoke payload", async () => {
+    process.env.AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE";
+    process.env.AWS_SECRET_ACCESS_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+
+    let capturedBody = "";
+    await invokeAgentCoreRuntime({
+      runtimeArn:
+        "arn:aws:bedrock-agentcore:ap-northeast-2:123456789012:runtime/ServerlessOpenClawToolRuntime-test",
+      userId: "user-123",
+      message: "hello",
+      channel: "telegram",
+      connectionId: "telegram:123",
+      callbackUrl: "",
+      runtimeClass: "tool-enabled",
+      assistantContext: {
+        version: 1,
+        userId: "user-123",
+        channel: "telegram",
+        sessionId: "session-user-123",
+        generatedAt: "2026-05-04T00:00:00.000Z",
+        runtime: {
+          agentRuntime: "both",
+          runtimeClass: "tool-enabled",
+          routeDecision: "agentcore",
+          lambdaRole: "chat-only-fast-path",
+          toolRuntimeProvider: "agentcore",
+          fallbackProvider: "fargate",
+        },
+        capabilities: {
+          tools: {
+            available: true,
+            executionRuntime: "agentcore",
+            note: "Tool tasks are delegated.",
+          },
+          gmail: {
+            status: "available_via_tool_runtime",
+            executionRuntime: "agentcore",
+            safetyMode: "headers-first",
+          },
+        },
+        guidance: {
+          selfAwareness: "Shared state.",
+          lambda: "Chat only.",
+          toolRuntime: "Tools.",
+        },
+      },
+      fetchFn: async (_url, init) => {
+        capturedBody = String(init?.body ?? "");
+        return new Response(JSON.stringify({ content: "ok" }));
+      },
+    });
+
+    expect(JSON.parse(capturedBody)).toEqual(
+      expect.objectContaining({
+        assistantContext: expect.objectContaining({
+          version: 1,
+          capabilities: expect.objectContaining({
+            gmail: expect.objectContaining({
+              status: "available_via_tool_runtime",
+            }),
+          }),
+        }),
+      }),
+    );
+  });
+
   it("preserves runtime handoff metadata from AgentCore responses", async () => {
     process.env.AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE";
     process.env.AWS_SECRET_ACCESS_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";

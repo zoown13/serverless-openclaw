@@ -1,4 +1,5 @@
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
+import type { AssistantRuntimeContext } from "@serverless-openclaw/shared";
 
 const lambda = new LambdaClient({});
 
@@ -13,6 +14,7 @@ export interface InvokeLambdaAgentParams {
   telegramChatId?: string;
   /** WebSocket callback URL — agent uses this to push responses directly */
   callbackUrl?: string;
+  assistantContext?: AssistantRuntimeContext;
 }
 
 /**
@@ -35,6 +37,7 @@ export async function invokeLambdaAgent(
     connectionId: params.connectionId,
     telegramChatId: params.telegramChatId,
     callbackUrl: params.callbackUrl,
+    assistantContext: params.assistantContext,
   };
 
   await lambda.send(

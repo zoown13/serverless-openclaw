@@ -21,6 +21,7 @@ export interface ServerMessage {
 // === Channel ===
 export type Channel = "web" | "telegram";
 export type RuntimeClass = "chat-only" | "tool-enabled";
+export type AgentRuntimeMode = "lambda" | "fargate" | "both";
 export type ToolRuntimeProvider = "fargate" | "agentcore";
 export type RouteDecision =
   | "lambda"
@@ -61,6 +62,50 @@ export interface ToolRuntimeAffinityState {
   createdAt: string;
   lastActivityAt: string;
   expiresAt: string;
+}
+
+export interface AssistantRuntimeContext {
+  version: 1;
+  userId: string;
+  channel: Channel;
+  sessionId: string;
+  traceId?: string;
+  generatedAt: string;
+  runtime: {
+    agentRuntime?: AgentRuntimeMode;
+    runtimeClass: RuntimeClass;
+    routeDecision?: RouteDecision;
+    lambdaRole: "chat-only-fast-path";
+    toolRuntimeProvider?: ToolRuntimeProvider;
+    fallbackProvider?: ToolRuntimeProvider;
+    providerLocked?: boolean;
+    providerLockReason?: ToolRuntimeAffinityState["providerLockReason"];
+  };
+  capabilities: {
+    tools: {
+      available: boolean;
+      executionRuntime: ToolRuntimeProvider;
+      note: string;
+    };
+    gmail: {
+      status: "available_via_tool_runtime" | "runtime_check_required" | "unavailable";
+      executionRuntime: ToolRuntimeProvider;
+      safetyMode: "headers-first";
+    };
+  };
+  toolAffinity?: {
+    active: boolean;
+    provider?: ToolRuntimeProvider;
+    fallbackProvider?: ToolRuntimeProvider;
+    expiresAt?: string;
+    providerLockReason?: ToolRuntimeAffinityState["providerLockReason"];
+  };
+  emailTokenBudget?: EmailTokenBudgetPolicy;
+  guidance: {
+    selfAwareness: string;
+    lambda: string;
+    toolRuntime: string;
+  };
 }
 
 export type ToolTaskContextStatus = "awaiting_source" | "active";
@@ -137,6 +182,7 @@ export interface PendingMessageItem {
   runtimeClass?: RuntimeClass;
   routeDecision?: RouteDecision;
   emailTokenBudget?: EmailTokenBudgetPolicy;
+  assistantContext?: AssistantRuntimeContext;
   retryCount?: number;
   nextAttemptAt?: string;
   lastError?: string;
@@ -156,6 +202,7 @@ export interface BridgeMessageRequest {
   runtimeClass?: RuntimeClass;
   routeDecision?: RouteDecision;
   emailTokenBudget?: EmailTokenBudgetPolicy;
+  assistantContext?: AssistantRuntimeContext;
 }
 
 export interface BridgeMessageResponse {
@@ -183,6 +230,7 @@ export interface LambdaAgentEvent {
   disableTools?: boolean;
   channel: Channel;
   telegramChatId?: string;
+  assistantContext?: AssistantRuntimeContext;
 }
 
 export interface LambdaAgentResponse {

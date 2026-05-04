@@ -1,5 +1,6 @@
 import { createHash, createHmac } from "node:crypto";
 import type {
+  AssistantRuntimeContext,
   BridgeMessageRequest,
   BridgeMessageResponse,
   Channel,
@@ -20,6 +21,7 @@ export interface InvokeAgentCoreRuntimeParams {
   callbackUrl: string;
   runtimeClass: RuntimeClass;
   emailTokenBudget?: EmailTokenBudgetPolicy;
+  assistantContext?: AssistantRuntimeContext;
   timeoutMs?: number;
   fetchFn?: typeof fetch;
   now?: Date;
@@ -290,6 +292,7 @@ export async function invokeAgentCoreRuntime(
     runtimeClass: params.runtimeClass,
     routeDecision: "agentcore",
     emailTokenBudget: params.emailTokenBudget,
+    ...(params.assistantContext ? { assistantContext: params.assistantContext } : {}),
   };
   const payload = JSON.stringify(body);
   const payloadHash = hashHex(payload);

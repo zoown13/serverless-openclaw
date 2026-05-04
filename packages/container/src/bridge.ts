@@ -15,6 +15,7 @@ import type {
   ServerMessage,
   Channel,
   EmailTokenBudgetPolicy,
+  AssistantRuntimeContext,
 } from "@serverless-openclaw/shared";
 
 export interface BridgeDeps {
@@ -160,6 +161,22 @@ function buildToolEnabledPrefix(
   return `[System: Operate in headers-first safe mode to control Gmail and browser token usage. Show at most ${budget.maxMessages} detailed Gmail items per step, but payment summaries may scan up to ${paymentScanMessages} headers/snippets for aggregation before showing a short evidence list. Prefer sender, subject, date, and snippet previews truncated to ${budget.maxSnippetChars} characters. ${bodyAccessInstruction} If the user clearly identifies one Gmail result, open only that single message body. Never inspect attachments in this runtime. If body access is needed, read at most ${budget.maxBodyChars} characters from one item at a time and summarize incrementally before reading more.]`;
 }
 
+export function buildAssistantContextPrefix(
+  context?: AssistantRuntimeContext,
+): string | undefined {
+  if (!context) return undefined;
+
+  return [
+    `[System: AssistantRuntimeContext v${context.version}.`,
+    `Current route is ${context.runtime.runtimeClass}/${context.runtime.routeDecision ?? "unknown"}.`,
+    `Tool runtime provider is ${context.runtime.toolRuntimeProvider ?? "unknown"} with fallback ${context.runtime.fallbackProvider ?? "unknown"}.`,
+    `Active tool affinity is ${context.toolAffinity?.active === true ? "true" : "false"}.`,
+    `Gmail capability is ${context.capabilities.gmail.status} via ${context.capabilities.gmail.executionRuntime} in ${context.capabilities.gmail.safetyMode} mode.`,
+    "Do not claim the assistant cannot access Gmail or payment data when this context says the delegated tool runtime can verify it.",
+    `${context.guidance.toolRuntime}]`,
+  ].join(" ");
+}
+
 function defaultEmailTokenBudget(): EmailTokenBudgetPolicy {
   return {
     mode: "headers-first",
@@ -290,6 +307,14 @@ export function createApp(deps: BridgeDeps): express.Express {
     const logContext = buildBridgeLogContext(body);
     const deliveryType = resolveDeliveryType(body.channel);
     logBridgeEvent("bridge.message.accepted", logContext);
+    if (body.assistantContext) {
+      logBridgeEvent("bridge.assistant_context.loaded", {
+        ...logContext,
+        toolRuntimeProvider: body.assistantContext.runtime.toolRuntimeProvider,
+        hasActiveToolAffinity: body.assistantContext.toolAffinity?.active === true,
+        gmailCapability: body.assistantContext.capabilities.gmail.status,
+      });
+    }
 
     try {
       const gmailReady = await isGmailReady();
@@ -380,6 +405,10 @@ export function createApp(deps: BridgeDeps): express.Express {
       const historyPrefix = deps.getAndClearHistoryPrefix?.();
       if (historyPrefix) {
         prefixes.push(historyPrefix.trimEnd());
+      }
+      const assistantContextPrefix = buildAssistantContextPrefix(body.assistantContext);
+      if (assistantContextPrefix) {
+        prefixes.push(assistantContextPrefix);
       }
       if (body.channel === "telegram") {
         prefixes.push("[System: Respond in plain text only. Do not use markdown formatting such as **bold**, *italic*, ```code```, etc.]");

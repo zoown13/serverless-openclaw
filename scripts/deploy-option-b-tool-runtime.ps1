@@ -12,6 +12,7 @@ param(
   [string]$AgentCoreRuntimeArn = $(if ($env:AGENTCORE_RUNTIME_ARN) { $env:AGENTCORE_RUNTIME_ARN } else { "" }),
   [string]$AgentCoreRuntimeQualifier = $(if ($env:AGENTCORE_RUNTIME_QUALIFIER) { $env:AGENTCORE_RUNTIME_QUALIFIER } else { "" }),
   [string]$AgentCoreSessionNamespace = $(if ($env:AGENTCORE_SESSION_NAMESPACE) { $env:AGENTCORE_SESSION_NAMESPACE } else { "" }),
+  [string]$LambdaAgentImageTag = $(if ($env:LAMBDA_AGENT_IMAGE_TAG) { $env:LAMBDA_AGENT_IMAGE_TAG } else { "" }),
   [switch]$SkipEnvFile
 )
 
@@ -63,6 +64,9 @@ if ([string]::IsNullOrWhiteSpace($AgentCoreInvokeDeadlineMs) -and $env:AGENTCORE
 if ([string]::IsNullOrWhiteSpace($AgentCoreSessionNamespace) -and $env:AGENTCORE_SESSION_NAMESPACE) {
   $AgentCoreSessionNamespace = $env:AGENTCORE_SESSION_NAMESPACE
 }
+if ([string]::IsNullOrWhiteSpace($LambdaAgentImageTag) -and $env:LAMBDA_AGENT_IMAGE_TAG) {
+  $LambdaAgentImageTag = $env:LAMBDA_AGENT_IMAGE_TAG
+}
 
 $env:AWS_PROFILE = $Profile
 $env:AWS_REGION = $Region
@@ -72,6 +76,11 @@ $env:TOOL_RUNTIME_PROVIDER = $ToolRuntimeProvider
 $env:TOOL_CONTEXT_STORE = $ToolContextStore
 $env:AGENTCORE_FALLBACK_PROVIDER = $AgentCoreFallbackProvider
 $env:AGENTCORE_INVOKE_DEADLINE_MS = $AgentCoreInvokeDeadlineMs
+if (-not [string]::IsNullOrWhiteSpace($LambdaAgentImageTag)) {
+  $env:LAMBDA_AGENT_IMAGE_TAG = $LambdaAgentImageTag.Trim()
+} else {
+  Remove-Item Env:LAMBDA_AGENT_IMAGE_TAG -ErrorAction SilentlyContinue
+}
 
 if ($ToolRuntimeProvider -eq "agentcore") {
   if ([string]::IsNullOrWhiteSpace($AgentCoreRuntimeArn)) {
@@ -107,6 +116,9 @@ Write-Host "  TOOL_RUNTIME_PROVIDER : $env:TOOL_RUNTIME_PROVIDER"
 Write-Host "  TOOL_CONTEXT_STORE    : $env:TOOL_CONTEXT_STORE"
 Write-Host "  AGENTCORE_FALLBACK    : $env:AGENTCORE_FALLBACK_PROVIDER"
 Write-Host "  AGENTCORE_DEADLINE_MS : $env:AGENTCORE_INVOKE_DEADLINE_MS"
+if ($env:LAMBDA_AGENT_IMAGE_TAG) {
+  Write-Host "  LAMBDA_AGENT_IMAGE_TAG: $env:LAMBDA_AGENT_IMAGE_TAG"
+}
 if ($ToolRuntimeProvider -eq "agentcore") {
   Write-Host "  AGENTCORE_RUNTIME_ARN : $env:AGENTCORE_RUNTIME_ARN"
   if ($env:AGENTCORE_RUNTIME_QUALIFIER) {
@@ -126,6 +138,7 @@ Write-Host ""
 Push-Location $cdkDir
 try {
   npx cdk deploy ComputeStack --exclusively --require-approval never
+  npx cdk deploy LambdaAgentStack --exclusively --require-approval never
   npx cdk deploy ApiStack --exclusively --require-approval never
 } finally {
   Pop-Location

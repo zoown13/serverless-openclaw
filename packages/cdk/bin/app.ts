@@ -23,6 +23,7 @@ const toolSlmBackend = process.env.TOOL_SLM_BACKEND;
 const toolRuntimeProvider = process.env.TOOL_RUNTIME_PROVIDER ?? "agentcore";
 const agentCoreRuntimeArn = process.env.AGENTCORE_RUNTIME_ARN;
 const agentCoreRuntimeQualifier = process.env.AGENTCORE_RUNTIME_QUALIFIER;
+const lambdaAgentImageTag = process.env.LAMBDA_AGENT_IMAGE_TAG;
 
 // Secrets (SSM SecureString parameters)
 const secrets = new SecretsStack(app, "SecretsStack", { aiProvider });
@@ -67,6 +68,7 @@ if (agentRuntime !== "fargate") {
     taskStateTable: storage.taskStateTable,
     aiProvider,
     aiModel,
+    lambdaAgentImageTag,
   });
   lambdaAgent.addDependency(secrets);
 }

@@ -46,6 +46,7 @@ concurrency:
 env:
   AWS_REGION: ap-northeast-2
   ECR_REPOSITORY: serverless-openclaw
+  LAMBDA_AGENT_ECR_REPOSITORY: serverless-openclaw-lambda-agent
   AGENTCORE_RUNTIME_NAME: ServerlessOpenClawToolRuntime
   TELEGRAM_SMOKE_CHAT_ID: ${{ secrets.TELEGRAM_SMOKE_CHAT_ID }}
   TELEGRAM_SMOKE_TELEGRAM_ID: ${{ secrets.TELEGRAM_SMOKE_TELEGRAM_ID }}
@@ -68,19 +69,27 @@ jobs:
         run: |
           SHORT_SHA="${GITHUB_SHA::7}"
           IMAGE_TAG="agentcore-${SHORT_SHA}-gzip"
+          LAMBDA_AGENT_IMAGE_TAG="lambda-${SHORT_SHA}"
           DEPLOYMENT_MODE="${{ github.event_name == 'workflow_dispatch' && inputs['deployment-mode'] || 'fast' }}"
           RUNTIME_CHANGED="false"
+          LAMBDA_AGENT_CHANGED="false"
 
           if [ "${DEPLOYMENT_MODE}" = "full" ]; then
             RUNTIME_CHANGED="true"
+            LAMBDA_AGENT_CHANGED="true"
           elif [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
             RUNTIME_CHANGED="true"
+            LAMBDA_AGENT_CHANGED="true"
           elif [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
             RUNTIME_CHANGED="true"
+            LAMBDA_AGENT_CHANGED="true"
           else
             CHANGED_FILES="$(git diff --name-only "${{ github.event.before }}" "${GITHUB_SHA}" || true)"
             if echo "${CHANGED_FILES}" | grep -E '^(packages/container/|packages/shared/|package\.json$|package-lock\.json$|tsconfig\.json$)' >/dev/null; then
               RUNTIME_CHANGED="true"
+            fi
+            if echo "${CHANGED_FILES}" | grep -E '^(packages/lambda-agent/|packages/shared/|packages/cdk/|scripts/deploy-option-b-tool-runtime\.ps1$|package\.json$|package-lock\.json$|tsconfig\.json$)' >/dev/null; then
+              LAMBDA_AGENT_CHANGED="true"
             fi
           fi
 
@@ -95,13 +104,16 @@ jobs:
 
           echo "short_sha=${SHORT_SHA}" >> "${GITHUB_OUTPUT}"
           echo "image_tag=${IMAGE_TAG}" >> "${GITHUB_OUTPUT}"
+          echo "lambda_agent_image_tag=${LAMBDA_AGENT_IMAGE_TAG}" >> "${GITHUB_OUTPUT}"
           echo "deployment_mode=${DEPLOYMENT_MODE}" >> "${GITHUB_OUTPUT}"
           echo "runtime_changed=${RUNTIME_CHANGED}" >> "${GITHUB_OUTPUT}"
+          echo "lambda_agent_changed=${LAMBDA_AGENT_CHANGED}" >> "${GITHUB_OUTPUT}"
           echo "session_namespace=${SESSION_NAMESPACE}" >> "${GITHUB_OUTPUT}"
           echo "smoke_scenario=${SMOKE_SCENARIO}" >> "${GITHUB_OUTPUT}"
           echo "openclaw_version=${{ github.event.inputs['openclaw-version'] || 'latest' }}" >> "${GITHUB_OUTPUT}"
           echo "Deployment mode: ${DEPLOYMENT_MODE}"
           echo "Runtime image changed: ${RUNTIME_CHANGED}"
+          echo "Lambda agent image changed: ${LAMBDA_AGENT_CHANGED}"
           echo "Session namespace: ${SESSION_NAMESPACE}"
           echo "Smoke scenario: ${SMOKE_SCENARIO}"
 
@@ -154,18 +166,18 @@ jobs:
           aws sts get-caller-identity
 
       - name: Login to Amazon ECR
-        if: ${{ steps.meta.outputs.runtime_changed == 'true' }}
+        if: ${{ steps.meta.outputs.runtime_changed == 'true' || steps.meta.outputs.lambda_agent_changed == 'true' }}
         id: ecr-login
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Set up QEMU for ARM64
-        if: ${{ steps.meta.outputs.runtime_changed == 'true' }}
+        if: ${{ steps.meta.outputs.runtime_changed == 'true' || steps.meta.outputs.lambda_agent_changed == 'true' }}
         uses: docker/setup-qemu-action@v3
         with:
           platforms: arm64
 
       - name: Set up Docker Buildx
-        if: ${{ steps.meta.outputs.runtime_changed == 'true' }}
+        if: ${{ steps.meta.outputs.runtime_changed == 'true' || steps.meta.outputs.lambda_agent_changed == 'true' }}
         uses: docker/setup-buildx-action@v3
 
       - name: Build and push AgentCore gzip image
@@ -185,6 +197,23 @@ jobs:
             OPENCLAW_VERSION=${{ steps.meta.outputs.openclaw_version }}
           provenance: false
 
+      - name: Build and push Lambda Agent image
+        if: ${{ steps.meta.outputs.lambda_agent_changed == 'true' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packages/lambda-agent/Dockerfile
+          platforms: linux/arm64
+          push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          tags: |
+            ${{ steps.ecr-login.outputs.registry }}/${{ env.LAMBDA_AGENT_ECR_REPOSITORY }}:latest
+            ${{ steps.ecr-login.outputs.registry }}/${{ env.LAMBDA_AGENT_ECR_REPOSITORY }}:${{ steps.meta.outputs.lambda_agent_image_tag }}
+          build-args: |
+            OPENCLAW_VERSION=${{ steps.meta.outputs.openclaw_version }}
+          provenance: false
+
       - name: Verify pushed image
         if: ${{ steps.meta.outputs.runtime_changed == 'true' }}
         shell: bash
@@ -192,6 +221,17 @@ jobs:
           aws ecr describe-images \
             --repository-name "${ECR_REPOSITORY}" \
             --image-ids "imageTag=${{ steps.meta.outputs.image_tag }}" \
+            --query 'imageDetails[0].{digest:imageDigest,size:imageSizeInBytes,pushedAt:imagePushedAt}' \
+            --output json \
+            --region "${AWS_REGION}"
+
+      - name: Verify pushed Lambda Agent image
+        if: ${{ steps.meta.outputs.lambda_agent_changed == 'true' }}
+        shell: bash
+        run: |
+          aws ecr describe-images \
+            --repository-name "${LAMBDA_AGENT_ECR_REPOSITORY}" \
+            --image-ids "imageTag=${{ steps.meta.outputs.lambda_agent_image_tag }}" \
             --query 'imageDetails[0].{digest:imageDigest,size:imageSizeInBytes,pushedAt:imagePushedAt}' \
             --output json \
             --region "${AWS_REGION}"
@@ -236,7 +276,8 @@ jobs:
             -Region "${{ env.AWS_REGION }}" `
             -ToolRuntimeProvider "agentcore" `
             -AgentCoreRuntimeArn "${{ steps.runtime.outputs.runtime_arn }}" `
-            -AgentCoreSessionNamespace "${{ steps.meta.outputs.session_namespace }}"
+            -AgentCoreSessionNamespace "${{ steps.meta.outputs.session_namespace }}" `
+            -LambdaAgentImageTag "${{ steps.meta.outputs.lambda_agent_image_tag }}"
 
       - name: Synthetic Telegram smoke
         if: ${{ github.event_name == 'push' || inputs['run-smoke'] }}
@@ -274,7 +315,9 @@ jobs:
             echo "- Commit: ${GITHUB_SHA}"
             echo "- Deployment mode: ${{ steps.meta.outputs.deployment_mode }}"
             echo "- Runtime image changed: ${{ steps.meta.outputs.runtime_changed }}"
+            echo "- Lambda agent image changed: ${{ steps.meta.outputs.lambda_agent_changed }}"
             echo "- Image tag: ${{ steps.meta.outputs.image_tag }}"
+            echo "- Lambda agent image tag: ${{ steps.meta.outputs.lambda_agent_image_tag }}"
             echo "- Runtime ARN: ${{ steps.runtime.outputs.runtime_arn }}"
             echo "- Runtime ID: ${{ steps.runtime.outputs.runtime_id }}"
             echo "- Gateway session namespace: ${{ steps.meta.outputs.session_namespace }}"

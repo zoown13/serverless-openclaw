@@ -15,6 +15,7 @@ export interface LambdaAgentStackProps extends cdk.StackProps {
   taskStateTable: dynamodb.ITable;
   aiProvider?: string;
   aiModel?: string;
+  lambdaAgentImageTag?: string;
 }
 
 export class LambdaAgentStack extends cdk.Stack {
@@ -44,7 +45,7 @@ export class LambdaAgentStack extends cdk.Stack {
     this.agentFunction = new lambda.DockerImageFunction(this, "AgentFunction", {
       functionName: "serverless-openclaw-agent",
       code: lambda.DockerImageCode.fromEcr(this.ecrRepository, {
-        tagOrDigest: "latest",
+        tagOrDigest: props.lambdaAgentImageTag ?? "latest",
       }),
       architecture: lambda.Architecture.ARM_64,
       memorySize: 2048,

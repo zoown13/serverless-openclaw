@@ -137,7 +137,7 @@ describe("classifyRouteRuntimeClass", () => {
     expect(classifyRouteRuntimeClass("이번주 카드값이 얼마나 나왔을까")).toBe("tool-enabled");
   });
 
-  it("classifies compact temporal amount questions as tool-enabled", () => {
+  it("routes compact temporal amount questions to AgentCore as ambiguous personal lookups", () => {
     expect(classifyRouteRuntimeClass("이번주는 얼마")).toBe("tool-enabled");
     expect(classifyRouteRuntimeClass("이번달은 얼마야")).toBe("tool-enabled");
   });
@@ -162,14 +162,14 @@ describe("classifyRouteRuntimeClass", () => {
 });
 
 describe("getRouteClassificationSignals", () => {
-  it("captures travel and payment signals for travel payment lookup questions", () => {
+  it("captures coarse private-data signals for travel payment lookup questions", () => {
     expect(
       getRouteClassificationSignals("일본 여행가는데 결제한 내역들 알려줘"),
     ).toMatchObject({
       hasFargateHint: false,
       hasTravelContext: true,
-      hasFinanceLookup: true,
-      hasPaymentRecord: true,
+      hasSensitiveDataCue: true,
+      hasAmbiguousPersonalLookup: true,
       hasDataLookupAction: true,
       hasHangul: true,
     });
@@ -180,23 +180,24 @@ describe("getRouteClassificationSignals", () => {
       getRouteClassificationSignals("4월 18일부터 일본 여행 관련 쓴 돈 정리해줘"),
     ).toMatchObject({
       hasTravelContext: true,
-      hasFinanceLookup: true,
+      hasSensitiveDataCue: true,
       hasDataLookupAction: true,
-      hasPaymentRecord: true,
+      hasAmbiguousPersonalLookup: true,
       hasHangul: true,
     });
   });
 
-  it("captures compact temporal amount lookup signals", () => {
+  it("captures compact ambiguous personal lookup signals", () => {
     expect(getRouteClassificationSignals("이번주는 얼마")).toMatchObject({
-      hasTemporalAmountLookup: true,
+      hasTemporalContext: true,
+      hasAmbiguousPersonalLookup: true,
       hasDataLookupAction: true,
       hasHangul: true,
     });
   });
 });
 
-describe("classifyRoute payment routing", () => {
+describe("classifyRoute coarse tool routing", () => {
   it("routes Korean payment summary questions to tool-enabled compute", () => {
     const result = classifyRoute({
       message: "이번주 결제한 금액이 어느정도 되려나?",
@@ -215,7 +216,7 @@ describe("classifyRoute payment routing", () => {
     expect(result).toBe("fargate-reuse");
   });
 
-  it("routes compact temporal amount questions to tool-enabled compute", () => {
+  it("routes compact temporal amount questions to tool-enabled compute without assigning a task family", () => {
     const result = classifyRoute({
       message: "이번주는 얼마",
       taskState: runningTask,

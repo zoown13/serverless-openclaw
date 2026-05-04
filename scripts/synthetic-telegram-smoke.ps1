@@ -7,7 +7,7 @@ param(
   [long]$ChatId,
   [long]$TelegramId,
   [string]$UserId,
-  [ValidateSet("PaymentFollowUp", "PaymentCoverageFollowUp", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff")]
+  [ValidateSet("PaymentFollowUp", "PaymentCoverageFollowUp", "PaymentDateRange", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff")]
   [string]$Scenario = "PaymentFollowUp",
   [int]$PauseSeconds = 10,
   [int]$BridgeSignalTimeoutSeconds = 180,
@@ -194,6 +194,14 @@ function Get-ScenarioMessages {
         "합계만",
         "더 있을텐데",
         "5개 밖에 없어?"
+      )
+    }
+    "PaymentDateRange" {
+      return @(
+        "이번주 결제한 금액 알려줘",
+        "지난주로 다시 봐줘",
+        "최근 7일로 다시 봐줘",
+        "4월 둘째주 결제한 금액 알려줘"
       )
     }
     "TravelPaymentFollowUp" {

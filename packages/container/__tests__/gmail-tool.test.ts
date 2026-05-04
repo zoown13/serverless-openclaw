@@ -374,6 +374,59 @@ describe("gmail-tool", () => {
     }
   });
 
+  it("reruns active payment context when the follow-up changes the date range", async () => {
+    vi.setSystemTime(new Date("2026-05-05T12:00:00+09:00"));
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m1" }] } }))
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "카드 결제 알림",
+          "Card Co <billing@example.com>",
+          "Tue, 05 May 2026 09:00:00 +0900",
+          "결제금액 12,300원 카드종류 삼성카드 가맹점명 스타벅스",
+          "m1",
+        ),
+      );
+
+    await maybeHandleCustomGmailRequest({
+      userId: "user-date-followup",
+      sessionKey: "session-date-followup",
+      message: "이번주 결제한 금액 알려줘",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    fetchMock.mockReset();
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m2" }] } }))
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "카드 결제 알림",
+          "Card Co <billing@example.com>",
+          "Tue, 28 Apr 2026 09:00:00 +0900",
+          "결제금액 7,700원 카드종류 현대카드 가맹점명 편의점",
+          "m2",
+        ),
+      );
+
+    const response = await maybeHandleCustomGmailRequest({
+      userId: "user-date-followup",
+      sessionKey: "session-date-followup",
+      message: "지난주로 다시 봐줘",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    expect(response?.kind).toBe("direct");
+    expect(decodeURIComponent(String(fetchMock.mock.calls[1]?.[0]))).toContain(
+      "after:2026/04/27 before:2026/05/04 결제",
+    );
+    expect(response?.message).toContain("KRW 7,700");
+  });
+
   it("confirms Gmail and then reuses parsed payment records for follow-up summaries", async () => {
     decideToolIntentMock.mockResolvedValueOnce({
       action: "gmail",

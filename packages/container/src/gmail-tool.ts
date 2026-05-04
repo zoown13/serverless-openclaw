@@ -976,6 +976,10 @@ function buildExpandedPaymentRerunMessage(canonicalGoal: string, followUpMessage
   return `${canonicalGoal}\n${followUpMessage}\n전체 범위로 다시 스캔`;
 }
 
+function buildDateRefinementRerunMessage(followUpMessage: string): string {
+  return `${followUpMessage}\n결제 금액`;
+}
+
 function isTopicRefinementFollowUp(message: string): boolean {
   const extracted = extractTopicKeywords(message);
   return extracted.length > 0 || TRAVEL_REFINEMENT_PATTERN.test(message);
@@ -1152,6 +1156,11 @@ function buildDateRange(message: string): { after?: string; before?: string } {
   }
 
   return {};
+}
+
+function hasDateRangeCue(message: string): boolean {
+  const dateRange = buildDateRange(message);
+  return Boolean(dateRange.after || dateRange.before);
 }
 
 function formatDate(date: Date): string {
@@ -2677,6 +2686,10 @@ async function handleActiveTaskContext(
     plannerWantsCurrentPaymentTask &&
     plannerHint !== undefined &&
     (plannerHint.action === "rerun_current_task" || followUpIntent === "coverage_check");
+  const plannerRequestsDateRerun =
+    effectiveContext.taskFamily === "gmail_payment_summary" &&
+    effectiveContext.sourceChoice === "gmail" &&
+    (followUpIntent === "refine_date" || hasDateRangeCue(trimmed));
   const userRequestsCoverageExpansion =
     isPaymentCoverageFollowUp(trimmed, followUpIntent) &&
     !isTopicRefinementFollowUp(trimmed) &&
@@ -2762,6 +2775,23 @@ async function handleActiveTaskContext(
         options,
         "gmail_payment_summary",
         buildExpandedPaymentRerunMessage(nextContext.canonicalGoal, trimmed),
+        credentials,
+      );
+    }
+    if (plannerRequestsDateRerun) {
+      const credentials = options.gmailReady ? await loadGmailCredentials() : null;
+      if (!credentials) {
+        return {
+          kind: "direct",
+          message: buildGmailUnavailableMessage(),
+          source: "gmail-fallback",
+        };
+      }
+      return runGmailTask(
+        contextKey,
+        options,
+        "gmail_payment_summary",
+        buildDateRefinementRerunMessage(trimmed),
         credentials,
       );
     }

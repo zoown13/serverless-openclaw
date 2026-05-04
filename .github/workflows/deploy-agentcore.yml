@@ -28,6 +28,7 @@ on:
         options:
           - PaymentFollowUp
           - PaymentCoverageFollowUp
+          - PaymentDateRange
           - TravelPaymentFollowUp
           - TravelPaymentThenChatHandoff
         default: TravelPaymentThenChatHandoff

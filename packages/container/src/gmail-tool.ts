@@ -1590,6 +1590,7 @@ function buildPaymentSummaryResponse(
   records: ParsedPaymentRecord[],
   displayLimit: number,
   resultEstimate?: number,
+  expandedScanLimit?: number,
 ): string {
   const total = records.reduce((sum, record) => sum + (record.amount ?? 0), 0);
   const merchants = [...new Set(records.map((record) => record.merchant).filter(Boolean))];
@@ -1603,6 +1604,11 @@ function buildPaymentSummaryResponse(
   if (typeof resultEstimate === "number" && resultEstimate > messages.length) {
     summaryLines.push(
       `Gmail estimates about ${resultEstimate} matching message(s); this response aggregates the first ${messages.length} scanned candidate(s).`,
+    );
+  }
+  if (expandedScanLimit !== undefined) {
+    summaryLines.push(
+      `You asked for a wider scan, so I used the expanded headers/snippets scan mode capped at ${expandedScanLimit} candidate message(s).`,
     );
   }
 
@@ -1771,6 +1777,7 @@ async function searchTopicAwarePaymentCandidates(
   messages: GmailMessageSummary[];
   records: ParsedPaymentRecord[];
   usedBodyCheck: boolean;
+  scanLimit: number;
 }> {
   const initialCandidateLimit = resolveInitialTopicCandidateLimit(
     isExpandedPaymentScanRequest(message)
@@ -1790,6 +1797,7 @@ async function searchTopicAwarePaymentCandidates(
   let filteredCount = 0;
   let bodyCheckedCount = 0;
   let usedBodyCheck = false;
+  let scanLimitUsed = initialCandidateLimit;
 
   const narrowedResult = await fetchPaymentMessages(
     accessToken,
@@ -1825,6 +1833,7 @@ async function searchTopicAwarePaymentCandidates(
     if (broadQuery !== narrowedQuery) {
       query = broadQuery;
       queryMode = "broad-fallback";
+      scanLimitUsed = expandedCandidateLimit;
       const broadResult = await fetchPaymentMessages(
         accessToken,
         broadQuery,
@@ -1864,6 +1873,7 @@ async function searchTopicAwarePaymentCandidates(
     messages,
     records: matched,
     usedBodyCheck,
+    scanLimit: scanLimitUsed,
   };
 }
 
@@ -2255,6 +2265,7 @@ async function runGmailTask(
     messages = searchResult.messages;
     paymentRecords = searchResult.records;
     usedBodyCheck = searchResult.usedBodyCheck;
+    scanLimitUsed = searchResult.scanLimit;
   } else {
     const scanLimit =
       taskFamily === "gmail_payment_summary"
@@ -2358,6 +2369,7 @@ async function runGmailTask(
               paymentRecords,
               options.emailTokenBudget.maxMessages,
               resultEstimate,
+              userExpandedScan ? scanLimitUsed : undefined,
             )
         : `${messages.length === 0 ? "I did not find matching Gmail messages." : `I checked Gmail headers-first with query "${query}" and inspected ${messages.length} message(s).`}\n\n${buildEvidenceList(messages)}`,
     source: "gmail",

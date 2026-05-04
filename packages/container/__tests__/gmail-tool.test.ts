@@ -1102,6 +1102,50 @@ describe("gmail-tool", () => {
     expect(followUp?.message).toContain("the total above uses all parsed records from the scan");
   });
 
+  it("uses the expanded hard cap on the first payment request when the user explicitly asks for it", async () => {
+    decideToolIntentMock.mockResolvedValueOnce({
+      action: "gmail",
+      taskFamily: "gmail_payment_summary",
+      sourceChoice: "gmail",
+      confidence: 0.95,
+    });
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          body: {
+            messages: [{ id: "m1" }, { id: "m2" }, { id: "m3" }, { id: "m4" }, { id: "m5" }, { id: "m6" }],
+          },
+        }),
+      );
+    for (const [index, amount] of [12300, 45000, 9900, 3300, 2200, 1100].entries()) {
+      fetchMock.mockResolvedValueOnce(
+        metadataResponse(
+          "카드 결제 알림",
+          "Card Co <billing@example.com>",
+          "Fri, 03 Apr 2026 09:00:00 +0000",
+          `결제금액 ${amount.toLocaleString("ko-KR")}원 카드종류 삼성카드 가맹점명 테스트${index + 1}`,
+          `m${index + 1}`,
+        ),
+      );
+    }
+
+    const response = await maybeHandleCustomGmailRequest({
+      userId: "user-payment-first-expanded",
+      sessionKey: "session-payment-first-expanded",
+      message: "이번주 결제한 금액 전체로 제한 풀고 봐줘",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("maxResults=50");
+    expect(response?.kind).toBe("direct");
+    expect(response?.message).toContain("inspected 6 candidate message(s)");
+    expect(response?.message).toContain("expanded headers/snippets scan mode capped at 50");
+    expect(response?.message).toContain("the total above uses all parsed records from the scan");
+  });
+
   it("builds a topic-aware travel payment query and excludes policy notices", async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))

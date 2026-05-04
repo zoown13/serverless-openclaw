@@ -31,7 +31,7 @@ const TOOL_CONTEXT_SETTING_KEY = "tool-task-context";
 const SUMMARY_FOLLOW_UP_PATTERN =
   /(얼마|합계|총액|정리|요약|카드사|결제처|가맹점|merchant|issuer|sum|summary|breakdown|table|표|테이블|이번주 것만 다시|이번 주 것만 다시|다시|계속|그거|그걸|그걸로|이거|그럼|부탁|더\s*있|더\s*찾|더\s*보|밖에\s*없|몇\s*개|개수|건수|limit)/i;
 const PAYMENT_HINT_PATTERN =
-  /(결제|카드값|카드 값|명세서|청구서|영수증|receipt|statement|invoice|spent|spend|payment|total|amount|얼마 썼|얼마 쓴)/i;
+  /(결제|카드값|카드 값|명세서|청구서|영수증|지출|지출액|사용금액|사용 금액|사용한\s*돈|쓴\s*돈|소비|비용|이번\s*주.*얼마|이번주.*얼마|이번\s*달.*얼마|이번달.*얼마|최근.*얼마|receipt|statement|invoice|spent|spend|payment|total|amount|얼마 썼|얼마 쓴)/i;
 const EXPLICIT_GMAIL_PATTERN =
   /(gmail|google mail|inbox|mailbox|이메일|메일함|메일에서|지메일)/i;
 const GMAIL_CONFIRM_PATTERN =

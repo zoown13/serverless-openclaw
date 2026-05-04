@@ -61,6 +61,8 @@ function promptFor(input: SlmClassificationInput): string {
     "Optional followUpIntent values: continue_active_task, refine_topic, refine_date, issuer_breakdown, merchant_breakdown, amount_summary, coverage_check, open_body, cancel_task.",
     "If gmailReady is false, never choose gmail or any gmail-sourced start/continue/refine/rerun action.",
     "Prefer gmail for payment, receipt, statement, billing, or spending questions that likely need the user's own inbox history when gmailReady is true, even if the user did not explicitly mention Gmail.",
+    "If gmailReady is true, do not answer that you cannot access payment history. Route ambiguous personal spending questions to gmail_payment_summary or clarify_source instead.",
+    "Korean compact examples like \"이번주는 얼마\", \"이번달은 얼마야\", and \"최근 얼마나 썼지\" usually mean personal spending lookup; choose gmail_payment_summary when gmailReady is true.",
     "When the message asks for payment histories, spending totals, card issuer breakdowns, merchant breakdowns, or trip-related expenses, choose taskFamily gmail_payment_summary rather than gmail_search.",
     "Choose switch_to_chat when an active tool context exists but the user clearly moved to unrelated general chat.",
     "For active-context questions about programming, Linux commands, translation, weather, jokes, recommendations, or general explanations that do not ask for Gmail/payment data, choose switch_to_chat with confidence at least 0.9.",

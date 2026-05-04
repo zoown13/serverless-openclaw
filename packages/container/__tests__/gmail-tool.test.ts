@@ -179,6 +179,34 @@ describe("gmail-tool", () => {
     expect(fetchMock).toHaveBeenCalled();
   });
 
+  it("treats compact temporal amount questions as Gmail payment lookups when Gmail is ready", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m1" }] } }))
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "카드 결제 알림",
+          "Card Co <billing@example.com>",
+          "Fri, 03 Apr 2026 09:00:00 +0000",
+          "결제금액 7,700원 카드종류 신한카드 가맹점명 편의점",
+        ),
+      );
+
+    const response = await maybeHandleCustomGmailRequest({
+      userId: "user-compact-payment",
+      sessionKey: "session-compact-payment",
+      message: "이번주는 얼마",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    expect(response?.kind).toBe("direct");
+    expect(response?.message).toContain(
+      "Estimated total from visible headers/snippets: KRW 7,700",
+    );
+    expect(fetchMock).toHaveBeenCalled();
+  });
+
   it("expands payment metadata scans to the hard safety cap when the user explicitly asks for all results", async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))

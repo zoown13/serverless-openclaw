@@ -851,7 +851,7 @@ describe("gmail-tool", () => {
     });
   });
 
-  it("explains the headers-first cap for payment coverage follow-ups without refetching", async () => {
+  it("reruns payment coverage follow-ups with the user-expanded hard cap", async () => {
     decideToolIntentMock.mockResolvedValueOnce({
       action: "gmail",
       taskFamily: "gmail_payment_summary",
@@ -919,6 +919,71 @@ describe("gmail-tool", () => {
 
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain("maxResults=25");
     fetchMock.mockReset();
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          body: {
+            messages: [
+              { id: "m1" },
+              { id: "m2" },
+              { id: "m3" },
+              { id: "m4" },
+              { id: "m5" },
+              { id: "m6" },
+            ],
+            resultSizeEstimate: 6,
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "카드 결제 알림",
+          "Card Co <billing@example.com>",
+          "Fri, 03 Apr 2026 09:00:00 +0000",
+          "결제금액 12,300원 카드종류 삼성카드 가맹점명 스타벅스",
+        ),
+      )
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "카드 결제 알림",
+          "Card Co <billing@example.com>",
+          "Thu, 02 Apr 2026 09:00:00 +0000",
+          "결제금액 45,000원 카드종류 현대카드 가맹점명 쿠팡",
+        ),
+      )
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "카드 결제 알림",
+          "Card Co <billing@example.com>",
+          "Wed, 01 Apr 2026 09:00:00 +0000",
+          "결제금액 2,700원 카드종류 삼성카드 가맹점명 이마트24",
+        ),
+      )
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "카드 결제 알림",
+          "Card Co <billing@example.com>",
+          "Tue, 31 Mar 2026 09:00:00 +0000",
+          "결제금액 1,200원 카드종류 현대카드 가맹점명 편의점",
+        ),
+      )
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "카드 결제 알림",
+          "Card Co <billing@example.com>",
+          "Mon, 30 Mar 2026 09:00:00 +0000",
+          "결제금액 800원 카드종류 삼성카드 가맹점명 카페",
+        ),
+      )
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "카드 결제 알림",
+          "Card Co <billing@example.com>",
+          "Sun, 29 Mar 2026 09:00:00 +0000",
+          "결제금액 9,900원 카드종류 우리카드 가맹점명 추가결제",
+        ),
+      );
 
     const followUp = await maybeHandleCustomGmailRequest({
       userId: "user-payment-cap",
@@ -928,10 +993,10 @@ describe("gmail-tool", () => {
       emailTokenBudget: EMAIL_BUDGET,
     });
 
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("maxResults=50");
     expect(followUp?.kind).toBe("direct");
-    expect(followUp?.message).toContain("집계 스캔 제한 25건에는 걸리지 않았습니다");
-    expect(followUp?.message).toContain("상세 목록은 한 번에 최대 5건");
+    expect(followUp?.message).toContain("inspected 6 candidate message(s)");
+    expect(followUp?.message).toContain("the total above uses all parsed records from the scan");
   });
 
   it("builds a topic-aware travel payment query and excludes policy notices", async () => {

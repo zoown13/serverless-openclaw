@@ -44,6 +44,8 @@ const BODY_REQUEST_PATTERN =
   /(자세히|본문|내용 보여|본문 보여|열어줘|open|full body|details?)/i;
 const EXPANDED_PAYMENT_SCAN_PATTERN =
   /(전체|전부|모두|제한\s*(?:풀|해제|없이)|한도\s*(?:풀|해제|없이)|더\s*넓게|더\s*많이|가능한\s*많이|최대한|끝까지|all|everything|no\s*limit|full\s*scan)/i;
+const PAYMENT_COVERAGE_FOLLOW_UP_PATTERN =
+  /(?:더\s*(?:있|찾|보)|밖에\s*없|몇\s*개|개수|건수|limit|coverage)/i;
 const POLICY_NOTICE_PATTERN =
   /(약관|개정\s*안내|기본약관|이용약관|정책\s*안내|표준\s*전자금융거래|전자금융거래\s*기본약관|terms?|policy)/i;
 const TRAVEL_REFINEMENT_PATTERN =
@@ -95,7 +97,9 @@ interface ToolTaskContext {
   topicKeywords?: string[];
   lastQueryMode?: "payment_summary" | "topic_filtered_payment_summary";
   refinedFromFollowUp?: boolean;
+  userExpandedScan?: boolean;
   lastCandidateCount?: number;
+  lastScanLimit?: number;
   lastResultEstimate?: number;
   parsedPaymentRecords?: ParsedPaymentRecord[];
   lastMessages?: GmailMessageSummary[];
@@ -941,6 +945,10 @@ function isExpandedPaymentScanRequest(message: string): boolean {
   return EXPANDED_PAYMENT_SCAN_PATTERN.test(message);
 }
 
+function isPaymentCoverageFollowUp(message: string, followUpIntent?: ToolFollowUpIntent): boolean {
+  return followUpIntent === "coverage_check" || PAYMENT_COVERAGE_FOLLOW_UP_PATTERN.test(message);
+}
+
 function resolvePaymentScanLimit(
   emailTokenBudget: EmailTokenBudgetPolicy,
   message = "",
@@ -962,6 +970,10 @@ function buildPaymentRerunMessage(canonicalGoal: string, followUpMessage: string
   return isExpandedPaymentScanRequest(followUpMessage)
     ? `${canonicalGoal}\n${followUpMessage}`
     : canonicalGoal;
+}
+
+function buildExpandedPaymentRerunMessage(canonicalGoal: string, followUpMessage: string): string {
+  return `${canonicalGoal}\n${followUpMessage}\n전체 범위로 다시 스캔`;
 }
 
 function isTopicRefinementFollowUp(message: string): boolean {
@@ -1904,9 +1916,12 @@ function formatPaymentFollowUp(
   const total = records.reduce((sum, record) => sum + (record.amount ?? 0), 0);
   const normalized = message.toLowerCase();
   const displayLimit = emailTokenBudget.maxMessages;
-  const scanLimit = resolvePaymentScanLimit(emailTokenBudget, message);
+  const scanLimit = Math.max(
+    resolvePaymentScanLimit(emailTokenBudget, message),
+    context.lastScanLimit ?? 0,
+  );
 
-  if (followUpIntent === "coverage_check" || /더\s*(있|찾|보)|밖에\s*없|몇\s*개|개수|건수|limit/i.test(normalized)) {
+  if (isPaymentCoverageFollowUp(normalized, followUpIntent)) {
     const inspectedCount = context.lastMessages?.length ?? records.length;
     const resultEstimate = context.lastResultEstimate;
     const maybeMore = typeof resultEstimate === "number" && resultEstimate > inspectedCount;
@@ -2101,6 +2116,8 @@ async function runGmailTask(
   let messages: GmailMessageSummary[] = [];
   let paymentRecords: ParsedPaymentRecord[] = [];
   let usedBodyCheck = false;
+  let scanLimitUsed = options.emailTokenBudget.maxMessages;
+  const userExpandedScan = isExpandedPaymentScanRequest(sourceMessage);
 
   if (taskFamily === "gmail_payment_summary" && topicKeywords.length > 0) {
     const searchResult = await searchTopicAwarePaymentCandidates(
@@ -2121,6 +2138,7 @@ async function runGmailTask(
       taskFamily === "gmail_payment_summary"
         ? resolvePaymentScanLimit(options.emailTokenBudget, sourceMessage)
         : options.emailTokenBudget.maxMessages;
+    scanLimitUsed = scanLimit;
     const standardResult = await fetchPaymentMessages(
       accessToken,
       primaryQuery,
@@ -2154,7 +2172,9 @@ async function runGmailTask(
     lastQueryMode:
       topicKeywords.length > 0 ? "topic_filtered_payment_summary" : "payment_summary",
     refinedFromFollowUp: false,
+    userExpandedScan,
     lastCandidateCount: candidateCount,
+    lastScanLimit: scanLimitUsed,
     lastResultEstimate: resultEstimate,
     parsedPaymentRecords: paymentRecords,
     lastMessages: messages,
@@ -2577,6 +2597,11 @@ async function handleActiveTaskContext(
     plannerWantsCurrentPaymentTask &&
     plannerHint !== undefined &&
     (plannerHint.action === "rerun_current_task" || followUpIntent === "coverage_check");
+  const userRequestsCoverageExpansion =
+    isPaymentCoverageFollowUp(trimmed, followUpIntent) &&
+    !isTopicRefinementFollowUp(trimmed) &&
+    (effectiveContext.lastScanLimit ?? 0) < MAX_PAYMENT_SCAN_MESSAGES &&
+    effectiveContext.userExpandedScan !== true;
   const plannerRequestsTopicRefinement =
     followUpIntent === "refine_topic" ||
     (plannerWantsCurrentPaymentTask &&
@@ -2643,6 +2668,23 @@ async function handleActiveTaskContext(
       taskFamily: nextContext.taskFamily,
       sourceChoice: nextContext.sourceChoice,
     });
+    if (userRequestsCoverageExpansion) {
+      const credentials = options.gmailReady ? await loadGmailCredentials() : null;
+      if (!credentials) {
+        return {
+          kind: "direct",
+          message: buildGmailUnavailableMessage(),
+          source: "gmail-fallback",
+        };
+      }
+      return runGmailTask(
+        contextKey,
+        options,
+        "gmail_payment_summary",
+        buildExpandedPaymentRerunMessage(nextContext.canonicalGoal, trimmed),
+        credentials,
+      );
+    }
     if (plannerRequestsPaymentRerun) {
       if ((nextContext.topicKeywords ?? []).length > 0) {
         return refineActivePaymentContextByTopic(contextKey, nextContext, options);

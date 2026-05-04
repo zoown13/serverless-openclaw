@@ -60,6 +60,19 @@ const ORDER_ONLY_PATTERN =
   /(주문하신 내역|주문배송조회|구매내역|배송상태|배송정보|주문번호|주문하신)/i;
 const PAYMENT_SIGNAL_PATTERN =
   /(결제|승인|카드|결제금액|최종결제금액|총 결제 금액|payment|receipt|statement|invoice)/i;
+const PAYMENT_PRECISION_QUERY_GROUP =
+  '{"결제금액" "최종결제금액" "총 결제 금액" "승인금액" "청구금액" "결제하신 내역" "결제가 완료되었습니다" "결제 정보" "구매금액" receipt payment}';
+const PAYMENT_NOISE_EXCLUSION_TERMS = [
+  "약관",
+  "개정",
+  "이용약관",
+  "기본약관",
+  "프로모션",
+  "이벤트",
+  "광고",
+  "newsletter",
+  "수신거부",
+];
 const TRAVEL_POSITIVE_PATTERN =
   /(마이리얼트립|myrealtrip|trip\.com|tripcom|agoda|booking\.com|booking|airbnb|klook|kkday|익스피디아|expedia|호텔스닷컴|hotels\.com|rentalcars|rentalcars\.com|rentacar|rent-a-car|toyota\s+rent\s+a\s+car|야놀자|여기어때|호텔|hotel|숙소|stay|숙박|lodging|료칸|ryokan|게스트하우스|guesthouse|리조트|resort|항공|flight|airline|jr|rail|기차|train|전철|철도|지하철|subway|메트로|metro|공항|airport|셔틀|shuttle|리무진|limousine|버스|bus|렌터카|e\s*-?sim|sim\b|여행|travel|trip|투어|tour|페리|ferry|패스|pass|해외|overseas|일본|japan|도쿄|tokyo|오사카|osaka|교토|kyoto|후쿠오카|fukuoka|삿포로|sapporo|오키나와|okinawa|나고야|nagoya|나리타|narita|하네다|haneda|간사이|kansai)/i;
 const STRONG_TRAVEL_EVIDENCE_PATTERN =
@@ -1190,11 +1203,17 @@ function extractSubjectKeyword(message: string): string | undefined {
   return keywordMatch?.[0];
 }
 
+function addPaymentAnchorKeyword(keywords: Set<string>, precisePayment: boolean): void {
+  keywords.add(precisePayment ? PAYMENT_PRECISION_QUERY_GROUP : "결제");
+}
+
 function buildPaymentSearchQuery(
   message: string,
   unreadOnly: boolean,
   topicKeywords: string[] = [],
+  options: { precisePayment?: boolean } = {},
 ): string {
+  const precisePayment = options.precisePayment === true;
   const parts: string[] = [];
   const dateRange = buildDateRange(message);
   if (dateRange.after) {
@@ -1215,7 +1234,11 @@ function buildPaymentSearchQuery(
   const keywords = new Set<string>();
   const subjectKeyword = extractSubjectKeyword(message);
   if (subjectKeyword) {
-    keywords.add(subjectKeyword);
+    if (precisePayment && /결제|payment/i.test(subjectKeyword)) {
+      addPaymentAnchorKeyword(keywords, true);
+    } else {
+      keywords.add(subjectKeyword);
+    }
   }
   if (/카드|statement|invoice/i.test(message)) {
     keywords.add("카드");
@@ -1230,14 +1253,17 @@ function buildPaymentSearchQuery(
     keywords.add("영수증");
   }
   if (/결제|payment|amount|spent|spend/i.test(message)) {
-    keywords.add("결제");
+    addPaymentAnchorKeyword(keywords, precisePayment);
   }
   if (keywords.size === 0) {
-    keywords.add("결제");
+    addPaymentAnchorKeyword(keywords, precisePayment);
   }
 
   parts.push(...keywords);
   parts.push(...selectTopicQueryKeywords(topicKeywords));
+  if (precisePayment) {
+    parts.push(...PAYMENT_NOISE_EXCLUSION_TERMS.map((term) => `-${term}`));
+  }
   return parts.join(" ").trim();
 }
 
@@ -1754,7 +1780,9 @@ async function searchTopicAwarePaymentCandidates(
   const expandedCandidateLimit = resolveExpandedTopicCandidateLimit(
     initialCandidateLimit,
   );
-  const narrowedQuery = buildPaymentSearchQuery(message, unreadOnly, topicKeywords);
+  const narrowedQuery = buildPaymentSearchQuery(message, unreadOnly, topicKeywords, {
+    precisePayment: true,
+  });
   let query = narrowedQuery;
   let queryMode: "topic-filtered" | "broad-fallback" = "topic-filtered";
   let candidateCount = 0;
@@ -1791,7 +1819,9 @@ async function searchTopicAwarePaymentCandidates(
   }
 
   if (matched.length === 0) {
-    const broadQuery = buildPaymentSearchQuery(message, unreadOnly);
+    const broadQuery = buildPaymentSearchQuery(message, unreadOnly, [], {
+      precisePayment: true,
+    });
     if (broadQuery !== narrowedQuery) {
       query = broadQuery;
       queryMode = "broad-fallback";
@@ -2198,7 +2228,10 @@ async function runGmailTask(
   const topicKeywords =
     taskFamily === "gmail_payment_summary" ? extractTopicKeywords(sourceMessage) : [];
   const unreadOnly = !/\ball\b|전체|모두/i.test(sourceMessage);
-  const primaryQuery = buildPaymentSearchQuery(sourceMessage, unreadOnly, topicKeywords);
+  const precisePaymentQuery = taskFamily === "gmail_payment_summary";
+  const primaryQuery = buildPaymentSearchQuery(sourceMessage, unreadOnly, topicKeywords, {
+    precisePayment: precisePaymentQuery,
+  });
   let query = primaryQuery;
   let candidateCount = options.emailTokenBudget.maxMessages;
   let resultEstimate: number | undefined;
@@ -2228,12 +2261,27 @@ async function runGmailTask(
         ? resolvePaymentScanLimit(options.emailTokenBudget, sourceMessage)
         : options.emailTokenBudget.maxMessages;
     scanLimitUsed = scanLimit;
-    const standardResult = await fetchPaymentMessages(
+    let standardResult = await fetchPaymentMessages(
       accessToken,
       primaryQuery,
       scanLimit,
       topicKeywords,
     );
+    if (taskFamily === "gmail_payment_summary" && standardResult.records.length === 0) {
+      const fallbackQuery = buildPaymentSearchQuery(sourceMessage, unreadOnly, topicKeywords);
+      if (fallbackQuery !== primaryQuery) {
+        const fallbackResult = await fetchPaymentMessages(
+          accessToken,
+          fallbackQuery,
+          scanLimit,
+          topicKeywords,
+        );
+        if (fallbackResult.records.length > 0 || fallbackResult.candidateCount > standardResult.candidateCount) {
+          query = fallbackQuery;
+          standardResult = fallbackResult;
+        }
+      }
+    }
     candidateCount = standardResult.candidateCount;
     resultEstimate = standardResult.resultEstimate;
     messages = standardResult.messages;

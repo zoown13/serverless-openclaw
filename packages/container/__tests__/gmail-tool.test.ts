@@ -316,11 +316,12 @@ describe("gmail-tool", () => {
     });
 
     expect(response?.kind).toBe("direct");
-    expect(response?.message).toContain('query "after:2026/03/01 before:2026/04/01 카드 명세서"');
+    expect(response?.message).toContain('query "after:2026/03/01 before:2026/04/01 카드 명세서');
+    expect(response?.message).toContain("-약관");
     expect(response?.message).toContain("I did not open full bodies or attachments.");
-    expect(String(fetchMock.mock.calls[1]?.[0])).toContain(
-      "after%3A2026%2F03%2F01%20before%3A2026%2F04%2F01%20%EC%B9%B4%EB%93%9C%20%EB%AA%85%EC%84%B8%EC%84%9C",
-    );
+    const decodedSearchUrl = decodeURIComponent(String(fetchMock.mock.calls[1]?.[0]));
+    expect(decodedSearchUrl).toContain("after:2026/03/01 before:2026/04/01 카드 명세서");
+    expect(decodedSearchUrl).toContain("-약관");
     expect(String(fetchMock.mock.calls[2]?.[0])).toContain(
       "fields=id,threadId,snippet,payload/headers",
     );
@@ -332,15 +333,15 @@ describe("gmail-tool", () => {
     const cases = [
       {
         message: "지난주 결제한 금액 알려줘",
-        expectedQuery: "after:2026/04/27 before:2026/05/04 결제",
+        expectedDateRange: "after:2026/04/27 before:2026/05/04",
       },
       {
         message: "최근 7일 결제한 금액 알려줘",
-        expectedQuery: "after:2026/04/29 before:2026/05/06 결제",
+        expectedDateRange: "after:2026/04/29 before:2026/05/06",
       },
       {
         message: "4월 둘째주 결제한 금액 알려줘",
-        expectedQuery: "after:2026/04/06 before:2026/04/13 결제",
+        expectedDateRange: "after:2026/04/06 before:2026/04/13",
       },
     ];
 
@@ -368,9 +369,10 @@ describe("gmail-tool", () => {
       });
 
       expect(response?.kind).toBe("direct");
-      expect(decodeURIComponent(String(fetchMock.mock.calls[1]?.[0]))).toContain(
-        testCase.expectedQuery,
-      );
+      const decodedQuery = decodeURIComponent(String(fetchMock.mock.calls[1]?.[0]));
+      expect(decodedQuery).toContain(testCase.expectedDateRange);
+      expect(decodedQuery).toContain('{"결제금액"');
+      expect(decodedQuery).toContain("-약관");
     }
   });
 
@@ -421,9 +423,9 @@ describe("gmail-tool", () => {
     });
 
     expect(response?.kind).toBe("direct");
-    expect(decodeURIComponent(String(fetchMock.mock.calls[1]?.[0]))).toContain(
-      "after:2026/04/27 before:2026/05/04 결제",
-    );
+    const decodedQuery = decodeURIComponent(String(fetchMock.mock.calls[1]?.[0]));
+    expect(decodedQuery).toContain("after:2026/04/27 before:2026/05/04");
+    expect(decodedQuery).toContain('{"결제금액"');
     expect(response?.message).toContain("KRW 7,700");
   });
 

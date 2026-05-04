@@ -12,6 +12,8 @@ import type {
   InvokeAgentCoreRuntimeParams,
 } from "./agentcore.js";
 import type {
+  AgentRuntimeMode,
+  AssistantRuntimeContext,
   BridgeMessageRequest,
   Channel,
   EmailTokenBudgetPolicy,
@@ -115,7 +117,7 @@ export interface RouteDeps {
   sendClarification: (text: string) => Promise<void>;
   startTaskParams: StartTaskParams;
   /** Lambda agent runtime support (Phase 2) */
-  agentRuntime?: "lambda" | "fargate" | "both";
+  agentRuntime?: AgentRuntimeMode;
   toolRuntimeProvider?: ToolRuntimeProvider;
   invokeLambdaAgent?: (params: InvokeLambdaAgentParams) => Promise<{ accepted: true }>;
   lambdaAgentFunctionArn?: string;
@@ -217,7 +219,18 @@ function buildBridgeMessageRequest(
   message: string,
   runtimeClass: RuntimeClass,
   routeDecision: RouteDecision,
+  options: { activeToolAffinity?: boolean; providerOverride?: ToolRuntimeProvider } = {},
 ): BridgeMessageRequest {
+  const emailTokenBudget = runtimeClass === "tool-enabled"
+    ? resolveEmailTokenBudgetPolicy()
+    : undefined;
+  const assistantContext = buildAssistantRuntimeContext(
+    deps,
+    runtimeClass,
+    routeDecision,
+    emailTokenBudget,
+    options,
+  );
   return {
     userId: deps.userId,
     message,
@@ -227,10 +240,8 @@ function buildBridgeMessageRequest(
     traceId: deps.traceId,
     runtimeClass,
     routeDecision,
-    emailTokenBudget:
-      runtimeClass === "tool-enabled"
-        ? resolveEmailTokenBudgetPolicy()
-        : undefined,
+    ...(emailTokenBudget ? { emailTokenBudget } : {}),
+    assistantContext,
   };
 }
 
@@ -322,6 +333,79 @@ function buildToolRuntimeAffinityState(
   };
 }
 
+function buildAssistantRuntimeContext(
+  deps: RouteDeps,
+  runtimeClass: RuntimeClass,
+  routeDecision: RouteDecision,
+  emailTokenBudget?: EmailTokenBudgetPolicy,
+  options: { activeToolAffinity?: boolean; providerOverride?: ToolRuntimeProvider } = {},
+): AssistantRuntimeContext {
+  const provider = options.providerOverride ?? resolveToolRuntimeProvider(deps);
+  const fallbackProvider = provider === "agentcore"
+    ? resolveAgentCoreFallbackProvider(deps)
+    : provider;
+  const providerLocked = options.providerOverride !== undefined &&
+    options.providerOverride !== resolveToolRuntimeProvider(deps);
+  const sessionId = runtimeClass === "chat-only"
+    ? resolveLambdaSessionId(deps, runtimeClass)
+    : deps.sessionId ?? `session-${deps.userId}`;
+  const context: AssistantRuntimeContext = {
+    version: 1,
+    userId: deps.userId,
+    channel: deps.channel,
+    sessionId,
+    ...(deps.traceId ? { traceId: deps.traceId } : {}),
+    generatedAt: new Date().toISOString(),
+    runtime: {
+      ...(deps.agentRuntime ? { agentRuntime: deps.agentRuntime } : {}),
+      runtimeClass,
+      routeDecision,
+      lambdaRole: "chat-only-fast-path",
+      toolRuntimeProvider: provider,
+      fallbackProvider,
+      providerLocked,
+      ...(providerLocked ? { providerLockReason: "agentcore_fallback" } : {}),
+    },
+    capabilities: {
+      tools: {
+        available: true,
+        executionRuntime: provider,
+        note: "Tool and private-data tasks are owned by the tool runtime, not by Gateway semantic routing.",
+      },
+      gmail: {
+        status: "available_via_tool_runtime",
+        executionRuntime: provider,
+        safetyMode: "headers-first",
+      },
+    },
+    toolAffinity: {
+      active: options.activeToolAffinity === true || runtimeClass === "tool-enabled",
+      provider,
+      fallbackProvider,
+      ...(providerLocked ? { providerLockReason: "agentcore_fallback" } : {}),
+    },
+    ...(emailTokenBudget ? { emailTokenBudget } : {}),
+    guidance: {
+      selfAwareness: "The assistant should know that this system has a delegated tool runtime for Gmail, payment, and private-data lookup tasks.",
+      lambda: "Lambda is the fast chat path. If a request needs Gmail or another tool, do not claim the whole assistant cannot access it; explain that the tool runtime must handle or verify that lookup.",
+      toolRuntime: "AgentCore/Fargate owns semantic interpretation, Gmail/payment context, follow-up handling, and controlled tool execution.",
+    },
+  };
+
+  logRouteEvent("gateway.assistant_context.created", {
+    traceId: deps.traceId,
+    channel: deps.channel,
+    runtimeClass,
+    routeDecision,
+    toolRuntimeProvider: provider,
+    fallbackProvider,
+    hasActiveToolAffinity: context.toolAffinity?.active ?? false,
+    gmailCapability: context.capabilities.gmail.status,
+  });
+
+  return context;
+}
+
 async function lockToolRuntimeProvider(
   deps: RouteDeps,
   provider: ToolRuntimeProvider,
@@ -390,12 +474,14 @@ async function routeFargate(
   taskState: TaskStateItem | null,
   runtimeClass: RuntimeClass,
   routeDecision: RouteDecision,
+  options: { activeToolAffinity?: boolean; providerOverride?: ToolRuntimeProvider } = {},
 ): Promise<RouteResult> {
   const bridgeMessage = buildBridgeMessageRequest(
     deps,
     deps.message,
     runtimeClass,
     routeDecision,
+    options,
   );
 
   if (taskState?.status === "Running" && taskState.publicIp) {
@@ -476,6 +562,7 @@ async function routeFargate(
     runtimeClass: bridgeMessage.runtimeClass,
     routeDecision: bridgeMessage.routeDecision,
     emailTokenBudget: bridgeMessage.emailTokenBudget,
+    assistantContext: bridgeMessage.assistantContext,
     createdAt: new Date(now).toISOString(),
     ttl: Math.floor(now / 1000) + PENDING_MESSAGE_TTL_SEC,
   });
@@ -529,6 +616,7 @@ async function routeAgentCore(
     deps.message,
     "tool-enabled",
     "agentcore",
+    options,
   );
   logRouteEvent("agentcore.invoke.started", {
     ...buildRouteLogPayload(deps, "tool-enabled", "agentcore", null, false),
@@ -546,6 +634,7 @@ async function routeAgentCore(
     callbackUrl: bridgeMessage.callbackUrl,
     runtimeClass: "tool-enabled",
     emailTokenBudget: bridgeMessage.emailTokenBudget,
+    assistantContext: bridgeMessage.assistantContext,
     timeoutMs: options.activeToolAffinity
       ? resolveAgentCoreFollowUpTimeoutMs()
       : undefined,
@@ -651,11 +740,17 @@ async function routeToolRuntime(
         channel: deps.channel,
         runtime: "fargate",
       });
-      return routeFargate(deps, taskState, "tool-enabled", fallbackDecision);
+      return routeFargate(
+        deps,
+        taskState,
+        "tool-enabled",
+        fallbackDecision,
+        { ...options, providerOverride: fallbackProvider },
+      );
     }
   }
 
-  return routeFargate(deps, taskState, "tool-enabled", routeDecision);
+  return routeFargate(deps, taskState, "tool-enabled", routeDecision, options);
 }
 
 async function invokeLambdaRoute(
@@ -670,6 +765,15 @@ async function invokeLambdaRoute(
   }
 
   validateLambdaDeliveryTarget(deps);
+  const emailTokenBudget = runtimeClass === "tool-enabled"
+    ? resolveEmailTokenBudgetPolicy()
+    : undefined;
+  const assistantContext = buildAssistantRuntimeContext(
+    deps,
+    runtimeClass,
+    routeDecision,
+    emailTokenBudget,
+  );
   const invokeResult = await deps.invokeLambdaAgent({
     functionArn: deps.lambdaAgentFunctionArn,
     userId: deps.userId,
@@ -680,6 +784,7 @@ async function invokeLambdaRoute(
     connectionId: deps.connectionId,
     telegramChatId: deps.telegramChatId,
     callbackUrl: deps.callbackUrl,
+    assistantContext,
   });
   assertLambdaInvokeAccepted(invokeResult);
   logRouteEvent(

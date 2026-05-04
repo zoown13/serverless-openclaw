@@ -191,6 +191,68 @@ describe("Bridge HTTP Server", () => {
       );
     });
 
+    it("should prepend AssistantRuntimeContext before forwarding", async () => {
+      const res = await request(app)
+        .post("/message")
+        .set("Authorization", "Bearer test-secret-token")
+        .send({
+          userId: "user-1",
+          message: "Hello",
+          channel: "web",
+          connectionId: "conn-123",
+          callbackUrl: "https://example.com/prod",
+          runtimeClass: "chat-only",
+          assistantContext: {
+            version: 1,
+            userId: "user-1",
+            channel: "web",
+            sessionId: "session-user-1:chat",
+            generatedAt: "2026-05-04T00:00:00.000Z",
+            runtime: {
+              agentRuntime: "both",
+              runtimeClass: "chat-only",
+              routeDecision: "lambda",
+              lambdaRole: "chat-only-fast-path",
+              toolRuntimeProvider: "agentcore",
+              fallbackProvider: "fargate",
+            },
+            capabilities: {
+              tools: {
+                available: true,
+                executionRuntime: "agentcore",
+                note: "Tool tasks are delegated.",
+              },
+              gmail: {
+                status: "available_via_tool_runtime",
+                executionRuntime: "agentcore",
+                safetyMode: "headers-first",
+              },
+            },
+            guidance: {
+              selfAwareness: "Shared state.",
+              lambda: "Chat only.",
+              toolRuntime: "Tools.",
+            },
+          },
+        });
+
+      expect(res.status).toBe(202);
+
+      await vi.waitFor(() => {
+        expect(deps.openclawClient.sendMessage).toHaveBeenCalledWith(
+          "user-1",
+          expect.stringContaining("AssistantRuntimeContext v1"),
+        );
+      });
+      expect(deps.openclawClient.sendMessage).toHaveBeenCalledWith(
+        "user-1",
+        expect.stringContaining("available_via_tool_runtime"),
+      );
+      expect(infoSpy).toHaveBeenCalledWith(
+        expect.stringContaining("\"event\":\"bridge.assistant_context.loaded\""),
+      );
+    });
+
     it("should return a direct Gmail tool response without calling OpenClaw", async () => {
       gmailToolMock.mockResolvedValue({
         kind: "direct",

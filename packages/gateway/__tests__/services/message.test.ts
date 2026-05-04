@@ -178,9 +178,21 @@ describe("message service", () => {
       expect(deps.startTask).toHaveBeenCalled();
       expect(mockFetch).not.toHaveBeenCalled();
       expect(deps.savePendingMessage).toHaveBeenCalledWith(
-        expect.not.objectContaining({
-          routingContext: expect.anything(),
+        expect.objectContaining({
+          assistantContext: expect.objectContaining({
+            runtime: expect.objectContaining({
+              runtimeClass: "tool-enabled",
+            }),
+            capabilities: expect.objectContaining({
+              gmail: expect.objectContaining({
+                status: "available_via_tool_runtime",
+              }),
+            }),
+          }),
         }),
+      );
+      expect(deps.savePendingMessage).toHaveBeenCalledWith(
+        expect.not.objectContaining({ routingContext: expect.anything() }),
       );
     });
 
@@ -222,6 +234,16 @@ describe("message service", () => {
       expect(body.message).toBe("얼마 썼는지 정리해줄래?");
       expect(body.runtimeClass).toBe("tool-enabled");
       expect(body.routingContext).toBeUndefined();
+      expect(body.assistantContext).toEqual(
+        expect.objectContaining({
+          runtime: expect.objectContaining({
+            runtimeClass: "tool-enabled",
+          }),
+          toolAffinity: expect.objectContaining({
+            active: true,
+          }),
+        }),
+      );
     });
 
     it("should reuse an active tool affinity for a short contextual follow-up without explicit Gmail terms", async () => {

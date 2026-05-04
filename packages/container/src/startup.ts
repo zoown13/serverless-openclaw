@@ -1,5 +1,5 @@
 import { BRIDGE_PORT } from "@serverless-openclaw/shared";
-import { createApp } from "./bridge.js";
+import { buildAssistantContextPrefix, createApp } from "./bridge.js";
 import { CallbackSender } from "./callback-sender.js";
 import { OpenClawClient } from "./openclaw-client.js";
 import { LifecycleManager } from "./lifecycle.js";
@@ -270,6 +270,14 @@ export async function startContainer(opts: StartContainerOptions): Promise<void>
       };
 
       logBridgeEvent("bridge.message.accepted", logContext);
+      if (msg.assistantContext) {
+        logBridgeEvent("bridge.assistant_context.loaded", {
+          ...logContext,
+          toolRuntimeProvider: msg.assistantContext.runtime.toolRuntimeProvider,
+          hasActiveToolAffinity: msg.assistantContext.toolAffinity?.active === true,
+          gmailCapability: msg.assistantContext.capabilities.gmail.status,
+        });
+      }
       try {
         const gmailReady = await isGmailReady();
         const gmailResponse = await maybeHandleCustomGmailRequest({
@@ -428,8 +436,12 @@ export async function startContainer(opts: StartContainerOptions): Promise<void>
           msg.message = gmailResponse.message;
         }
 
-        const messageToSend = historyPrefix
-          ? historyPrefix + msg.message
+        const prefixes = [
+          historyPrefix.trimEnd(),
+          buildAssistantContextPrefix(msg.assistantContext),
+        ].filter((prefix): prefix is string => Boolean(prefix));
+        const messageToSend = prefixes.length > 0
+          ? `${prefixes.join("\n")}\n${msg.message}`
           : msg.message;
         historyPrefix = "";
         logBridgeEvent("bridge.openclaw.forwarded", logContext);

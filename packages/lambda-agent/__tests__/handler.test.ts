@@ -398,6 +398,65 @@ describe("handler", () => {
     );
   });
 
+  it("should inject AssistantRuntimeContext into the Lambda system prompt", async () => {
+    const handler = await loadHandler();
+    await handler(createEvent({
+      message: "hello",
+      assistantContext: {
+        version: 1,
+        userId: "user-123",
+        channel: "telegram",
+        sessionId: "session-user-123:chat",
+        traceId: "trace-ctx",
+        generatedAt: "2026-05-04T00:00:00.000Z",
+        runtime: {
+          agentRuntime: "both",
+          runtimeClass: "chat-only",
+          routeDecision: "lambda",
+          lambdaRole: "chat-only-fast-path",
+          toolRuntimeProvider: "agentcore",
+          fallbackProvider: "fargate",
+        },
+        capabilities: {
+          tools: {
+            available: true,
+            executionRuntime: "agentcore",
+            note: "Tool tasks are delegated.",
+          },
+          gmail: {
+            status: "available_via_tool_runtime",
+            executionRuntime: "agentcore",
+            safetyMode: "headers-first",
+          },
+        },
+        toolAffinity: {
+          active: false,
+          provider: "agentcore",
+          fallbackProvider: "fargate",
+        },
+        guidance: {
+          selfAwareness: "The assistant has delegated Gmail capability.",
+          lambda: "Do not claim Gmail is impossible.",
+          toolRuntime: "Tool runtime owns Gmail tasks.",
+        },
+      },
+    }));
+
+    expect(mockRunAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        extraSystemPrompt: expect.stringContaining("AssistantRuntimeContext v1"),
+      }),
+    );
+    expect(mockRunAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        extraSystemPrompt: expect.stringContaining("available_via_tool_runtime"),
+      }),
+    );
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"event\":\"lambda.assistant_context.loaded\""),
+    );
+  });
+
   it("should log Telegram delivery success", async () => {
     process.env.SSM_TELEGRAM_BOT_TOKEN = "/serverless-openclaw/secrets/telegram-bot-token";
     mockResolveSecrets.mockResolvedValue(

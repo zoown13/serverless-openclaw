@@ -325,6 +325,32 @@ function buildToolUnavailableMessage(runtimeConfig: ResolvedRuntimeConfig): stri
   return "This serverless runtime is currently chat-only for stability. Gmail and other tool actions are disabled on the Bedrock Lambda path right now.";
 }
 
+function hasDelegatedToolRuntime(event: LambdaAgentEvent): boolean {
+  return event.assistantContext?.capabilities.tools.available === true;
+}
+
+function buildDelegatedToolRuntimeMessage(event: LambdaAgentEvent): string {
+  const provider = event.assistantContext?.runtime.toolRuntimeProvider ?? "tool runtime";
+  if (event.channel === "telegram") {
+    return `이 요청은 Gmail/도구 확인이 필요한 것으로 보여요. 현재 메시지는 빠른 Lambda 채팅 경로로 들어왔고, 실제 조회는 ${provider} 도구 런타임에서 처리해야 합니다. 지금 답변에서 접근 불가라고 단정하지 않고, 라우팅 개선 대상으로 기록해둘게요.`;
+  }
+
+  return `This looks like a Gmail/tool lookup request. The current Lambda path is the fast chat runtime, while ${provider} owns delegated tool execution. I will not claim the assistant cannot access Gmail; this should be handled by the tool runtime path.`;
+}
+
+function buildAssistantContextPrompt(event: LambdaAgentEvent): string | undefined {
+  const context = event.assistantContext;
+  if (!context) return undefined;
+
+  return [
+    `AssistantRuntimeContext v${context.version}: current route=${context.runtime.runtimeClass}/${context.runtime.routeDecision ?? "unknown"}.`,
+    `Tool runtime provider=${context.runtime.toolRuntimeProvider ?? "unknown"}, fallback=${context.runtime.fallbackProvider ?? "unknown"}, activeToolAffinity=${context.toolAffinity?.active === true}.`,
+    `Gmail capability=${context.capabilities.gmail.status}, executionRuntime=${context.capabilities.gmail.executionRuntime}, safety=${context.capabilities.gmail.safetyMode}.`,
+    context.guidance.selfAwareness,
+    context.guidance.lambda,
+  ].join(" ");
+}
+
 function buildEmailTokenBudgetPrompt(runtimeConfig: ResolvedRuntimeConfig): string | undefined {
   if (!runtimeConfig.readiness.gmailReady || !runtimeConfig.readiness.toolRuntimeReady) {
     return undefined;
@@ -350,9 +376,14 @@ function buildExtraSystemPrompt(
 ): string | undefined {
   const prompts: string[] = [];
 
+  const assistantContextPrompt = buildAssistantContextPrompt(event);
+  if (assistantContextPrompt) {
+    prompts.push(assistantContextPrompt);
+  }
+
   if (event.channel === "telegram" || !runtimeConfig.readiness.toolRuntimeReady) {
     prompts.push(
-      "You are replying inside a serverless runtime. Respond with plain text only. Do not output function_calls blocks, XML tool tags, or shell commands. Do not ask the user to restart gateway/daemon/processes. If execution capabilities are unavailable, explain briefly and continue with a normal assistant answer. Do not claim Gmail or other tools are connected unless they are explicitly available. For normal chat questions, answer in the user's language with enough context to be useful, usually two to five concise sentences or bullets. Do not reply with only an acknowledgement or a single command unless the user explicitly asks for only that.",
+      "You are replying inside a serverless runtime. Respond with plain text only. Do not output function_calls blocks, XML tool tags, or shell commands. Do not ask the user to restart gateway/daemon/processes. If execution capabilities are unavailable in this Lambda invocation, explain briefly and continue with a normal assistant answer. If AssistantRuntimeContext says Gmail or tools are available through a delegated tool runtime, do not say the whole assistant cannot access them; say that the tool runtime must handle or verify the lookup. Otherwise do not claim Gmail or other tools are connected. For normal chat questions, answer in the user's language with enough context to be useful, usually two to five concise sentences or bullets. Do not reply with only an acknowledgement or a single command unless the user explicitly asks for only that.",
     );
   }
 
@@ -503,6 +534,16 @@ export async function handler(
   };
   logLambdaEvent("lambda.request.accepted", requestLogPayload);
   logLambdaEvent("lambda.runtime.summary", requestLogPayload);
+  if (event.assistantContext) {
+    logLambdaEvent("lambda.assistant_context.loaded", {
+      ...requestLogPayload,
+      runtimeClass: event.assistantContext.runtime.runtimeClass,
+      routeDecision: event.assistantContext.runtime.routeDecision,
+      toolRuntimeProvider: event.assistantContext.runtime.toolRuntimeProvider,
+      hasActiveToolAffinity: event.assistantContext.toolAffinity?.active === true,
+      gmailCapability: event.assistantContext.capabilities.gmail.status,
+    });
+  }
 
   // Push "running" status before starting
   if (canPush) {
@@ -520,9 +561,18 @@ export async function handler(
     telegramBotToken = secrets.get(telegramBotTokenPath);
   }
 
-  if (!runtimeConfig.readiness.toolRuntimeReady && isToolRequest(event.message)) {
-    logLambdaEvent("lambda.tool.blocked", requestLogPayload);
-    const payloads = [{ text: buildToolUnavailableMessage(runtimeConfig) }];
+  if ((event.channel === "telegram" || !runtimeConfig.readiness.toolRuntimeReady) && isToolRequest(event.message)) {
+    const delegatedToolRuntime = hasDelegatedToolRuntime(event);
+    logLambdaEvent(delegatedToolRuntime ? "lambda.tool.misroute_detected" : "lambda.tool.blocked", {
+      ...requestLogPayload,
+      toolRuntimeProvider: event.assistantContext?.runtime.toolRuntimeProvider,
+      gmailCapability: event.assistantContext?.capabilities.gmail.status,
+    });
+    const payloads = [{
+      text: delegatedToolRuntime
+        ? buildDelegatedToolRuntimeMessage(event)
+        : buildToolUnavailableMessage(runtimeConfig),
+    }];
     await pushPayloads(payloads, {
       canPush,
       callbackUrl: event.callbackUrl,

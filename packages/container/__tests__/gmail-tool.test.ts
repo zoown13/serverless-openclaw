@@ -326,6 +326,54 @@ describe("gmail-tool", () => {
     );
   });
 
+  it("builds precise Gmail date ranges for Korean relative and week-of-month payment periods", async () => {
+    vi.setSystemTime(new Date("2026-05-05T12:00:00+09:00"));
+
+    const cases = [
+      {
+        message: "지난주 결제한 금액 알려줘",
+        expectedQuery: "after:2026/04/27 before:2026/05/04 결제",
+      },
+      {
+        message: "최근 7일 결제한 금액 알려줘",
+        expectedQuery: "after:2026/04/29 before:2026/05/06 결제",
+      },
+      {
+        message: "4월 둘째주 결제한 금액 알려줘",
+        expectedQuery: "after:2026/04/06 before:2026/04/13 결제",
+      },
+    ];
+
+    for (const [index, testCase] of cases.entries()) {
+      fetchMock.mockReset();
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+        .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: `m${index}` }] } }))
+        .mockResolvedValueOnce(
+          metadataResponse(
+            "카드 결제 알림",
+            "Card Co <billing@example.com>",
+            "Tue, 05 May 2026 09:00:00 +0900",
+            "결제금액 12,300원 카드종류 삼성카드 가맹점명 스타벅스",
+            `m${index}`,
+          ),
+        );
+
+      const response = await maybeHandleCustomGmailRequest({
+        userId: `user-date-range-${index}`,
+        sessionKey: `session-date-range-${index}`,
+        message: testCase.message,
+        gmailReady: true,
+        emailTokenBudget: EMAIL_BUDGET,
+      });
+
+      expect(response?.kind).toBe("direct");
+      expect(decodeURIComponent(String(fetchMock.mock.calls[1]?.[0]))).toContain(
+        testCase.expectedQuery,
+      );
+    }
+  });
+
   it("confirms Gmail and then reuses parsed payment records for follow-up summaries", async () => {
     decideToolIntentMock.mockResolvedValueOnce({
       action: "gmail",

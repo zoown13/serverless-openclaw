@@ -980,6 +980,58 @@ function isTopicRefinementFollowUp(message: string): boolean {
   const extracted = extractTopicKeywords(message);
   return extracted.length > 0 || TRAVEL_REFINEMENT_PATTERN.test(message);
 }
+
+function startOfWeekMonday(date: Date): Date {
+  const start = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const weekday = start.getDay();
+  const diff = weekday === 0 ? -6 : 1 - weekday;
+  start.setDate(start.getDate() + diff);
+  return start;
+}
+
+function addDays(date: Date, days: number): Date {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function parseWeekOrdinal(value: string): number | undefined {
+  const normalized = value.replace(/\s+/g, "");
+  if (/^(?:첫째|첫번째|1(?:째|번째|주차)?)$/.test(normalized)) return 1;
+  if (/^(?:둘째|두번째|2(?:째|번째|주차)?)$/.test(normalized)) return 2;
+  if (/^(?:셋째|세번째|3(?:째|번째|주차)?)$/.test(normalized)) return 3;
+  if (/^(?:넷째|네번째|4(?:째|번째|주차)?)$/.test(normalized)) return 4;
+  if (/^(?:다섯째|다섯번째|5(?:째|번째|주차)?)$/.test(normalized)) return 5;
+  return undefined;
+}
+
+function buildWeekOfMonthRange(message: string, now: Date): { after?: string; before?: string } | undefined {
+  const match = message.match(
+    /(?:(20\d{2})\s*년\s*)?(\d{1,2})\s*월\s*(첫째|첫\s*번째|둘째|두\s*번째|셋째|세\s*번째|넷째|네\s*번째|다섯째|다섯\s*번째|[1-5]\s*(?:째|번째|주차)?)\s*(?:주|주차)?/i,
+  );
+  if (!match) return undefined;
+
+  const year = match[1] ? Number.parseInt(match[1], 10) : now.getFullYear();
+  const month = Number.parseInt(match[2] ?? "", 10);
+  const ordinal = parseWeekOrdinal(match[3] ?? "");
+  if (!Number.isFinite(year) || month < 1 || month > 12 || ordinal === undefined) {
+    return undefined;
+  }
+
+  const firstOfMonth = new Date(year, month - 1, 1);
+  const firstWeekday = firstOfMonth.getDay();
+  const daysUntilFirstMonday = firstWeekday === 1 ? 0 : (8 - firstWeekday) % 7;
+  const firstMonday = addDays(firstOfMonth, daysUntilFirstMonday);
+  const start =
+    ordinal === 1
+      ? firstOfMonth
+      : addDays(firstMonday, (ordinal - (firstWeekday === 1 ? 1 : 2)) * 7);
+  const end =
+    ordinal === 1 && firstWeekday !== 1 ? firstMonday : addDays(start, 7);
+
+  return { after: formatDate(start), before: formatDate(end) };
+}
+
 function monthIndexFromText(message: string): number | undefined {
   const normalized = message.toLowerCase();
   const numericMatch = normalized.match(/(\d{1,2})\s*월/);
@@ -1015,30 +1067,58 @@ function monthIndexFromText(message: string): number | undefined {
 function buildDateRange(message: string): { after?: string; before?: string } {
   const now = new Date();
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const explicitWeekOfMonth = buildWeekOfMonthRange(message, now);
+  if (explicitWeekOfMonth) {
+    return explicitWeekOfMonth;
+  }
 
   if (/오늘|today/i.test(message)) {
     return {
       after: formatDate(startOfToday),
-      before: formatDate(new Date(startOfToday.getTime() + 24 * 60 * 60 * 1000)),
+      before: formatDate(addDays(startOfToday, 1)),
     };
   }
 
   if (/어제|yesterday/i.test(message)) {
-    const yesterday = new Date(startOfToday.getTime() - 24 * 60 * 60 * 1000);
+    const yesterday = addDays(startOfToday, -1);
     return {
       after: formatDate(yesterday),
       before: formatDate(startOfToday),
     };
   }
 
+  const recentDaysMatch = message.match(/(?:최근|지난)\s*(\d{1,2})\s*일|last\s+(\d{1,2})\s+days?/i);
+  if (recentDaysMatch) {
+    const days = Number.parseInt(recentDaysMatch[1] ?? recentDaysMatch[2] ?? "", 10);
+    if (days >= 1 && days <= 31) {
+      return {
+        after: formatDate(addDays(startOfToday, -(days - 1))),
+        before: formatDate(addDays(startOfToday, 1)),
+      };
+    }
+  }
+
+  if (/최근\s*(?:일주일|한\s*주)|지난\s*일주일/i.test(message) && !/지난\s*주|지난주|저번\s*주|저번주/i.test(message)) {
+    return {
+      after: formatDate(addDays(startOfToday, -6)),
+      before: formatDate(addDays(startOfToday, 1)),
+    };
+  }
+
   if (/이번\s*주|이번주|this week/i.test(message)) {
-    const weekday = startOfToday.getDay();
-    const diff = weekday === 0 ? -6 : 1 - weekday;
-    const weekStart = new Date(startOfToday);
-    weekStart.setDate(startOfToday.getDate() + diff);
+    const weekStart = startOfWeekMonday(startOfToday);
     return {
       after: formatDate(weekStart),
-      before: formatDate(new Date(weekStart.getTime() + 7 * 24 * 60 * 60 * 1000)),
+      before: formatDate(addDays(weekStart, 7)),
+    };
+  }
+
+  if (/지난\s*주|지난주|저번\s*주|저번주|last\s+week|previous week/i.test(message)) {
+    const thisWeekStart = startOfWeekMonday(startOfToday);
+    const lastWeekStart = addDays(thisWeekStart, -7);
+    return {
+      after: formatDate(lastWeekStart),
+      before: formatDate(thisWeekStart),
     };
   }
 

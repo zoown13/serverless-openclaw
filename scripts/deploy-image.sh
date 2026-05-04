@@ -1,10 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 
-# Deploy container image to ECR with zstd compression and optional SOCI index
+# Deploy container image to ECR with AgentCore-compatible gzip compression and optional SOCI index
 # Usage: ./scripts/deploy-image.sh [--soci]
 #
-# Uses zstd compression (level 3) for faster Fargate image pull.
+# Uses gzip by default because AgentCore Runtime has shown snapshot pull failures
+# with zstd-compressed layers. Set IMAGE_COMPRESSION=zstd only for Fargate-only
+# experiments.
 #
 # Prerequisites:
 #   - AWS CLI configured (profile via AWS_PROFILE or .env)
@@ -16,7 +18,7 @@ REGION="${AWS_REGION:-ap-northeast-2}"
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 ECR_REPO="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/serverless-openclaw"
 ENABLE_SOCI=false
-IMAGE_COMPRESSION="${IMAGE_COMPRESSION:-zstd}"
+IMAGE_COMPRESSION="${IMAGE_COMPRESSION:-gzip}"
 
 for arg in "$@"; do
   case $arg in
@@ -37,7 +39,7 @@ aws ecr get-login-password --region "${REGION}" | \
 
 # Step 2: Build & Push with zstd compression
 echo ""
-echo "[2/3] Building and pushing Docker image (zstd compression)..."
+echo "[2/3] Building and pushing Docker image (${IMAGE_COMPRESSION} compression)..."
 OPENCLAW_VERSION="${OPENCLAW_VERSION:-latest}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
 echo "OpenClaw version: ${OPENCLAW_VERSION}"

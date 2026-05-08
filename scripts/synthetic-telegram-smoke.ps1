@@ -244,7 +244,7 @@ function Get-ScenarioMessages {
     }
     "GenericPaymentThenTravelRefinement" {
       return @(
-        "이번주 결제한 금액 얼마야",
+        "최근 결제한 내역 알려줘",
         "더 있을텐데",
         "일본관련된 것만 가져와야지"
       )

@@ -1952,7 +1952,8 @@ async function searchTopicAwarePaymentCandidates(
   const expandedCandidateLimit = resolveExpandedTopicCandidateLimit(
     initialCandidateLimit,
   );
-  const narrowedQuery = buildPaymentSearchQuery(message, unreadOnly, topicKeywords, {
+  const queryTopicKeywords = selectTopicQueryKeywords(topicKeywords);
+  const narrowedQuery = buildPaymentSearchQuery(message, unreadOnly, queryTopicKeywords, {
     precisePayment: true,
   });
   let query = narrowedQuery;

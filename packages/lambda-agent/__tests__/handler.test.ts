@@ -620,6 +620,15 @@ describe("handler", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(String(fetchMock.mock.calls[0]?.[1]?.body)).toContain("find 명령어");
     expect(String(fetchMock.mock.calls[0]?.[1]?.body)).not.toContain("✅ Done");
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"event\":\"lambda.delivery.content_quality\""),
+    );
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"hasFindCommandAnswer\":true"),
+    );
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"hasFallbackFailureText\":false"),
+    );
   });
 
   it("should use direct Bedrock chat for stateless Telegram how-to questions when enabled", async () => {

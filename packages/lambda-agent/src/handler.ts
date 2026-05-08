@@ -120,6 +120,22 @@ function normalizeTelegramChatId(chatId?: string): string | undefined {
   return chatId.startsWith("telegram:") ? chatId.slice(9) : chatId;
 }
 
+function buildTelegramContentQuality(text: string): Record<string, boolean | number> {
+  return {
+    textLength: text.length,
+    hasGeneralChatAnswer: text.trim().length >= 20 && !/답변을 생성하지 못했습니다/i.test(text),
+    hasFindCommandAnswer:
+      /(find\s|find\s*명령어|파일.*찾|찾을.*파일|grep|fd\s|locate|명령어)/i.test(text),
+    hasFallbackFailureText:
+      /(답변을 생성하지 못했습니다|missing scope:\s*operator\.write|TaskDefinition is inactive|Cannot read properties|TypeError|ReferenceError|An error occurred|접근 불가)/i.test(
+        text,
+      ),
+    hasGmailCapabilityDeflection:
+      /(도구 runtime|tool runtime|agentcore|지메일|Gmail)/i.test(text) &&
+      /(확인|조회|처리|담당|위임|가능)/i.test(text),
+  };
+}
+
 async function pushToTelegram(
   botToken: string,
   chatId: string,
@@ -164,6 +180,12 @@ async function pushToTelegram(
       deliveryTarget: telemetry?.deliveryTarget ?? { type: "telegram", chatId },
       status: response.status,
       textLength: text.length,
+    });
+    logLambdaEvent("lambda.delivery.content_quality", {
+      traceId: telemetry?.traceId,
+      channel: telemetry?.channel ?? "telegram",
+      deliveryType: "telegram",
+      ...buildTelegramContentQuality(text),
     });
     console.info("[telegram] delivered message", {
       chatId,

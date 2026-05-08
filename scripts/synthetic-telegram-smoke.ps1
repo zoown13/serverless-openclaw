@@ -510,7 +510,10 @@ function Wait-BridgeSignals {
       "route.lambda.invoked"
     )
     $requiredLambdaSignals = @(
-      "lambda.delivery.telegram.success"
+      "lambda.delivery.telegram.success",
+      "lambda.delivery.content_quality",
+      '"hasGeneralChatAnswer":true',
+      '"hasFindCommandAnswer":true'
     )
   }
 
@@ -525,7 +528,8 @@ function Wait-BridgeSignals {
     "TypeError",
     "ReferenceError",
     '"hasRawInternalError":true',
-    '"hasLegacyEnglishPaymentPhrases":true'
+    '"hasLegacyEnglishPaymentPhrases":true',
+    '"hasFallbackFailureText":true'
   )
 
   $deadline = [DateTimeOffset]::UtcNow.AddSeconds($TimeoutSeconds)

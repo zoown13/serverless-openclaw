@@ -402,6 +402,43 @@ describe("message service", () => {
       );
     });
 
+    it("should clear active tool affinity when the user explicitly switches to a different chat topic", async () => {
+      const mockInvokeLambda = vi.fn().mockResolvedValue({ accepted: true });
+      const mockInvokeAgentCore = vi.fn();
+      const deps = makeDeps({
+        message: "그거 말고 일반 질문으로 커피 원두 추천해줘",
+        agentRuntime: "both",
+        toolRuntimeProvider: "agentcore",
+        invokeLambdaAgent: mockInvokeLambda,
+        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+        invokeAgentCoreRuntime: mockInvokeAgentCore,
+        agentCoreRuntimeArn: "arn:aws:bedrock-agentcore:us-east-1:123:runtime/test",
+        getRoutingContext: vi.fn().mockResolvedValue({
+          status: "active",
+          channel: "web",
+          connectionId: "conn-1",
+          callbackUrl: "https://cb",
+          runtimeClass: "tool-enabled",
+          provider: "agentcore",
+          createdAt: "2026-04-04T00:00:00Z",
+          lastActivityAt: "2026-04-04T00:00:00Z",
+          expiresAt: "2099-04-04T00:05:00Z",
+        }),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("lambda");
+      expect(deps.deleteRoutingContext).toHaveBeenCalledWith("user-123", "web");
+      expect(mockInvokeAgentCore).not.toHaveBeenCalled();
+      expect(mockInvokeLambda).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: "그거 말고 일반 질문으로 커피 원두 추천해줘",
+          sessionId: "session-user-123:chat",
+        }),
+      );
+    });
+
     it("should ignore an expired routing context and route the message fresh", async () => {
       const mockInvokeLambda = vi.fn().mockResolvedValue({ accepted: true });
       const deps = makeDeps({

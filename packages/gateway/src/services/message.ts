@@ -138,8 +138,10 @@ export type RouteResult =
 
 const TOOL_AFFINITY_TTL_MS = 30 * 60 * 1000;
 const TOOL_AFFINITY_CANCEL_PATTERN = /^(?:취소|그만|끝|됐어|done|cancel|stop)$/i;
+const TOOL_AFFINITY_EXPLICIT_CHAT_HANDOFF_PATTERN =
+  /^(?:다른\s*질문(?:인데|으로)?|별개로|그건\s*(?:됐고|그만|괜찮고|말고)|그거\s*말고|이제\s*(?:일반|다른)\s*(?:질문|대화|답변)?|일반\s*(?:질문|대화|답변)(?:으로)?|툴\s*말고|도구\s*말고|지메일\s*말고|gmail\s*말고|메일\s*말고|결제\s*말고)/i;
 const TOOL_AFFINITY_OBVIOUS_TOPIC_SWITCH_PATTERN =
-  /^(?:안녕|안녕하세요|hello|hi|hey|고마워|감사|thanks?|thank you|잘가|bye|날씨|weather|번역|translate|농담|joke)(?:$|[!?.,\s])/i;
+  /^(?:안녕|안녕하세요|hello|hi|hey|고마워|감사|thanks?|thank you|잘가|bye|다른\s*질문|별개로|그건\s*(?:됐고|그만|말고)|그거\s*말고|일반\s*(?:질문|대화|답변)|날씨|weather|번역|translate|농담|joke)(?:$|[!?.,\s])/i;
 const TOOL_AFFINITY_CONTEXTUAL_FOLLOW_UP_PATTERN =
   /(?:그거|이거|저거|그\s*내역|이\s*내역|앞(?:에서|서)|방금|아까|위(?:에|의)|다시|더\s*있|더\s*찾|관련(?:된)?\s*것만|것만|합계|총액|카드사별|결제처별|상세|본문|메일|지메일|gmail|결제|지출|카드|영수증|명세서|일본|여행|표(?:로)?|정리|보여|가져와|찾아)/i;
 const TOOL_AFFINITY_INDEPENDENT_CHAT_SWITCH_PATTERN =
@@ -449,6 +451,10 @@ function isToolAffinityExpired(state: ToolRuntimeAffinityState): boolean {
 function shouldKeepToolAffinity(message: string): boolean {
   const normalized = normalizeMessage(message);
   if (!normalized) {
+    return false;
+  }
+
+  if (TOOL_AFFINITY_EXPLICIT_CHAT_HANDOFF_PATTERN.test(normalized)) {
     return false;
   }
 

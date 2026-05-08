@@ -7,7 +7,7 @@ param(
   [long]$ChatId,
   [long]$TelegramId,
   [string]$UserId,
-  [ValidateSet("PaymentFollowUp", "PaymentCoverageFollowUp", "PaymentExpandedFirstTurn", "PaymentHistoryCapability", "PaymentDateRange", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff")]
+  [ValidateSet("PaymentFollowUp", "PaymentCoverageFollowUp", "PaymentExpandedFirstTurn", "PaymentHistoryCapability", "PaymentCapabilityThenChatHandoff", "PaymentDateRange", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff")]
   [string]$Scenario = "PaymentFollowUp",
   [int]$PauseSeconds = 10,
   [int]$BridgeSignalTimeoutSeconds = 180,
@@ -204,6 +204,12 @@ function Get-ScenarioMessages {
     "PaymentHistoryCapability" {
       return @(
         "결제 이력 확인할 수 있어?"
+      )
+    }
+    "PaymentCapabilityThenChatHandoff" {
+      return @(
+        "결제 이력 확인할 수 있어?",
+        "그거 말고 일반 질문으로 리눅스에서 파일 찾는 명령어 알려줘"
       )
     }
     "PaymentDateRange" {
@@ -428,9 +434,9 @@ function Wait-BridgeSignals {
   )
 
   $requiresPaymentCoverageSignals = $SelectedScenario -eq "PaymentCoverageFollowUp"
-  $requiresPaymentCapabilitySignals = $SelectedScenario -eq "PaymentHistoryCapability"
+  $requiresPaymentCapabilitySignals = $SelectedScenario -in @("PaymentHistoryCapability", "PaymentCapabilityThenChatHandoff")
   $requiresTravelSignals = $SelectedScenario -in @("TravelPaymentFollowUp", "TravelPaymentThenChatHandoff")
-  $requiresChatHandoff = $SelectedScenario -eq "TravelPaymentThenChatHandoff"
+  $requiresChatHandoff = $SelectedScenario -in @("TravelPaymentThenChatHandoff", "PaymentCapabilityThenChatHandoff")
 
   if ($requiresPaymentCapabilitySignals) {
     $requiredSignalGroups = @()

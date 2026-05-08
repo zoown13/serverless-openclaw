@@ -46,6 +46,8 @@ const EXPANDED_PAYMENT_SCAN_PATTERN =
   /(전체|전부|모두|제한\s*(?:풀|해제|없이)|한도\s*(?:풀|해제|없이)|더\s*넓게|더\s*많이|가능한\s*많이|최대한|끝까지|all|everything|no\s*limit|full\s*scan)/i;
 const PAYMENT_COVERAGE_FOLLOW_UP_PATTERN =
   /(?:더\s*(?:있|찾|보)|밖에\s*없|몇\s*개|개수|건수|limit|coverage)/i;
+const CAPABILITY_QUERY_PATTERN =
+  /((결제|지출|카드|거래|승인|영수증|명세서|payment|transaction|spending|expense|gmail|지메일|메일).*(할\s*수\s*있|가능(?!한)|볼\s*수\s*있|가져올\s*수\s*있|확인\s*가능(?!한)|접근\s*가능(?!한)|연결(?:돼|되어)|available|can\s+you|can\s+i))|((할\s*수\s*있|가능(?!한)|볼\s*수\s*있|가져올\s*수\s*있|확인\s*가능(?!한)|접근\s*가능(?!한)|available|can\s+you).*(결제|지출|카드|거래|승인|영수증|명세서|payment|transaction|spending|expense|gmail|지메일|메일))/i;
 const POLICY_NOTICE_PATTERN =
   /(약관|개정\s*안내|기본약관|이용약관|정책\s*안내|표준\s*전자금융거래|전자금융거래\s*기본약관|terms?|policy)/i;
 const TRAVEL_REFINEMENT_PATTERN =
@@ -528,6 +530,36 @@ function getSearchContext(key: string): SearchContext | undefined {
 
 function looksLikePaymentQuestion(message: string): boolean {
   return PAYMENT_HINT_PATTERN.test(message);
+}
+
+function looksLikeCapabilityQuestion(message: string): boolean {
+  return CAPABILITY_QUERY_PATTERN.test(normalizeWhitespace(message));
+}
+
+function inferCapabilityTaskFamily(message: string): ToolTaskFamily {
+  if (looksLikePaymentQuestion(message)) {
+    return "gmail_payment_summary";
+  }
+  if (isExplicitGmailMessage(message)) {
+    return "gmail_search";
+  }
+  return "generic_tool_task";
+}
+
+function buildCapabilityAnswer(gmailReady: boolean): string {
+  if (gmailReady) {
+    return [
+      "네, 결제 이력은 지메일(Gmail) 기반 도구 런타임에서 확인할 수 있어요.",
+      "결제/영수증/카드 승인/명세서 메일의 헤더와 스니펫을 먼저 안전하게 보고, 필요할 때만 사용자가 지정한 메일 본문을 제한적으로 확인합니다.",
+      "예를 들어 '이번주 결제 이력 확인해줘', '지난달 카드사별로 정리해줘', '일본 여행 관련 결제만 보여줘'처럼 물어보면 지메일에서 조회해서 정리할 수 있어요.",
+    ].join("\n");
+  }
+
+  return [
+    "결제 이력은 원래 지메일(Gmail) 기반 도구 런타임에서 확인하는 작업이에요.",
+    "다만 현재 런타임에서는 Gmail 연결 상태를 사용할 수 없어 실제 조회는 진행할 수 없습니다.",
+    "Gmail OAuth 연결이 복구되면 결제/영수증/카드 승인/명세서 메일을 기준으로 다시 확인할 수 있어요.",
+  ].join("\n");
 }
 
 function isExplicitGmailMessage(message: string): boolean {
@@ -2940,6 +2972,32 @@ export async function maybeHandleCustomGmailRequest(
   }
 
   const currentContext = await getTaskContext(contextKey);
+  if (looksLikeCapabilityQuestion(options.message)) {
+    if (currentContext) {
+      await clearTaskContext(contextKey);
+      emitToolEvent(options.onToolEvent, {
+        type: "contextCleared",
+        taskFamily: currentContext.taskFamily,
+        sourceChoice: currentContext.sourceChoice,
+        reason: "capability-question",
+      });
+    }
+    const taskFamily = inferCapabilityTaskFamily(options.message);
+    emitToolEvent(options.onToolEvent, {
+      type: "intentDecided",
+      decisionSource: "deterministic",
+      action: "answer_capability",
+      taskFamily,
+      sourceChoice: options.gmailReady ? "gmail" : "general",
+      confidence: 0.99,
+    });
+    return {
+      kind: "direct",
+      message: buildCapabilityAnswer(options.gmailReady),
+      source: options.gmailReady ? "gmail-context" : "gmail-fallback",
+    };
+  }
+
   if (currentContext?.status === "awaiting_source") {
     const handled = await handleAwaitingSourceContext(contextKey, currentContext, options);
     if (handled) {
@@ -2971,6 +3029,13 @@ export async function maybeHandleCustomGmailRequest(
       confidence: advisorDecision?.confidence,
       slmBackend: advisorDecision?.slmBackend,
     });
+    if (advisorDecision?.action === "answer_capability") {
+      return {
+        kind: "direct",
+        message: buildCapabilityAnswer(options.gmailReady),
+        source: options.gmailReady ? "gmail-context" : "gmail-fallback",
+      };
+    }
     if (advisorDecision && isSwitchToChatAction(advisorDecision.action)) {
       return handoffActiveTaskContextToChat(
         contextKey,
@@ -3044,6 +3109,14 @@ export async function maybeHandleCustomGmailRequest(
     confidence: finalDecision.confidence,
     slmBackend: advisorDecision?.slmBackend,
   });
+
+  if (finalDecision.action === "answer_capability") {
+    return {
+      kind: "direct",
+      message: buildCapabilityAnswer(options.gmailReady),
+      source: options.gmailReady ? "gmail-context" : "gmail-fallback",
+    };
+  }
 
   if (isContinueTaskAction(finalDecision.action) && refreshedContext) {
     const handled = await handleActiveTaskContext(

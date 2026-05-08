@@ -18,6 +18,8 @@ const AMOUNT_SUMMARY_PATTERN = /(합계|총액|sum|total|얼마)/i;
 const COVERAGE_CHECK_PATTERN = /(더\s*(있|찾|보)|밖에\s*없|몇\s*개|개수|건수|limit)/i;
 const CANCEL_PATTERN = /^(?:취소|그만|끝|됐어|done|cancel|stop)(?:[.!?])?$/i;
 const EXPLICIT_GMAIL_PATTERN = /(gmail|google mail|inbox|mailbox|이메일|메일함|메일에서|지메일)/i;
+const CAPABILITY_QUERY_PATTERN =
+  /((결제|지출|카드|거래|승인|영수증|명세서|payment|transaction|spending|expense|gmail|지메일|메일).*(할\s*수\s*있|가능(?!한)|볼\s*수\s*있|가져올\s*수\s*있|확인\s*가능(?!한)|접근\s*가능(?!한)|연결(?:돼|되어)|available|can\s+you|can\s+i))|((할\s*수\s*있|가능(?!한)|볼\s*수\s*있|가져올\s*수\s*있|확인\s*가능(?!한)|접근\s*가능(?!한)|available|can\s+you).*(결제|지출|카드|거래|승인|영수증|명세서|payment|transaction|spending|expense|gmail|지메일|메일))/i;
 const OBVIOUS_GENERAL_CHAT_PATTERN =
   /(날씨|weather|번역|translate|농담|joke|리눅스|linux|명령어|command|코드|code|설명해|추천해|맛집|일정|계획|어떻게|왜|무엇|뭐야|what|how|why)/i;
 
@@ -28,6 +30,18 @@ function classifyActiveFollowUp(input: SlmClassificationInput): SlmTaskDecision 
 
   const message = input.message.trim();
   const sourceChoice = input.activeSourceChoice ?? "gmail";
+
+  if (CAPABILITY_QUERY_PATTERN.test(message)) {
+    return {
+      action: "answer_capability",
+      taskFamily: PAYMENT_LOOKUP_PATTERN.test(message)
+        ? "gmail_payment_summary"
+        : "gmail_search",
+      sourceChoice: input.gmailReady ? "gmail" : "general",
+      confidence: 0.95,
+      reason: "mock-local capability check",
+    };
+  }
 
   if (CANCEL_PATTERN.test(message)) {
     return {
@@ -140,6 +154,18 @@ function classifyActiveFollowUp(input: SlmClassificationInput): SlmTaskDecision 
 
 function classifyFreshMessage(input: SlmClassificationInput): SlmTaskDecision | null {
   const message = input.message.trim();
+  if (CAPABILITY_QUERY_PATTERN.test(message)) {
+    return {
+      action: "answer_capability",
+      taskFamily: PAYMENT_LOOKUP_PATTERN.test(message)
+        ? "gmail_payment_summary"
+        : "gmail_search",
+      sourceChoice: input.gmailReady ? "gmail" : "general",
+      confidence: 0.95,
+      reason: "mock-local capability check",
+    };
+  }
+
   const looksLikePaymentLookup =
     PAYMENT_LOOKUP_PATTERN.test(message) ||
     (TRAVEL_CONTEXT_PATTERN.test(message) && DATA_LOOKUP_PATTERN.test(message));

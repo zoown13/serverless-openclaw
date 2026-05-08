@@ -125,6 +125,7 @@ export type ToolIntentAdvisorAction =
   | "refine_current_task"
   | "rerun_current_task"
   | "switch_to_chat"
+  | "answer_capability"
   | "clarify"
   | "cancel_task";
 

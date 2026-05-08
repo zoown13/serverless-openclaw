@@ -55,4 +55,17 @@ describe("tool-intent-advisor", () => {
       confidence: 0.88,
     });
   });
+
+  it("parses planner-v1 capability answer actions", () => {
+    const parsed = parseToolIntentAdvisorResponse(
+      '{"action":"answer_capability","taskFamily":"gmail_payment_summary","sourceChoice":"gmail","confidence":0.95}',
+    );
+
+    expect(parsed).toEqual({
+      action: "answer_capability",
+      taskFamily: "gmail_payment_summary",
+      sourceChoice: "gmail",
+      confidence: 0.95,
+    });
+  });
 });

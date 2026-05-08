@@ -428,8 +428,16 @@ function Wait-BridgeSignals {
   )
 
   $requiresPaymentCoverageSignals = $SelectedScenario -eq "PaymentCoverageFollowUp"
+  $requiresPaymentCapabilitySignals = $SelectedScenario -eq "PaymentHistoryCapability"
   $requiresTravelSignals = $SelectedScenario -in @("TravelPaymentFollowUp", "TravelPaymentThenChatHandoff")
   $requiresChatHandoff = $SelectedScenario -eq "TravelPaymentThenChatHandoff"
+
+  if ($requiresPaymentCapabilitySignals) {
+    $requiredSignalGroups = @()
+    $requiredSignals += @(
+      '"action":"answer_capability"'
+    )
+  }
 
   if ($requiresPaymentCoverageSignals) {
     $requiredSignals += @(

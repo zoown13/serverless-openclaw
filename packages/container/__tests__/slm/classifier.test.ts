@@ -106,11 +106,25 @@ describe("slm/classifier", () => {
     });
   });
 
+  it("parses valid structured JSON for capability answers", () => {
+    const parsed = parseSlmClassifierResponse(
+      '{"action":"answer_capability","taskFamily":"gmail_payment_summary","sourceChoice":"gmail","confidence":0.95,"reason":"capability question"}',
+    );
+
+    expect(parsed).toEqual({
+      action: "answer_capability",
+      taskFamily: "gmail_payment_summary",
+      sourceChoice: "gmail",
+      confidence: 0.95,
+      reason: "capability question",
+    });
+  });
+
   it("classifies payment history wording through the mock-local backend", async () => {
     const classifier = createDefaultSlmClassifier("mock-local");
 
     const decision = await classifier.classify({
-      message: "결제 이력 확인할 수 있어?",
+      message: "결제 이력 확인해줘",
       gmailReady: true,
     });
 
@@ -121,6 +135,24 @@ describe("slm/classifier", () => {
       confidence: 0.9,
       slmBackend: "mock-local",
       reason: "mock-local payment summary",
+    });
+  });
+
+  it("classifies capability questions through the mock-local backend", async () => {
+    const classifier = createDefaultSlmClassifier("mock-local");
+
+    const decision = await classifier.classify({
+      message: "결제 이력 확인할 수 있어?",
+      gmailReady: true,
+    });
+
+    expect(decision).toEqual({
+      action: "answer_capability",
+      taskFamily: "gmail_payment_summary",
+      sourceChoice: "gmail",
+      confidence: 0.95,
+      slmBackend: "mock-local",
+      reason: "mock-local capability check",
     });
   });
 

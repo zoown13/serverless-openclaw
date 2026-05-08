@@ -151,6 +151,36 @@ describe("gmail-tool", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("answers payment capability questions without running a Gmail lookup", async () => {
+    const events: unknown[] = [];
+
+    const response = await maybeHandleCustomGmailRequest({
+      userId: "user-payment-capability",
+      sessionKey: "session-payment-capability",
+      message: "결제 이력 확인할 수 있어?",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+      onToolEvent: (event) => events.push(event),
+    });
+
+    expect(response).toEqual({
+      kind: "direct",
+      message: expect.stringContaining("결제 이력은 지메일(Gmail) 기반 도구 런타임에서 확인할 수 있어요"),
+      source: "gmail-context",
+    });
+    expect(response?.message).toContain("이번주 결제 이력 확인해줘");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(decideToolIntentMock).not.toHaveBeenCalled();
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "intentDecided",
+        action: "answer_capability",
+        taskFamily: "gmail_payment_summary",
+        sourceChoice: "gmail",
+      }),
+    );
+  });
+
   it("defaults payment lookups to Gmail without requiring an explicit source mention", async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))

@@ -276,13 +276,17 @@ export type ToolEvent =
         | "paymentRefineStarted"
         | "paymentRefineUsedBodyCheck"
         | "paymentRefineCompleted"
-        | "paymentRefineNoMatch";
+        | "paymentRefineNoMatch"
+        | "paymentScanCompleted";
         taskFamily?: ToolTaskFamily;
         topicKeywords?: string[];
         matchedCount?: number;
         candidateCount?: number;
         filteredCount?: number;
         bodyCheckedCount?: number;
+        scanLimit?: number;
+        queryCount?: number;
+        expandedScan?: boolean;
         queryMode?: string;
         reason?: string;
       };
@@ -2411,6 +2415,24 @@ async function runGmailTask(
   if (taskFamily === "gmail_payment_summary" && topicKeywords.length > 0) {
     paymentRecords = refineTravelPaymentRecords(paymentRecords, topicKeywords);
     messages = filterMessagesByRecords(messages, paymentRecords);
+  }
+
+  if (taskFamily === "gmail_payment_summary") {
+    emitToolEvent(options.onToolEvent, {
+      type: "paymentScanCompleted",
+      taskFamily,
+      topicKeywords,
+      matchedCount: paymentRecords.length,
+      candidateCount,
+      scanLimit: scanLimitUsed,
+      queryCount: query.includes(" || ") ? 2 : 1,
+      expandedScan: userExpandedScan,
+      queryMode: topicKeywords.length > 0
+        ? "topic_filtered_payment_summary"
+        : query.includes(" || ")
+          ? "expanded-query-ladder"
+          : "payment_summary",
+    });
   }
 
   setSearchContext(contextKey, {

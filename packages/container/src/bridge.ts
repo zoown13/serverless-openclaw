@@ -291,6 +291,19 @@ function logToolEvent(
         queryMode: event.queryMode,
         reason: event.reason,
       });
+      return;
+    case "paymentScanCompleted":
+      logBridgeEvent("bridge.tool.payment.scan.completed", {
+        ...logContext,
+        taskFamily: event.taskFamily,
+        topicKeywords: event.topicKeywords,
+        matchedCount: event.matchedCount,
+        candidateCount: event.candidateCount,
+        scanLimit: event.scanLimit,
+        queryCount: event.queryCount,
+        expandedScan: event.expandedScan,
+        queryMode: event.queryMode,
+      });
   }
 }
 

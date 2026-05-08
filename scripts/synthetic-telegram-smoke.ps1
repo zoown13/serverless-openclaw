@@ -7,7 +7,7 @@ param(
   [long]$ChatId,
   [long]$TelegramId,
   [string]$UserId,
-  [ValidateSet("PaymentFollowUp", "PaymentCoverageFollowUp", "PaymentExpandedFirstTurn", "PaymentDateRange", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff")]
+  [ValidateSet("PaymentFollowUp", "PaymentCoverageFollowUp", "PaymentExpandedFirstTurn", "PaymentHistoryCapability", "PaymentDateRange", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff")]
   [string]$Scenario = "PaymentFollowUp",
   [int]$PauseSeconds = 10,
   [int]$BridgeSignalTimeoutSeconds = 180,
@@ -199,6 +199,11 @@ function Get-ScenarioMessages {
     "PaymentExpandedFirstTurn" {
       return @(
         "이번주 결제한 금액 전체로 제한 풀고 봐줘"
+      )
+    }
+    "PaymentHistoryCapability" {
+      return @(
+        "결제 이력 확인할 수 있어?"
       )
     }
     "PaymentDateRange" {

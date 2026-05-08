@@ -445,6 +445,8 @@ function Wait-BridgeSignals {
   $requiresIssuerBreakdownSignals = $SelectedScenario -in @("PaymentCoverageThenIssuerBreakdown", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff")
   $requiresPaymentCapabilitySignals = $SelectedScenario -in @("PaymentHistoryCapability", "PaymentCapabilityThenChatHandoff")
   $requiresTravelSignals = $SelectedScenario -in @("TravelPaymentFollowUp", "TravelPaymentThenChatHandoff")
+  $requiresPaymentResponseQuality = $SelectedScenario -in @("PaymentCoverageFollowUp", "PaymentCoverageThenIssuerBreakdown", "PaymentExpandedFirstTurn", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff")
+  $requiresTravelResponseQuality = $requiresTravelSignals
   $requiresChatHandoff = $SelectedScenario -in @("TravelPaymentThenChatHandoff", "PaymentCapabilityThenChatHandoff")
 
   if ($requiresPaymentCapabilitySignals) {
@@ -478,6 +480,26 @@ function Wait-BridgeSignals {
     )
   }
 
+  if ($requiresPaymentResponseQuality) {
+    $requiredSignals += @(
+      "telegram.delivery.content_quality",
+      '"hasKoreanPaymentSummary":true',
+      '"hasPaymentCoverageDisclosure":true'
+    )
+  }
+
+  if ($requiresIssuerBreakdownSignals) {
+    $requiredSignals += @(
+      '"hasIssuerBreakdownSignal":true'
+    )
+  }
+
+  if ($requiresTravelResponseQuality) {
+    $requiredSignals += @(
+      '"hasTopicFilteredPaymentSignal":true'
+    )
+  }
+
   $requiredGatewaySignals = @()
   $requiredLambdaSignals = @()
 
@@ -501,7 +523,9 @@ function Wait-BridgeSignals {
     "An error occurred",
     "Cannot read properties",
     "TypeError",
-    "ReferenceError"
+    "ReferenceError",
+    '"hasRawInternalError":true',
+    '"hasLegacyEnglishPaymentPhrases":true'
   )
 
   $deadline = [DateTimeOffset]::UtcNow.AddSeconds($TimeoutSeconds)

@@ -10,6 +10,7 @@ import {
   maybeHandleCustomGmailRequest,
   type ToolEvent,
 } from "./gmail-tool.js";
+import { logTelegramContentQuality } from "./callback-sender.js";
 import type {
   BridgeMessageRequest,
   ServerMessage,
@@ -351,6 +352,9 @@ export function createApp(deps: BridgeDeps): express.Express {
               type: "stream_end",
             });
           }
+          if (deliveryMode !== "callback" && body.channel === "telegram") {
+            logTelegramContentQuality(gmailResponse.message);
+          }
 
           const latency = Date.now() - msgStart;
           void publishMessageMetrics({
@@ -453,6 +457,9 @@ export function createApp(deps: BridgeDeps): express.Express {
         await deps.callbackSender.send(body.connectionId!, {
           type: "stream_end",
         });
+      }
+      if (deliveryMode !== "callback" && body.channel === "telegram") {
+        logTelegramContentQuality(fullResponse);
       }
 
       const latency = Date.now() - msgStart;

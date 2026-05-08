@@ -508,6 +508,51 @@ describe("Bridge HTTP Server", () => {
       });
     });
 
+    it("should emit direct Telegram content-quality signals for AgentCore responses", async () => {
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      gmailToolMock.mockResolvedValue({
+        kind: "direct",
+        message:
+          "Gmail 헤더/스니펫 기준으로 후보 11건을 확인했습니다. 본문과 첨부파일은 열지 않았습니다. 확인 가능한 합계: KRW 10,000. 확인된 카드사: 삼성카드. 일본/여행 관련 결제만 정리했습니다. 스타벅스",
+        source: "gmail",
+      });
+      app = createApp({
+        ...deps,
+        agentCoreHttpEnabled: true,
+        runtimeLabel: "agentcore",
+      });
+
+      const res = await request(app)
+        .post("/invocations")
+        .send({
+          userId: "user-1",
+          message: "이번주 결제한 금액 얼마야",
+          channel: "telegram",
+          connectionId: "telegram:12345",
+          runtimeClass: "tool-enabled",
+          traceId: "trace-agentcore",
+          routeDecision: "agentcore",
+        });
+
+      const qualityLog = logSpy.mock.calls
+        .map(([value]) => String(value))
+        .find((value) => value.includes("telegram.delivery.content_quality"));
+      expect(res.status).toBe(200);
+      expect(deps.callbackSender.send).not.toHaveBeenCalled();
+      expect(qualityLog).toBeDefined();
+      expect(qualityLog).not.toContain("스타벅스");
+      expect(JSON.parse(qualityLog ?? "{}")).toMatchObject({
+        hasKoreanPaymentSummary: true,
+        hasPaymentCoverageDisclosure: true,
+        hasIssuerBreakdownSignal: true,
+        hasTopicFilteredPaymentSignal: true,
+        hasRawInternalError: false,
+        hasLegacyEnglishPaymentPhrases: false,
+      });
+
+      logSpy.mockRestore();
+    });
+
     it("should process /invocations when AgentCore sends octet-stream JSON", async () => {
       gmailToolMock.mockResolvedValue({
         kind: "direct",

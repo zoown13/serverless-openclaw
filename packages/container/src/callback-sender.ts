@@ -72,7 +72,7 @@ function buildTelegramContentQuality(text: string): TelegramContentQuality {
   };
 }
 
-function logTelegramContentQuality(text: string): void {
+export function logTelegramContentQuality(text: string): void {
   console.log(
     JSON.stringify({
       component: "callback",

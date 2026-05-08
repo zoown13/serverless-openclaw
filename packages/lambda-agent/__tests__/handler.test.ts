@@ -455,8 +455,81 @@ describe("handler", () => {
         extraSystemPrompt: expect.stringContaining("available_via_tool_runtime"),
       }),
     );
+    expect(mockRunAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        extraSystemPrompt: expect.stringContaining("Payment history"),
+      }),
+    );
     expect(infoSpy).toHaveBeenCalledWith(
       expect.stringContaining("\"event\":\"lambda.assistant_context.loaded\""),
+    );
+  });
+
+  it("should preserve delegated Gmail payment capability on Lambda misroutes", async () => {
+    process.env.SSM_TELEGRAM_BOT_TOKEN = "/serverless-openclaw/secrets/telegram-bot-token";
+    mockResolveSecrets.mockResolvedValue(
+      new Map([
+        ["/serverless-openclaw/secrets/anthropic-api-key", "test-api-key"],
+        ["/serverless-openclaw/secrets/telegram-bot-token", "telegram-token"],
+      ]),
+    );
+
+    const handler = await loadHandler();
+    const result = await handler(createEvent({
+      message: "결제 이력 확인할 수 있어?",
+      channel: "telegram",
+      connectionId: undefined,
+      callbackUrl: undefined,
+      telegramChatId: "8585874705",
+      assistantContext: {
+        version: 1,
+        userId: "user-123",
+        channel: "telegram",
+        sessionId: "session-user-123:chat",
+        traceId: "trace-payment-capability",
+        generatedAt: "2026-05-04T00:00:00.000Z",
+        runtime: {
+          agentRuntime: "both",
+          runtimeClass: "chat-only",
+          routeDecision: "lambda",
+          lambdaRole: "chat-only-fast-path",
+          toolRuntimeProvider: "agentcore",
+          fallbackProvider: "fargate",
+        },
+        capabilities: {
+          tools: {
+            available: true,
+            executionRuntime: "agentcore",
+            note: "Tool tasks are delegated.",
+          },
+          gmail: {
+            status: "available_via_tool_runtime",
+            executionRuntime: "agentcore",
+            safetyMode: "headers-first",
+          },
+        },
+        toolAffinity: {
+          active: false,
+          provider: "agentcore",
+          fallbackProvider: "fargate",
+        },
+        guidance: {
+          selfAwareness: "The assistant has delegated Gmail capability.",
+          lambda: "Do not claim Gmail is impossible.",
+          toolRuntime: "Tool runtime owns Gmail tasks.",
+        },
+      },
+    })) as LambdaAgentResponse;
+
+    expect(result.success).toBe(true);
+    expect(result.payloads?.[0]?.text).toContain("결제 이력");
+    expect(result.payloads?.[0]?.text).toContain("지메일");
+    expect(result.payloads?.[0]?.text).toContain("agentcore");
+    expect(result.payloads?.[0]?.text).not.toContain("접근 불가");
+    expect(mockRunAgent).not.toHaveBeenCalled();
+    expect(mockDownload).not.toHaveBeenCalled();
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"event\":\"lambda.tool.misroute_detected\""),
     );
   });
 

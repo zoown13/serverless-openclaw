@@ -308,8 +308,12 @@ function isToolRequest(message: string): boolean {
   return [
     /(?:check|read|open|search|send).*(?:gmail|email|inbox)/i,
     /(?:gmail|email|inbox).*(?:check|read|open|search|send)/i,
+    /(?:payment|transaction|spending|expense|card).*(?:history|records?|statement|total|summary|lookup|check)/i,
+    /(?:history|records?|statement|total|summary).*(?:payment|transaction|spending|expense|card)/i,
     /(?:확인|읽|열|검색|보내).*(?:지메일|이메일|받은편지함)/,
     /(?:지메일|이메일|받은편지함).*(?:확인|읽|열|검색|보내)/,
+    /(?:결제|지출|카드값|카드\s*사용|사용금액|거래|승인|영수증|명세서).*(?:이력|기록|내역|금액|합계|얼마|조회|확인|가져오|보여|정리|찾)/,
+    /(?:이력|기록|내역|금액|합계|얼마).*(?:결제|지출|카드|거래|승인|영수증|명세서)/,
     /\buse\b.*\btool\b/i,
     /\btool\b.*\b(use|run)\b/i,
     /도구.*(?:사용|실행)/,
@@ -332,10 +336,10 @@ function hasDelegatedToolRuntime(event: LambdaAgentEvent): boolean {
 function buildDelegatedToolRuntimeMessage(event: LambdaAgentEvent): string {
   const provider = event.assistantContext?.runtime.toolRuntimeProvider ?? "tool runtime";
   if (event.channel === "telegram") {
-    return `이 요청은 Gmail/도구 확인이 필요한 것으로 보여요. 현재 메시지는 빠른 Lambda 채팅 경로로 들어왔고, 실제 조회는 ${provider} 도구 런타임에서 처리해야 합니다. 지금 답변에서 접근 불가라고 단정하지 않고, 라우팅 개선 대상으로 기록해둘게요.`;
+    return `결제 이력은 지메일(Gmail) 기반 도구 런타임에서 확인할 수 있어요. 다만 현재 턴은 빠른 Lambda 채팅 경로로 들어와 실제 조회를 바로 실행하지 않았습니다. 실제 조회는 ${provider} 도구 런타임에서 처리해야 하며, 이 misroute는 관측 로그에 남겨 라우팅 개선 대상으로 추적합니다.`;
   }
 
-  return `This looks like a Gmail/tool lookup request. The current Lambda path is the fast chat runtime, while ${provider} owns delegated tool execution. I will not claim the assistant cannot access Gmail; this should be handled by the tool runtime path.`;
+  return `Payment history can be checked through the Gmail-backed delegated tool runtime. The current Lambda path is the fast chat runtime, while ${provider} owns actual Gmail/tool execution. This should be handled by the tool runtime path rather than answered as unavailable.`;
 }
 
 function buildAssistantContextPrompt(event: LambdaAgentEvent): string | undefined {
@@ -346,6 +350,7 @@ function buildAssistantContextPrompt(event: LambdaAgentEvent): string | undefine
     `AssistantRuntimeContext v${context.version}: current route=${context.runtime.runtimeClass}/${context.runtime.routeDecision ?? "unknown"}.`,
     `Tool runtime provider=${context.runtime.toolRuntimeProvider ?? "unknown"}, fallback=${context.runtime.fallbackProvider ?? "unknown"}, activeToolAffinity=${context.toolAffinity?.active === true}.`,
     `Gmail capability=${context.capabilities.gmail.status}, executionRuntime=${context.capabilities.gmail.executionRuntime}, safety=${context.capabilities.gmail.safetyMode}.`,
+    "Payment history, card spending, receipts, statements, and transaction history are Gmail-backed tool-capable tasks when Gmail capability is available via the delegated tool runtime.",
     context.guidance.selfAwareness,
     context.guidance.lambda,
   ].join(" ");

@@ -27,13 +27,13 @@ const PRIVATE_DATA_TARGET_PATTERN =
 const PRIVATE_DATA_ACTION_PATTERN =
   /(?:\baccess\b|\bconnect\b|\bintegrat(?:e|ion)?\b|\bfetch\b|\bload\b|\bget\b|\bcheck\b|\bread\b|\bopen\b|\bsearch\b|\bsend\b|\bsummar(?:ize|ise)\b|\banaly[sz]e\b|\breview\b|\btriage\b|\bbody\b|\bcontent\b|\bdetails?\b|\bbrowse\b|\bvisit\b|\bnavigate\b|\blook up\b|접근|연동|연결|가져오|불러오|조회|확인|읽|열|검색|보내|요약|분석|정리|분류|찾|살펴|보여|봐|본문|내용|자세히|상세|둘러|탐색|접속)/i;
 const SENSITIVE_DATA_CUE_PATTERN =
-  /(?:결제|지출|지출액|사용금액|사용 금액|사용한\s*돈|쓴\s*돈|썼던\s*돈|소비|소비내역|비용|승인내역|카드값|카드\s*(?:사용|결제)|여행\s*경비|출장\s*경비|청구서|영수증|명세서|거래내역|\bpayment(?:s)?\b|\bcharge(?:s|d)?\b|\btransaction(?:s)?\b|\bspent\b|\bspend(?:ing)?\b|\bexpense(?:s)?\b|\bcosts?\b|\bbilling\b|\binvoice\b|\breceipt\b|\bstatement\b)/i;
+  /(?:결제|결제\s*(?:이력|기록)|지출|지출액|사용금액|사용 금액|사용\s*(?:이력|기록)|사용한\s*돈|쓴\s*돈|썼던\s*돈|소비|소비내역|비용|승인내역|카드값|카드\s*(?:사용|결제|이력|기록)|여행\s*경비|출장\s*경비|청구서|영수증|명세서|거래내역|거래\s*(?:이력|기록)|\bpayment(?:s)?\b|\bpayment\s+histor(?:y|ies)\b|\bcharge(?:s|d)?\b|\btransaction(?:s)?\b|\btransaction\s+(?:history|records?)\b|\bspent\b|\bspend(?:ing)?\b|\bexpense(?:s)?\b|\bcosts?\b|\bbilling\b|\binvoice\b|\breceipt\b|\bstatement\b)/i;
 const TEMPORAL_CONTEXT_PATTERN =
   /(?:(?:이번|지난)\s*(?:주|달|월)|이번주|지난주|이번달|지난달|오늘|어제|최근|방금|아까|\bthis\s+(?:week|month)\b|\blast\s+(?:week|month)\b|\btoday\b|\byesterday\b|\brecent(?:ly)?\b)/i;
 const PERSONAL_REFERENCE_PATTERN =
   /(?:\bmy\b|\bme\b|\bmine\b|내|나의|내가|저의|제가|제\s|우리)/i;
 const DATA_LOOKUP_ACTION_PATTERN =
-  /(?:얼마|금액|총액|합계|총합|어느 정도|어느정도|얼마나|계산|정리|요약|찾|알려|보여|봐|확인|분석|내역|\bhow much\b|\bamount\b|\btotal\b|\bsum\b|\bshow\b|\bcheck\b|\bfind\b|\bsummary\b|\bbreakdown\b)/i;
+  /(?:얼마|금액|총액|합계|총합|어느 정도|어느정도|얼마나|계산|정리|요약|찾|알려|보여|봐|확인|분석|내역|이력|기록|\bhow much\b|\bamount\b|\btotal\b|\bsum\b|\bshow\b|\bcheck\b|\bfind\b|\bsummary\b|\bbreakdown\b|\bhistory\b|\brecords?\b)/i;
 const TRAVEL_CONTEXT_PATTERN =
   /(?:여행|출장|일본|도쿄|오사카|교토|후쿠오카|삿포로|오키나와|항공|비행|호텔|숙소|eSIM|\btravel\b|\btrip\b|\bflight\b|\bhotel\b|\blodging\b|\besim\b)/i;
 const GENERAL_HOW_TO_PATTERN =

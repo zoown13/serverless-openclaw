@@ -106,6 +106,24 @@ describe("slm/classifier", () => {
     });
   });
 
+  it("classifies payment history wording through the mock-local backend", async () => {
+    const classifier = createDefaultSlmClassifier("mock-local");
+
+    const decision = await classifier.classify({
+      message: "결제 이력 확인할 수 있어?",
+      gmailReady: true,
+    });
+
+    expect(decision).toEqual({
+      action: "start_new_task",
+      taskFamily: "gmail_payment_summary",
+      sourceChoice: "gmail",
+      confidence: 0.9,
+      slmBackend: "mock-local",
+      reason: "mock-local payment summary",
+    });
+  });
+
   it("keeps active payment follow-ups inside the specialized task through the mock-local backend", async () => {
     const classifier = createDefaultSlmClassifier("mock-local");
 

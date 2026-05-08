@@ -1,9 +1,9 @@
 import type { SlmClassificationInput, SlmClassifier, SlmTaskDecision } from "./types.js";
 
 const PAYMENT_LOOKUP_PATTERN =
-  /(결제|카드값|카드 값|명세서|청구서|영수증|지출|지출액|사용금액|사용 금액|receipt|statement|invoice|spent|spend|payment|total|amount|얼마 썼|얼마 쓴|사용한 돈|사용한\s*돈|쓴 돈|쓴\s*돈|소비|비용|이번\s*주.*얼마|이번주.*얼마|이번\s*달.*얼마|이번달.*얼마|최근.*얼마|expenses?|costs?|spending)/i;
+  /(결제|결제\s*(?:이력|기록)|카드값|카드 값|카드\s*(?:이력|기록)|명세서|청구서|영수증|지출|지출액|사용금액|사용 금액|사용\s*(?:이력|기록)|거래\s*(?:이력|기록)|receipt|statement|invoice|spent|spend|payment|payment\s+histor(?:y|ies)|transaction\s+(?:history|records?)|total|amount|얼마 썼|얼마 쓴|사용한 돈|사용한\s*돈|쓴 돈|쓴\s*돈|소비|비용|이번\s*주.*얼마|이번주.*얼마|이번\s*달.*얼마|이번달.*얼마|최근.*얼마|expenses?|costs?|spending)/i;
 const DATA_LOOKUP_PATTERN =
-  /(정리|요약|알려|보여|찾|조회|summary|breakdown|history|내역|어디에|기간|부터|까지|이번주|이번 주|이번달|이번 달|최근|오늘|어제|얼마)/i;
+  /(정리|요약|알려|보여|찾|조회|확인|summary|breakdown|history|records?|내역|이력|기록|어디에|기간|부터|까지|이번주|이번 주|이번달|이번 달|최근|오늘|어제|얼마)/i;
 const TRAVEL_CONTEXT_PATTERN =
   /(여행|travel|trip|출장|해외|overseas|일본|japan|도쿄|tokyo|오사카|osaka|교토|kyoto|후쿠오카|fukuoka|삿포로|sapporo|오키나와|okinawa|나고야|nagoya|나리타|narita|하네다|haneda|간사이|kansai|항공|flight|호텔|hotel|숙소|esim|e-sim|jr|rail|기차|train|전철|지하철|subway|메트로|metro|렌터카|rental|공항|airport|셔틀|shuttle|버스|bus|패스|pass|페리|ferry)/i;
 const BODY_OPEN_PATTERN =

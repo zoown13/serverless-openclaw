@@ -2754,6 +2754,17 @@ function isClearlyUnrelated(message: string): boolean {
     !isTopicRefinementFollowUp(message);
 }
 
+function isExplicitTopicPaymentLookup(message: string): boolean {
+  const trimmed = normalizeWhitespace(message);
+  if (!looksLikePaymentQuestion(trimmed) || extractTopicKeywords(trimmed).length === 0) {
+    return false;
+  }
+
+  return /((결제|지출|카드|영수증|승인|사용|쓴|썼|payment|transaction|spending|expense).*(내역|목록|알려|보여|정리|합계|금액|얼마|조회|검색|찾아))|((내역|목록|알려|보여|정리|합계|금액|얼마|조회|검색|찾아).*(결제|지출|카드|영수증|승인|사용|쓴|썼|payment|transaction|spending|expense))/i.test(
+    trimmed,
+  );
+}
+
 function isFreshPaymentLookupRequest(
   message: string,
   activeContext: ToolTaskContext,
@@ -2773,6 +2784,11 @@ function isFreshPaymentLookupRequest(
   }
 
   const followUpIntent = plannerHint?.followUpIntent;
+  const explicitTopicPaymentLookup = isExplicitTopicPaymentLookup(trimmed);
+  if (explicitTopicPaymentLookup) {
+    return true;
+  }
+
   if (followUpIntent && followUpIntent !== "continue_active_task") {
     return false;
   }

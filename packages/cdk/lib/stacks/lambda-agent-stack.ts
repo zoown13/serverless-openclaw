@@ -66,7 +66,7 @@ export class LambdaAgentStack extends cdk.Stack {
         SESSION_BUCKET: props.dataBucket.bucketName,
         AI_PROVIDER: resolvedAiProvider,
         LAMBDA_DIRECT_BEDROCK_CHAT: resolvedAiProvider === "bedrock" ? "true" : "false",
-        LAMBDA_DIRECT_CHAT_MAX_TOKENS: "512",
+        LAMBDA_DIRECT_CHAT_MAX_TOKENS: "320",
         ...(resolvedAiModel ? { AI_MODEL: resolvedAiModel } : {}),
       },
     });

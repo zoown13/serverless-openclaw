@@ -328,7 +328,7 @@ function isDirectBedrockChatEnabled(): boolean {
 
 function parseDirectChatMaxTokens(): number {
   const parsed = Number.parseInt(process.env.LAMBDA_DIRECT_CHAT_MAX_TOKENS ?? "", 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 512;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 320;
 }
 
 function isStatelessChatQuestion(message: string): boolean {
@@ -363,7 +363,7 @@ function buildDirectChatSystemPrompt(
   return [
     "You are Serverless OpenClaw's fast chat runtime.",
     "Answer in the user's language with concise, useful plain text.",
-    "For straightforward how-to, concept, command, translation, or explanation questions, answer directly without mentioning routing internals.",
+    "For straightforward how-to, concept, command, translation, or explanation questions, answer directly without mentioning routing internals, usually in three to five short bullets or sentences.",
     "Do not claim Gmail, payment history, or private tools are impossible when AssistantRuntimeContext says they are available through the delegated tool runtime.",
     buildAssistantContextPrompt(event),
     buildEmailTokenBudgetPrompt(runtimeConfig),

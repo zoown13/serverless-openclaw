@@ -995,6 +995,19 @@ function isExpandedPaymentScanRequest(message: string): boolean {
   return EXPANDED_PAYMENT_SCAN_PATTERN.test(message);
 }
 
+function isBroadPaymentSummaryRequest(message: string): boolean {
+  const hasTimeWindow =
+    /이번\s*주|이번주|지난\s*주|지난주|최근|오늘|어제|이번\s*달|이번달|지난\s*달|지난달|\d{1,2}\s*월|week|month|today|yesterday/i.test(
+      message,
+    );
+  const hasSummaryAsk =
+    /얼마|얼마나|합계|총액|총\s*금액|금액|쓴|썼|지출|사용|내역|정리|spend|spent|total|amount/i.test(
+      message,
+    );
+
+  return hasTimeWindow && hasSummaryAsk;
+}
+
 function isPaymentCoverageFollowUp(message: string, followUpIntent?: ToolFollowUpIntent): boolean {
   return followUpIntent === "coverage_check" || PAYMENT_COVERAGE_FOLLOW_UP_PATTERN.test(message);
 }
@@ -1007,13 +1020,19 @@ function resolvePaymentScanLimit(
     return MAX_PAYMENT_SCAN_MESSAGES;
   }
 
-  return Math.min(
+  const defaultScanLimit = Math.min(
     Math.max(
       emailTokenBudget.maxMessages,
       emailTokenBudget.paymentScanMessages ?? DEFAULT_PAYMENT_SCAN_MESSAGES,
     ),
     MAX_PAYMENT_SCAN_MESSAGES,
   );
+
+  if (isBroadPaymentSummaryRequest(message) && emailTokenBudget.maxMessages >= 10) {
+    return MAX_PAYMENT_SCAN_MESSAGES;
+  }
+
+  return defaultScanLimit;
 }
 
 function shouldAutoExpandPaymentScan(
@@ -2139,9 +2158,67 @@ async function refineActivePaymentContextByTopic(
   }
 
   const unreadOnly = Boolean(context.lastSearchQuery?.includes("is:unread"));
+  const contextBodyRefined = await refineRecordsWithBodyChecks(
+    accessToken,
+    context.parsedPaymentRecords ?? [],
+    topicKeywords,
+    options.emailTokenBudget.maxBodyChars,
+  );
+  const contextBodyMatches = filterRecordsByTopic(contextBodyRefined.records, topicKeywords);
+  if (contextBodyRefined.usedBodyCheck) {
+    emitToolEvent(options.onToolEvent, {
+      type: "paymentRefineUsedBodyCheck",
+      taskFamily: context.taskFamily,
+      topicKeywords,
+      candidateCount: context.lastCandidateCount ?? context.parsedPaymentRecords?.length ?? 0,
+      filteredCount: contextBodyMatches.length,
+      bodyCheckedCount: contextBodyRefined.bodyCheckedCount,
+      queryMode: "cached-context",
+    });
+  }
+
+  if (contextBodyMatches.length > 0) {
+    const nextContext: ToolTaskContext = {
+      ...context,
+      topicKeywords,
+      lastQueryMode: "topic_filtered_payment_summary",
+      refinedFromFollowUp: true,
+      parsedPaymentRecords: contextBodyMatches,
+      lastResultSummary: contextBodyMatches.map((record) => record.subject).join(" | "),
+      lastActivityAt: nowIso(),
+      expiresAt: futureIso(DEFAULT_CONTEXT_TTL_MS),
+    };
+    await setTaskContext(contextKey, nextContext);
+    emitToolEvent(options.onToolEvent, {
+      type: "paymentRefineCompleted",
+      taskFamily: context.taskFamily,
+      topicKeywords,
+      candidateCount: context.lastCandidateCount ?? contextBodyMatches.length,
+      filteredCount: contextBodyMatches.length,
+      matchedCount: contextBodyMatches.length,
+      bodyCheckedCount: contextBodyRefined.bodyCheckedCount,
+      queryMode: "cached-context",
+    });
+    return {
+      kind: "direct",
+      message: buildTopicFilteredPaymentSummaryResponse(
+        context.lastSearchQuery ?? "current-payment-context",
+        contextBodyMatches,
+        topicKeywords,
+        true,
+        {
+          candidateCount: context.lastCandidateCount,
+          scanLimit: context.lastScanLimit,
+        },
+      ),
+      source: "gmail-context",
+    };
+  }
+
+  const refinementMessage = normalizeWhitespace(`${context.canonicalGoal}\n${options.message}`);
   const searchResult = await searchTopicAwarePaymentCandidates(
     accessToken,
-    context.canonicalGoal,
+    refinementMessage,
     unreadOnly,
     topicKeywords,
     options.emailTokenBudget,
@@ -2446,6 +2523,7 @@ async function runGmailTask(
   let usedBodyCheck = false;
   let scanLimitUsed = options.emailTokenBudget.maxMessages;
   const userExpandedScan = isExpandedPaymentScanRequest(sourceMessage);
+  const broadPaymentSummaryScan = isBroadPaymentSummaryRequest(sourceMessage);
   let autoExpandedScan = false;
 
   if (taskFamily === "gmail_payment_summary" && topicKeywords.length > 0) {
@@ -2474,7 +2552,7 @@ async function runGmailTask(
       : primaryQuery;
     const shouldUseExpandedQueryLadder =
       taskFamily === "gmail_payment_summary" &&
-      isExpandedPaymentScanRequest(sourceMessage) &&
+      userExpandedScan &&
       broadPaymentQuery !== primaryQuery;
     let standardResult = shouldUseExpandedQueryLadder
       ? await fetchPaymentMessagesAcrossQueries(
@@ -2489,6 +2567,30 @@ async function runGmailTask(
           scanLimit,
           topicKeywords,
         );
+    if (
+      taskFamily === "gmail_payment_summary" &&
+      broadPaymentSummaryScan &&
+      options.emailTokenBudget.maxMessages >= 10 &&
+      !shouldUseExpandedQueryLadder &&
+      scanLimit >= 25 &&
+      broadPaymentQuery !== primaryQuery &&
+      standardResult.records.length < 5
+    ) {
+      const broadSummaryResult = await fetchPaymentMessages(
+        accessToken,
+        broadPaymentQuery,
+        scanLimit,
+        topicKeywords,
+      );
+      if (
+        broadSummaryResult.records.length > standardResult.records.length ||
+        broadSummaryResult.candidateCount > standardResult.candidateCount
+      ) {
+        standardResult = broadSummaryResult;
+        query = `${primaryQuery} || ${broadPaymentQuery}`;
+        autoExpandedScan = true;
+      }
+    }
     if (
       taskFamily === "gmail_payment_summary" &&
       !shouldUseExpandedQueryLadder &&

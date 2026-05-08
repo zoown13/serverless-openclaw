@@ -1675,6 +1675,50 @@ describe("gmail-tool", () => {
     expect(followUp?.message).not.toContain("병천순대전문점");
   });
 
+  it("uses cached generic payment records plus a limited body check for later Japan refinement", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m1" }] } }))
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "해외 온라인 결제 내역입니다.",
+          '"Travel Data" <billing@example.com>',
+          "Sat, 04 Apr 2026 17:40:51 +0900",
+          "결제금액 9215 원 카드종류 삼성카드 주문상품명 [로컬] 데이터 상품",
+          "m1",
+        ),
+      );
+
+    await maybeHandleCustomGmailRequest({
+      userId: "user-japan-refine-body-from-generic",
+      sessionKey: "session-japan-refine-body-from-generic",
+      message: "이번주 결제한 금액이 어느정도 되려나?",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    fetchMock.mockReset();
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(
+        fullBodyResponse("주문상품명 [eSIM/로컬] 일본 사이트 결제금액 9215원 삼성카드"),
+      );
+
+    const followUp = await maybeHandleCustomGmailRequest({
+      userId: "user-japan-refine-body-from-generic",
+      sessionKey: "session-japan-refine-body-from-generic",
+      message: "일본관련된 것만 가져와야지",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("/messages/m1?format=full");
+    expect(followUp?.kind).toBe("direct");
+    expect(followUp?.message).toContain("일본/여행/eSIM 관련 결제만");
+    expect(followUp?.message).toContain("확인 가능한 합계: KRW 9,215 (1건)");
+    expect(followUp?.message).not.toContain("could not confidently confirm");
+  });
+
   it("does not treat generic overseas payments as Japan-specific refinement evidence", async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
@@ -1760,6 +1804,9 @@ describe("gmail-tool", () => {
     fetchMock.mockReset();
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(
+        fullBodyResponse("병천순대전문점 총 결제 금액 35000원 결제수단 카드 간편결제"),
+      )
       .mockResolvedValueOnce(jsonResponse({ body: { messages: [] } }))
       .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m2" }] } }))
       .mockResolvedValueOnce(
@@ -1781,10 +1828,46 @@ describe("gmail-tool", () => {
     });
 
     expect(followUp?.kind).toBe("direct");
-    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("%EC%9D%BC%EB%B3%B8");
-    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("maxResults=10");
-    expect(String(fetchMock.mock.calls[2]?.[0])).toContain("maxResults=30");
+    const listCalls = fetchMock.mock.calls
+      .map((call) => String(call[0]))
+      .filter((url) => url.includes("/messages?q="));
+    expect(listCalls[0]).toContain("%EC%9D%BC%EB%B3%B8");
+    expect(listCalls[0]).toContain("maxResults=10");
+    expect(listCalls[1]).toContain("maxResults=30");
     expect(followUp?.message).toContain("마이리얼트립(일반)");
+  });
+
+  it("uses an expanded query ladder on broad first-turn weekly spending summaries", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(jsonResponse({ body: { messages: [], resultSizeEstimate: 0 } }))
+      .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m1" }], resultSizeEstimate: 8 } }))
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "[네이버페이] 결제하신 내역을 안내해드립니다.",
+          '"네이버페이" <naverpayadmin_noreply@navercorp.com>',
+          "Mon, 13 Apr 2026 03:08:14 +0000",
+          "병천순대전문점 총 결제 금액 35000원 결제수단 카드 간편결제",
+          "m1",
+        ),
+      );
+
+    const response = await maybeHandleCustomGmailRequest({
+      userId: "user-broad-first-turn",
+      sessionKey: "session-broad-first-turn",
+      message: "이번주 결제한 금액 얼마야",
+      gmailReady: true,
+      emailTokenBudget: {
+        ...EMAIL_BUDGET,
+        maxMessages: 10,
+        paymentScanMessages: 25,
+      },
+    });
+
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("maxResults=50");
+    expect(String(fetchMock.mock.calls[2]?.[0])).toContain("maxResults=50");
+    expect(response?.kind).toBe("direct");
+    expect(response?.message).toContain("병천순대전문점");
   });
 
   it("uses at most one or two limited body checks when travel evidence is ambiguous", async () => {

@@ -207,9 +207,7 @@ describe("gmail-tool", () => {
     });
 
     expect(response?.kind).toBe("direct");
-    expect(response?.message).toContain(
-      "Estimated total from visible headers/snippets: KRW 12,300",
-    );
+    expect(response?.message).toContain("확인 가능한 합계: KRW 12,300");
     expect(fetchMock).toHaveBeenCalled();
   });
 
@@ -235,9 +233,7 @@ describe("gmail-tool", () => {
     });
 
     expect(response?.kind).toBe("direct");
-    expect(response?.message).toContain(
-      "Estimated total from visible headers/snippets: KRW 7,700",
-    );
+    expect(response?.message).toContain("확인 가능한 합계: KRW 7,700");
     expect(fetchMock).toHaveBeenCalled();
   });
 
@@ -324,9 +320,9 @@ describe("gmail-tool", () => {
     expect(listCalls.some((url) => url.includes("maxResults=50"))).toBe(true);
     expect(listCalls.some((url) => url.includes("maxResults=45"))).toBe(true);
     expect(response?.kind).toBe("direct");
-    expect(response?.message).toContain("automatically widened the headers/snippets scan");
-    expect(response?.message).toContain("inspected 6 candidate message(s)");
-    expect(response?.message).toContain("the total above uses all parsed records from the scan");
+    expect(response?.message).toContain("스캔 범위를 자동으로 넓혔습니다");
+    expect(response?.message).toContain("후보 6건을 확인");
+    expect(response?.message).toContain("합계는 스캔에서 결제로 파악한 6건 전체 기준");
   });
 
   it("treats natural missing-coverage follow-ups as expanded payment reruns", async () => {
@@ -423,11 +419,9 @@ describe("gmail-tool", () => {
     });
 
     expect(response?.kind).toBe("direct");
-    expect(response?.message).toContain(
-      "Estimated total from visible headers/snippets: KRW 12,300",
-    );
-    expect(response?.message).toContain("Observed card issuers: 삼성카드.");
-    expect(response?.message).toContain("Observed merchants: 스타벅스.");
+    expect(response?.message).toContain("확인 가능한 합계: KRW 12,300");
+    expect(response?.message).toContain("확인된 카드사: 삼성카드.");
+    expect(response?.message).toContain("확인된 결제처: 스타벅스.");
   });
 
   it("cleans merchant names before rendering payment summaries", async () => {
@@ -452,7 +446,7 @@ describe("gmail-tool", () => {
     });
 
     expect(response?.kind).toBe("direct");
-    expect(response?.message).toContain("Observed merchants: 주식회사 굿플레이스.");
+    expect(response?.message).toContain("확인된 결제처: 주식회사 굿플레이스.");
     expect(response?.message).toContain("Snippet: 결제정보 가맹점명 주식회사 굿플레이스 총 결제 금액 4460원");
   });
 
@@ -478,9 +472,9 @@ describe("gmail-tool", () => {
     });
 
     expect(response?.kind).toBe("direct");
-    expect(response?.message).toContain('query "after:2026/03/01 before:2026/04/01 카드 명세서');
+    expect(response?.message).toContain('"after:2026/03/01 before:2026/04/01 카드 명세서');
     expect(response?.message).toContain("-약관");
-    expect(response?.message).toContain("I did not open full bodies or attachments.");
+    expect(response?.message).toContain("본문과 첨부파일은 열지 않았습니다.");
     const decodedSearchUrl = decodeURIComponent(String(fetchMock.mock.calls[1]?.[0]));
     expect(decodedSearchUrl).toContain("after:2026/03/01 before:2026/04/01 카드 명세서");
     expect(decodedSearchUrl).toContain("-약관");
@@ -1270,8 +1264,8 @@ describe("gmail-tool", () => {
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain("maxResults=50");
     expect(String(fetchMock.mock.calls[2]?.[0])).toContain("maxResults=45");
     expect(followUp?.kind).toBe("direct");
-    expect(followUp?.message).toContain("inspected 6 candidate message(s)");
-    expect(followUp?.message).toContain("the total above uses all parsed records from the scan");
+    expect(followUp?.message).toContain("후보 6건을 확인");
+    expect(followUp?.message).toContain("합계는 스캔에서 결제로 파악한 6건 전체 기준");
   });
 
   it("uses the expanded hard cap on the first payment request when the user explicitly asks for it", async () => {
@@ -1321,9 +1315,9 @@ describe("gmail-tool", () => {
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain("maxResults=50");
     expect(String(fetchMock.mock.calls[2]?.[0])).toContain("maxResults=45");
     expect(response?.kind).toBe("direct");
-    expect(response?.message).toContain("inspected 6 candidate message(s)");
-    expect(response?.message).toContain("expanded headers/snippets scan mode capped at 50");
-    expect(response?.message).toContain("the total above uses all parsed records from the scan");
+    expect(response?.message).toContain("후보 6건을 확인");
+    expect(response?.message).toContain("최대 50건까지 확인하는 모드");
+    expect(response?.message).toContain("합계는 스캔에서 결제로 파악한 6건 전체 기준");
   });
 
   it("builds a topic-aware travel payment query and excludes policy notices", async () => {

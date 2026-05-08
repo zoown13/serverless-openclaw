@@ -1676,40 +1676,40 @@ function buildPaymentSummaryResponse(
   const shownCount = Math.min(messages.length, displayLimit);
 
   const summaryLines = [
-    `I scanned Gmail headers/snippets with query "${query}" and inspected ${messages.length} candidate message(s).`,
-    "I did not open full bodies or attachments.",
+    `Gmail 헤더/스니펫 기준으로 "${query}" 검색을 실행했고 후보 ${messages.length}건을 확인했습니다.`,
+    "본문과 첨부파일은 열지 않았습니다.",
   ];
   if (typeof resultEstimate === "number" && resultEstimate > messages.length) {
     summaryLines.push(
-      `Gmail estimates about ${resultEstimate} matching message(s); this response aggregates the first ${messages.length} scanned candidate(s).`,
+      `Gmail 검색 결과는 약 ${resultEstimate}건으로 추정됩니다. 이번 답변은 먼저 스캔한 후보 ${messages.length}건 기준입니다.`,
     );
   }
   if (expandedScanLimit !== undefined) {
     const reason =
       expandedScanReason === "auto-cap-suspected"
-        ? "The first pass looked capped, so I automatically widened the headers/snippets scan"
-        : "You asked for a wider scan, so I used the expanded headers/snippets scan mode";
-    summaryLines.push(`${reason} capped at ${expandedScanLimit} candidate message(s).`);
+        ? "첫 검색 결과가 제한에 걸린 것으로 보여 헤더/스니펫 스캔 범위를 자동으로 넓혔습니다"
+        : "요청에 따라 헤더/스니펫 스캔 범위를 넓혔습니다";
+    summaryLines.push(`${reason}. 최대 ${expandedScanLimit}건까지 확인하는 모드입니다.`);
   }
 
   if (records.length > 0) {
     summaryLines.push(
-      `Estimated total from visible headers/snippets: ${formatCurrency(total)} across ${records.length} matched payment message(s). This is a rough headers-first estimate only.`,
+      `확인 가능한 합계: ${formatCurrency(total)} (${records.length}건). 헤더/스니펫 기준 추정치입니다.`,
     );
     if (messages.length > shownCount) {
       summaryLines.push(
-        `Showing ${shownCount} representative header/snippet item(s) below; the total above uses all parsed records from the scan.`,
+        `아래에는 대표 ${shownCount}건만 보여드리지만, 합계는 스캔에서 결제로 파악한 ${records.length}건 전체 기준입니다.`,
       );
     }
     if (issuers.length > 0) {
-      summaryLines.push(`Observed card issuers: ${issuers.join(", ")}.`);
+      summaryLines.push(`확인된 카드사: ${issuers.join(", ")}.`);
     }
     if (merchants.length > 0) {
-      summaryLines.push(`Observed merchants: ${merchants.slice(0, 4).join(", ")}.`);
+      summaryLines.push(`확인된 결제처: ${merchants.slice(0, 4).join(", ")}.`);
     }
   } else {
     summaryLines.push(
-      "I found candidate messages but could not extract reliable payment amounts from the visible headers/snippets alone.",
+      "후보 메일은 찾았지만, 헤더/스니펫만으로 신뢰할 만한 결제 금액을 추출하지 못했습니다.",
     );
   }
 
@@ -2372,7 +2372,7 @@ function buildClarificationPrompt(): string {
 }
 
 function buildGmailUnavailableMessage(): string {
-  return "Gmail is not connected in this runtime yet. I need a valid exported refresh token before I can inspect your inbox.";
+  return "이 런타임에서는 아직 Gmail 연결 정보를 사용할 수 없습니다. 받은편지함을 확인하려면 유효한 Gmail OAuth refresh token이 먼저 필요합니다.";
 }
 
 async function runGmailTask(

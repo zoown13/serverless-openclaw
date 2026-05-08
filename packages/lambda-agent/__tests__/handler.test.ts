@@ -8,6 +8,7 @@ const {
   mockUpload,
   mockResolveSecrets,
   mockRunAgent,
+  mockRunDirectBedrockChat,
   mockAcquire,
   mockRelease,
   mockPublishLambdaDeliveryMetric,
@@ -54,6 +55,7 @@ const {
     ["/serverless-openclaw/secrets/anthropic-api-key", "test-api-key"],
   ])),
   mockRunAgent: vi.fn(),
+  mockRunDirectBedrockChat: vi.fn(),
   mockAcquire: vi.fn().mockResolvedValue(true),
   mockRelease: vi.fn().mockResolvedValue(undefined),
   mockPublishLambdaDeliveryMetric: vi.fn().mockResolvedValue(undefined),
@@ -82,6 +84,10 @@ vi.mock("../src/agent-runner.js", () => ({
   runAgent: (...args: unknown[]) => mockRunAgent(...args),
 }));
 
+vi.mock("../src/direct-bedrock-chat.js", () => ({
+  runDirectBedrockChat: (...args: unknown[]) => mockRunDirectBedrockChat(...args),
+}));
+
 vi.mock("../src/session-lock.js", () => ({
   SessionLock: vi.fn().mockImplementation(() => ({
     acquire: mockAcquire,
@@ -98,6 +104,7 @@ describe("handler", () => {
   let originalProvider: string | undefined;
   let originalAnthropicPath: string | undefined;
   let originalTelegramTokenPath: string | undefined;
+  let originalDirectBedrockChat: string | undefined;
   let infoSpy: ReturnType<typeof vi.spyOn>;
   let errorSpy: ReturnType<typeof vi.spyOn>;
 
@@ -108,6 +115,7 @@ describe("handler", () => {
     mockUpload.mockClear();
     mockResolveSecrets.mockClear();
     mockRunAgent.mockClear();
+    mockRunDirectBedrockChat.mockClear();
     mockAcquire.mockClear();
     mockRelease.mockClear();
     mockPublishLambdaDeliveryMetric.mockClear();
@@ -125,14 +133,20 @@ describe("handler", () => {
     originalProvider = process.env.AI_PROVIDER;
     originalAnthropicPath = process.env.SSM_ANTHROPIC_API_KEY;
     originalTelegramTokenPath = process.env.SSM_TELEGRAM_BOT_TOKEN;
+    originalDirectBedrockChat = process.env.LAMBDA_DIRECT_BEDROCK_CHAT;
     process.env.SESSION_BUCKET = "test-session-bucket";
     process.env.AI_PROVIDER = "anthropic";
     delete process.env.SSM_ANTHROPIC_API_KEY;
     delete process.env.SSM_TELEGRAM_BOT_TOKEN;
+    delete process.env.LAMBDA_DIRECT_BEDROCK_CHAT;
 
     mockRunAgent.mockResolvedValue({
       payloads: [{ text: "Hello from agent!" }],
       meta: { durationMs: 1000, agentMeta: { provider: "anthropic", model: "claude-sonnet-4-20250514" } },
+    });
+    mockRunDirectBedrockChat.mockResolvedValue({
+      text: "리눅스에서 파일을 찾을 때는 find 명령어를 쓰면 됩니다.",
+      usage: { inputTokens: 10, outputTokens: 20 },
     });
   });
 
@@ -162,6 +176,12 @@ describe("handler", () => {
       process.env.SSM_TELEGRAM_BOT_TOKEN = originalTelegramTokenPath;
     } else {
       delete process.env.SSM_TELEGRAM_BOT_TOKEN;
+    }
+
+    if (originalDirectBedrockChat !== undefined) {
+      process.env.LAMBDA_DIRECT_BEDROCK_CHAT = originalDirectBedrockChat;
+    } else {
+      delete process.env.LAMBDA_DIRECT_BEDROCK_CHAT;
     }
   });
 
@@ -600,6 +620,144 @@ describe("handler", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(String(fetchMock.mock.calls[0]?.[1]?.body)).toContain("find 명령어");
     expect(String(fetchMock.mock.calls[0]?.[1]?.body)).not.toContain("✅ Done");
+  });
+
+  it("should use direct Bedrock chat for stateless Telegram how-to questions when enabled", async () => {
+    process.env.AI_PROVIDER = "bedrock";
+    process.env.LAMBDA_DIRECT_BEDROCK_CHAT = "true";
+    process.env.SSM_TELEGRAM_BOT_TOKEN = "/serverless-openclaw/secrets/telegram-bot-token";
+    mockResolveSecrets.mockResolvedValue(
+      new Map([
+        ["/serverless-openclaw/secrets/telegram-bot-token", "telegram-token"],
+      ]),
+    );
+    mockInitConfig.mockResolvedValueOnce({
+      configDir: "/tmp/.openclaw",
+      sessionsDir: "/tmp/.openclaw/agents/default/sessions",
+      config: { gateway: { mode: "local" } },
+      runtimeConfig: {
+        provider: "bedrock",
+        openclawProvider: "amazon-bedrock",
+        openclawApi: "bedrock-converse-stream",
+        openclawAuth: "aws-sdk",
+        defaultModel: "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+        capability: "chat-only",
+        sessionNamespace: "bedrock-chat",
+        readiness: {
+          chatReady: true,
+          toolRuntimeReady: false,
+          gmailReady: true,
+        },
+        emailTokenBudget: {
+          mode: "headers-first",
+          maxMessages: 5,
+          paymentScanMessages: 25,
+          maxSnippetChars: 240,
+          maxBodyChars: 1600,
+          requireExplicitBodyAccess: true,
+        },
+        secretContract: {
+          requiresAnthropicApiKey: false,
+          supportsOpenclawAuthProfiles: true,
+          supportsOpenclawOauth: true,
+          supportsGoogleOauthClient: true,
+        },
+      },
+      gmailReady: true,
+      toolRuntimeReady: false,
+      sessionNamespace: "bedrock-chat",
+    });
+
+    const handler = await loadHandler();
+    const result = await handler(createEvent({
+      channel: "telegram",
+      connectionId: undefined,
+      callbackUrl: undefined,
+      telegramChatId: "8585874705",
+      message: "리눅스에서 파일 찾는 명령어 알려줘",
+    })) as LambdaAgentResponse;
+
+    expect(result.success).toBe(true);
+    expect(result.payloads?.[0]?.text).toContain("find 명령어");
+    expect(mockRunDirectBedrockChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: "리눅스에서 파일 찾는 명령어 알려줘",
+        model: "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+      }),
+    );
+    expect(mockRunAgent).not.toHaveBeenCalled();
+    expect(mockDownload).not.toHaveBeenCalled();
+    expect(mockUpload).not.toHaveBeenCalled();
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"event\":\"lambda.direct_chat.completed\""),
+    );
+  });
+
+  it("should fallback to OpenClaw when direct Bedrock chat fails", async () => {
+    process.env.AI_PROVIDER = "bedrock";
+    process.env.LAMBDA_DIRECT_BEDROCK_CHAT = "true";
+    process.env.SSM_TELEGRAM_BOT_TOKEN = "/serverless-openclaw/secrets/telegram-bot-token";
+    mockResolveSecrets.mockResolvedValue(
+      new Map([
+        ["/serverless-openclaw/secrets/telegram-bot-token", "telegram-token"],
+      ]),
+    );
+    mockRunDirectBedrockChat.mockRejectedValueOnce(new Error("Bedrock throttled"));
+    mockInitConfig.mockResolvedValueOnce({
+      configDir: "/tmp/.openclaw",
+      sessionsDir: "/tmp/.openclaw/agents/default/sessions",
+      config: { gateway: { mode: "local" } },
+      runtimeConfig: {
+        provider: "bedrock",
+        openclawProvider: "amazon-bedrock",
+        openclawApi: "bedrock-converse-stream",
+        openclawAuth: "aws-sdk",
+        defaultModel: "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+        capability: "chat-only",
+        sessionNamespace: "bedrock-chat",
+        readiness: {
+          chatReady: true,
+          toolRuntimeReady: false,
+          gmailReady: true,
+        },
+        emailTokenBudget: {
+          mode: "headers-first",
+          maxMessages: 5,
+          paymentScanMessages: 25,
+          maxSnippetChars: 240,
+          maxBodyChars: 1600,
+          requireExplicitBodyAccess: true,
+        },
+        secretContract: {
+          requiresAnthropicApiKey: false,
+          supportsOpenclawAuthProfiles: true,
+          supportsOpenclawOauth: true,
+          supportsGoogleOauthClient: true,
+        },
+      },
+      gmailReady: true,
+      toolRuntimeReady: false,
+      sessionNamespace: "bedrock-chat",
+    });
+
+    const handler = await loadHandler();
+    const result = await handler(createEvent({
+      channel: "telegram",
+      connectionId: undefined,
+      callbackUrl: undefined,
+      telegramChatId: "8585874705",
+      message: "리눅스에서 파일 찾는 명령어 알려줘",
+    })) as LambdaAgentResponse;
+
+    expect(result.success).toBe(true);
+    expect(mockRunAgent).toHaveBeenCalled();
+    expect(mockDownload).toHaveBeenCalledWith(
+      "user-123",
+      "bedrock-chat:telegram:session-456",
+    );
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"event\":\"lambda.direct_chat.fallback\""),
+    );
   });
 
   it("should log Telegram delivery failures for non-ok responses", async () => {

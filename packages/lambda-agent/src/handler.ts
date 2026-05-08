@@ -13,6 +13,7 @@ import { SessionSync } from "./session-sync.js";
 import { SessionLock } from "./session-lock.js";
 import { resolveSecrets } from "./secrets.js";
 import { runAgent } from "./agent-runner.js";
+import { runDirectBedrockChat } from "./direct-bedrock-chat.js";
 import { publishLambdaDeliveryMetric } from "./metrics.js";
 import {
   ApiGatewayManagementApiClient,
@@ -321,6 +322,54 @@ function isToolRequest(message: string): boolean {
   ].some((pattern) => pattern.test(message));
 }
 
+function isDirectBedrockChatEnabled(): boolean {
+  return process.env.LAMBDA_DIRECT_BEDROCK_CHAT === "true";
+}
+
+function parseDirectChatMaxTokens(): number {
+  const parsed = Number.parseInt(process.env.LAMBDA_DIRECT_CHAT_MAX_TOKENS ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 512;
+}
+
+function isStatelessChatQuestion(message: string): boolean {
+  const normalized = message.trim();
+  if (!normalized || normalized.length > 500 || isToolRequest(normalized)) {
+    return false;
+  }
+
+  return [
+    /(?:리눅스|linux|파이썬|python|자바스크립트|javascript|타입스크립트|typescript|git|깃|docker|도커|kubernetes|쿠버네티스|aws|lambda|람다|명령어|코드|개념|뜻|의미|차이|예시|방법|문법|영어).*(?:알려줘|설명해|가르쳐|어떻게|뭐야|무엇|작성해|번역해)/i,
+    /(?:알려줘|설명해|가르쳐|어떻게|뭐야|무엇|작성해|번역해).*(?:리눅스|linux|파이썬|python|자바스크립트|javascript|타입스크립트|typescript|git|깃|docker|도커|kubernetes|쿠버네티스|aws|lambda|람다|명령어|코드|개념|뜻|의미|차이|예시|방법|문법|영어)/i,
+    /^(?:what|how|why|explain|translate)\b/i,
+  ].some((pattern) => pattern.test(normalized));
+}
+
+function shouldUseDirectBedrockChat(
+  event: LambdaAgentEvent,
+  runtimeConfig: ResolvedRuntimeConfig,
+): boolean {
+  return (
+    isDirectBedrockChatEnabled() &&
+    runtimeConfig.provider === "bedrock" &&
+    runtimeConfig.capability === "chat-only" &&
+    isStatelessChatQuestion(event.message)
+  );
+}
+
+function buildDirectChatSystemPrompt(
+  event: LambdaAgentEvent,
+  runtimeConfig: ResolvedRuntimeConfig,
+): string {
+  return [
+    "You are Serverless OpenClaw's fast chat runtime.",
+    "Answer in the user's language with concise, useful plain text.",
+    "For straightforward how-to, concept, command, translation, or explanation questions, answer directly without mentioning routing internals.",
+    "Do not claim Gmail, payment history, or private tools are impossible when AssistantRuntimeContext says they are available through the delegated tool runtime.",
+    buildAssistantContextPrompt(event),
+    buildEmailTokenBudgetPrompt(runtimeConfig),
+  ].filter((item): item is string => typeof item === "string" && item.length > 0).join(" ");
+}
+
 function buildToolUnavailableMessage(runtimeConfig: ResolvedRuntimeConfig): string {
   if (!runtimeConfig.readiness.gmailReady) {
     return "Gmail is not connected in this serverless runtime yet. Chat is working, but email access needs a valid openclaw-oauth-json token secret. The OAuth client JSON alone is not enough.";
@@ -590,6 +639,7 @@ export async function handler(
       channel: event.channel,
     });
     await pushIdleStatus(canPush, traceId, event.callbackUrl, event.connectionId);
+    await lock.release();
 
     return {
       success: true,
@@ -598,6 +648,58 @@ export async function handler(
       provider: runtimeConfig.openclawProvider,
       model: event.model ?? runtimeConfig.defaultModel,
     };
+  }
+
+  if (shouldUseDirectBedrockChat(event, runtimeConfig)) {
+    const directStartedAt = Date.now();
+    logLambdaEvent("lambda.direct_chat.started", {
+      ...requestLogPayload,
+      maxTokens: parseDirectChatMaxTokens(),
+    });
+    try {
+      const directResult = await runDirectBedrockChat({
+        message: event.message,
+        model: event.model ?? runtimeConfig.defaultModel,
+        systemPrompt: buildDirectChatSystemPrompt(event, runtimeConfig),
+        maxTokens: parseDirectChatMaxTokens(),
+        temperature: 0.2,
+      });
+      const payloads = [{ text: directResult.text }];
+
+      await pushPayloads(payloads, {
+        canPush,
+        callbackUrl: event.callbackUrl,
+        connectionId: event.connectionId,
+        isTelegram,
+        telegramBotToken,
+        telegramChatId,
+        traceId,
+        channel: event.channel,
+      });
+      await pushIdleStatus(canPush, traceId, event.callbackUrl, event.connectionId);
+      await lock.release();
+
+      logLambdaEvent("lambda.direct_chat.completed", {
+        ...requestLogPayload,
+        durationMs: Date.now() - directStartedAt,
+        inputTokens: directResult.usage?.inputTokens,
+        outputTokens: directResult.usage?.outputTokens,
+      });
+
+      return {
+        success: true,
+        payloads,
+        durationMs: Date.now() - startTime,
+        provider: runtimeConfig.openclawProvider,
+        model: event.model ?? runtimeConfig.defaultModel,
+      };
+    } catch (err: unknown) {
+      logLambdaEvent("lambda.direct_chat.fallback", {
+        ...requestLogPayload,
+        durationMs: Date.now() - directStartedAt,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   const sync = new SessionSync(bucket, "/tmp/.openclaw");

@@ -1369,6 +1369,63 @@ describe("gmail-tool", () => {
     expect(response?.message).not.toContain("표준 전자금융거래 기본약관");
   });
 
+  it("automatically widens capped topic-aware travel payment scans", async () => {
+    const firstPassIds = Array.from({ length: 10 }, (_, index) => ({ id: `m${index + 1}` }));
+    const expandedIds = Array.from({ length: 12 }, (_, index) => ({ id: `m${index + 1}` }));
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(
+        jsonResponse({ body: { messages: firstPassIds, resultSizeEstimate: 18 } }),
+      );
+
+    for (const [index, item] of firstPassIds.entries()) {
+      fetchMock.mockResolvedValueOnce(
+        metadataResponse(
+          "마이리얼트립(일반)의 결제 내역입니다.",
+          '"NHN KCP 발신전용" <pgadmcust@kcp.co.kr>',
+          "Sat, 04 Apr 2026 17:40:51 +0900",
+          `결제금액 ${(9000 + index).toLocaleString("ko-KR")}원 카드종류 삼성카드 주문상품명 [eSIM/로컬] 일본 사이트`,
+          item.id,
+        ),
+      );
+    }
+
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ body: { messages: expandedIds, resultSizeEstimate: 18 } }),
+    );
+
+    for (const [index, item] of expandedIds.entries()) {
+      fetchMock.mockResolvedValueOnce(
+        metadataResponse(
+          "마이리얼트립(일반)의 결제 내역입니다.",
+          '"NHN KCP 발신전용" <pgadmcust@kcp.co.kr>',
+          "Sat, 04 Apr 2026 17:40:51 +0900",
+          `결제금액 ${(9000 + index).toLocaleString("ko-KR")}원 카드종류 삼성카드 주문상품명 [eSIM/로컬] 일본 사이트`,
+          item.id,
+        ),
+      );
+    }
+
+    const response = await maybeHandleCustomGmailRequest({
+      userId: "user-topic-auto-expanded",
+      sessionKey: "session-topic-auto-expanded",
+      message: "일본 여행가는데 결제한 내역들 알려줘",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    const listCalls = fetchMock.mock.calls
+      .map((call) => String(call[0]))
+      .filter((url) => url.includes("/messages?q="));
+    expect(listCalls.some((url) => url.includes("maxResults=10"))).toBe(true);
+    expect(listCalls.some((url) => url.includes("maxResults=30"))).toBe(true);
+    expect(response?.kind).toBe("direct");
+    expect(response?.message).toContain("최대 30건까지 확인");
+    expect(response?.message).toContain("실제로 12건을 스캔");
+    expect(response?.message).toContain("합계는 찾은 12건 전체 기준");
+  });
+
   it("filters out low-confidence daily-life merchants from travel payment summaries", async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))

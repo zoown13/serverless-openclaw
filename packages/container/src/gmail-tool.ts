@@ -1036,6 +1036,26 @@ function shouldAutoExpandPaymentScan(
   return resultEstimateExceedsScan || hitScanLimit;
 }
 
+function shouldAutoExpandTopicPaymentScan(
+  result: {
+    candidateCount: number;
+    resultEstimate?: number;
+    records: ParsedPaymentRecord[];
+  },
+  scanLimit: number,
+): boolean {
+  if (scanLimit >= EXPANDED_TOPIC_CANDIDATE_MESSAGES) {
+    return false;
+  }
+
+  const resultEstimateExceedsScan =
+    typeof result.resultEstimate === "number" && result.resultEstimate > result.candidateCount;
+  const hitScanLimit = result.candidateCount >= scanLimit;
+  const hasTopicPaymentMatch = result.records.length > 0;
+
+  return hasTopicPaymentMatch && (resultEstimateExceedsScan || hitScanLimit);
+}
+
 function buildPaymentRerunMessage(canonicalGoal: string, followUpMessage: string): string {
   return isExpandedPaymentScanRequest(followUpMessage)
     ? `${canonicalGoal}\n${followUpMessage}`
@@ -1712,9 +1732,14 @@ function buildTopicFilteredPaymentSummaryResponse(
   records: ParsedPaymentRecord[],
   topicKeywords: string[],
   usedBodyCheck: boolean,
+  coverage?: {
+    candidateCount?: number;
+    scanLimit?: number;
+  },
 ): string {
   const total = records.reduce((sum, record) => sum + (record.amount ?? 0), 0);
   const topicLabel = formatDisplayTopicLabel(topicKeywords);
+  const shownCount = Math.min(records.length, 5);
   const lines = records
     .slice()
     .sort((a, b) => (b.amount ?? 0) - (a.amount ?? 0))
@@ -1741,8 +1766,13 @@ function buildTopicFilteredPaymentSummaryResponse(
     usedBodyCheck
       ? "스니펫만으로 애매한 메일은 최대 2건까지만 짧게 본문 확인했습니다."
       : "본문/첨부는 열지 않고 헤더와 스니펫 기준으로만 확인했습니다.",
+    coverage?.scanLimit
+      ? `헤더/스니펫 후보는 최대 ${coverage.scanLimit}건까지 확인했고, 실제로 ${coverage.candidateCount ?? records.length}건을 스캔했습니다. 그중 ${topicLabel} 관련 결제 ${records.length}건을 찾았습니다.`
+      : undefined,
     `확인 가능한 합계: ${formatCurrency(total)} (${records.length}건)`,
-    records.length > 5 ? "아래에는 금액이 큰 순서로 상위 5건만 먼저 보여드립니다." : undefined,
+    records.length > shownCount
+      ? `아래에는 금액이 큰 순서로 상위 ${shownCount}건만 먼저 보여드립니다. 합계는 찾은 ${records.length}건 전체 기준입니다.`
+      : undefined,
     "",
     "결제 내역:",
     ...lines,
@@ -1942,6 +1972,46 @@ async function searchTopicAwarePaymentCandidates(
     usedBodyCheck = bodyRefined.usedBodyCheck;
   }
 
+  if (
+    matched.length > 0 &&
+    shouldAutoExpandTopicPaymentScan(
+      {
+        candidateCount,
+        resultEstimate,
+        records: matched,
+      },
+      initialCandidateLimit,
+    )
+  ) {
+    scanLimitUsed = expandedCandidateLimit;
+    const expandedNarrowResult = await fetchPaymentMessages(
+      accessToken,
+      narrowedQuery,
+      expandedCandidateLimit,
+      topicKeywords,
+    );
+    candidateCount = expandedNarrowResult.candidateCount;
+    resultEstimate = expandedNarrowResult.resultEstimate;
+    messages = expandedNarrowResult.messages;
+    records = expandedNarrowResult.records;
+    matched = filterRecordsByTopic(records, topicKeywords);
+    filteredCount = matched.length;
+
+    if (matched.length === 0 && records.length > 0) {
+      const expandedBodyRefined = await refineRecordsWithBodyChecks(
+        accessToken,
+        records,
+        topicKeywords,
+        emailTokenBudget.maxBodyChars,
+      );
+      records = expandedBodyRefined.records;
+      matched = filterRecordsByTopic(records, topicKeywords);
+      filteredCount = matched.length;
+      bodyCheckedCount += expandedBodyRefined.bodyCheckedCount;
+      usedBodyCheck = usedBodyCheck || expandedBodyRefined.usedBodyCheck;
+    }
+  }
+
   if (matched.length === 0) {
     const broadQuery = buildPaymentSearchQuery(message, unreadOnly, [], {
       precisePayment: true,
@@ -2041,6 +2111,10 @@ async function refineActivePaymentContextByTopic(
         currentMatches,
         topicKeywords,
         false,
+        {
+          candidateCount: context.lastCandidateCount,
+          scanLimit: context.lastScanLimit,
+        },
       ),
       source: "gmail-context",
     };
@@ -2137,6 +2211,10 @@ async function refineActivePaymentContextByTopic(
         searchResult.records,
         topicKeywords,
         searchResult.usedBodyCheck,
+        {
+          candidateCount: searchResult.candidateCount,
+          scanLimit: searchResult.scanLimit,
+        },
       ),
       source: "gmail-context",
     };
@@ -2543,6 +2621,10 @@ async function runGmailTask(
               paymentRecords,
               topicKeywords,
               usedBodyCheck,
+              {
+                candidateCount,
+                scanLimit: scanLimitUsed,
+              },
             )
           : buildPaymentSummaryResponse(
               query,

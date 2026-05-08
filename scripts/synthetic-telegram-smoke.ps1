@@ -7,7 +7,7 @@ param(
   [long]$ChatId,
   [long]$TelegramId,
   [string]$UserId,
-  [ValidateSet("PaymentFollowUp", "PaymentCoverageFollowUp", "PaymentExpandedFirstTurn", "PaymentHistoryCapability", "PaymentCapabilityThenChatHandoff", "PaymentDateRange", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff")]
+  [ValidateSet("PaymentFollowUp", "PaymentCoverageFollowUp", "PaymentCoverageThenIssuerBreakdown", "PaymentExpandedFirstTurn", "PaymentHistoryCapability", "PaymentCapabilityThenChatHandoff", "PaymentDateRange", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff")]
   [string]$Scenario = "PaymentFollowUp",
   [int]$PauseSeconds = 10,
   [int]$BridgeSignalTimeoutSeconds = 180,
@@ -194,6 +194,13 @@ function Get-ScenarioMessages {
         "합계만",
         "더 있을텐데",
         "5개 밖에 없어?"
+      )
+    }
+    "PaymentCoverageThenIssuerBreakdown" {
+      return @(
+        "이번주 결제한 금액 얼마야",
+        "더 있을텐데",
+        "카드사별로"
       )
     }
     "PaymentExpandedFirstTurn" {
@@ -434,6 +441,8 @@ function Wait-BridgeSignals {
   )
 
   $requiresPaymentCoverageSignals = $SelectedScenario -eq "PaymentCoverageFollowUp"
+  $requiresCoverageRerunSignals = $SelectedScenario -in @("PaymentCoverageFollowUp", "PaymentCoverageThenIssuerBreakdown")
+  $requiresIssuerBreakdownSignals = $SelectedScenario -in @("PaymentCoverageThenIssuerBreakdown", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff")
   $requiresPaymentCapabilitySignals = $SelectedScenario -in @("PaymentHistoryCapability", "PaymentCapabilityThenChatHandoff")
   $requiresTravelSignals = $SelectedScenario -in @("TravelPaymentFollowUp", "TravelPaymentThenChatHandoff")
   $requiresChatHandoff = $SelectedScenario -in @("TravelPaymentThenChatHandoff", "PaymentCapabilityThenChatHandoff")
@@ -447,14 +456,24 @@ function Wait-BridgeSignals {
 
   if ($requiresPaymentCoverageSignals) {
     $requiredSignals += @(
-      '"followUpIntent":"amount_summary"',
+      '"followUpIntent":"amount_summary"'
+    )
+  }
+
+  if ($requiresCoverageRerunSignals) {
+    $requiredSignals += @(
       '"action":"rerun_current_task"'
     )
   }
 
   if ($requiresTravelSignals) {
     $requiredSignals += @(
-      "bridge.tool.payment.refine.completed",
+      "bridge.tool.payment.refine.completed"
+    )
+  }
+
+  if ($requiresIssuerBreakdownSignals) {
+    $requiredSignals += @(
       '"followUpIntent":"issuer_breakdown"'
     )
   }
@@ -477,7 +496,12 @@ function Wait-BridgeSignals {
     "Failed to persist durable tool context",
     "missing scope: operator.write",
     "TaskDefinition is inactive",
-    "CIAO PROBING"
+    "CIAO PROBING",
+    "AgentCore runtime failed to process the request",
+    "An error occurred",
+    "Cannot read properties",
+    "TypeError",
+    "ReferenceError"
   )
 
   $deadline = [DateTimeOffset]::UtcNow.AddSeconds($TimeoutSeconds)

@@ -15,7 +15,8 @@ const DATE_REFINE_PATTERN =
 const ISSUER_BREAKDOWN_PATTERN = /(카드사|issuer)/i;
 const MERCHANT_BREAKDOWN_PATTERN = /(결제처|가맹점|merchant)/i;
 const AMOUNT_SUMMARY_PATTERN = /(합계|총액|sum|total|얼마)/i;
-const COVERAGE_CHECK_PATTERN = /(더\s*(있|찾|보)|밖에\s*없|몇\s*개|개수|건수|limit)/i;
+const COVERAGE_CHECK_PATTERN =
+  /(더\s*(있|찾|보)|밖에\s*없|몇\s*개|개수|건수|빠진\s*(?:거|것)?\s*없|누락|전부\s*다시|전체\s*다시|다시\s*전부|limit)/i;
 const CANCEL_PATTERN = /^(?:취소|그만|끝|됐어|done|cancel|stop)(?:[.!?])?$/i;
 const EXPLICIT_GMAIL_PATTERN = /(gmail|google mail|inbox|mailbox|이메일|메일함|메일에서|지메일)/i;
 const CAPABILITY_QUERY_PATTERN =

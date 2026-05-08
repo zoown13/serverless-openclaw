@@ -29,7 +29,7 @@ import type { SlmBackendKind, ToolFollowUpIntent } from "./slm/index.js";
 const DEFAULT_CONTEXT_TTL_MS = 5 * 60 * 1000;
 const TOOL_CONTEXT_SETTING_KEY = "tool-task-context";
 const SUMMARY_FOLLOW_UP_PATTERN =
-  /(얼마|합계|총액|정리|요약|카드사|결제처|가맹점|merchant|issuer|sum|summary|breakdown|table|표|테이블|이번주 것만 다시|이번 주 것만 다시|다시|계속|그거|그걸|그걸로|이거|그럼|부탁|더\s*있|더\s*찾|더\s*보|밖에\s*없|몇\s*개|개수|건수|limit)/i;
+  /(얼마|합계|총액|정리|요약|카드사|결제처|가맹점|merchant|issuer|sum|summary|breakdown|table|표|테이블|이번주 것만 다시|이번 주 것만 다시|다시|계속|그거|그걸|그걸로|이거|그럼|부탁|더\s*있|더\s*찾|더\s*보|밖에\s*없|몇\s*개|개수|건수|빠진|누락|전부\s*다시|전체\s*다시|다시\s*전부|limit)/i;
 const PAYMENT_HINT_PATTERN =
   /(결제|카드값|카드 값|명세서|청구서|영수증|지출|지출액|사용금액|사용 금액|사용한\s*돈|쓴\s*돈|소비|비용|이번\s*주.*얼마|이번주.*얼마|이번\s*달.*얼마|이번달.*얼마|최근.*얼마|receipt|statement|invoice|spent|spend|payment|total|amount|얼마 썼|얼마 쓴)/i;
 const EXPLICIT_GMAIL_PATTERN =
@@ -43,9 +43,9 @@ const ATTACHMENT_PATTERN = /(첨부|attachment|pdf|파일|download)/i;
 const BODY_REQUEST_PATTERN =
   /(자세히|본문|내용 보여|본문 보여|열어줘|open|full body|details?)/i;
 const EXPANDED_PAYMENT_SCAN_PATTERN =
-  /(전체|전부|모두|제한\s*(?:풀|해제|없이)|한도\s*(?:풀|해제|없이)|더\s*넓게|더\s*많이|가능한\s*많이|최대한|끝까지|all|everything|no\s*limit|full\s*scan)/i;
+  /(전체|전부|모두|제한\s*(?:풀|해제|없이)|한도\s*(?:풀|해제|없이)|더\s*넓게|더\s*많이|가능한\s*많이|최대한|끝까지|빠짐\s*없이|누락\s*없이|전부\s*다시|전체\s*다시|all|everything|no\s*limit|full\s*scan)/i;
 const PAYMENT_COVERAGE_FOLLOW_UP_PATTERN =
-  /(?:더\s*(?:있|찾|보)|밖에\s*없|몇\s*개|개수|건수|limit|coverage)/i;
+  /(?:더\s*(?:있|찾|보)|밖에\s*없|몇\s*개|개수|건수|빠진\s*(?:거|것)?\s*없|누락|전부\s*다시|전체\s*다시|다시\s*전부|limit|coverage)/i;
 const CAPABILITY_QUERY_PATTERN =
   /((결제|지출|카드|거래|승인|영수증|명세서|payment|transaction|spending|expense|gmail|지메일|메일).*(할\s*수\s*있|가능(?!한)|볼\s*수\s*있|가져올\s*수\s*있|확인\s*가능(?!한)|접근\s*가능(?!한)|연결(?:돼|되어)|available|can\s+you|can\s+i))|((할\s*수\s*있|가능(?!한)|볼\s*수\s*있|가져올\s*수\s*있|확인\s*가능(?!한)|접근\s*가능(?!한)|available|can\s+you).*(결제|지출|카드|거래|승인|영수증|명세서|payment|transaction|spending|expense|gmail|지메일|메일))/i;
 const POLICY_NOTICE_PATTERN =
@@ -113,6 +113,7 @@ interface ToolTaskContext {
   lastQueryMode?: "payment_summary" | "topic_filtered_payment_summary";
   refinedFromFollowUp?: boolean;
   userExpandedScan?: boolean;
+  autoExpandedScan?: boolean;
   lastCandidateCount?: number;
   lastScanLimit?: number;
   lastResultEstimate?: number;
@@ -1015,6 +1016,26 @@ function resolvePaymentScanLimit(
   );
 }
 
+function shouldAutoExpandPaymentScan(
+  result: {
+    candidateCount: number;
+    resultEstimate?: number;
+    records: ParsedPaymentRecord[];
+  },
+  scanLimit: number,
+  userExpandedScan: boolean,
+): boolean {
+  if (userExpandedScan || scanLimit >= MAX_PAYMENT_SCAN_MESSAGES) {
+    return false;
+  }
+
+  const resultEstimateExceedsScan =
+    typeof result.resultEstimate === "number" && result.resultEstimate > result.candidateCount;
+  const hitScanLimit = result.candidateCount >= scanLimit;
+
+  return resultEstimateExceedsScan || hitScanLimit;
+}
+
 function buildPaymentRerunMessage(canonicalGoal: string, followUpMessage: string): string {
   return isExpandedPaymentScanRequest(followUpMessage)
     ? `${canonicalGoal}\n${followUpMessage}`
@@ -1627,6 +1648,7 @@ function buildPaymentSummaryResponse(
   displayLimit: number,
   resultEstimate?: number,
   expandedScanLimit?: number,
+  expandedScanReason?: "user-requested" | "auto-cap-suspected",
 ): string {
   const total = records.reduce((sum, record) => sum + (record.amount ?? 0), 0);
   const merchants = [...new Set(records.map((record) => record.merchant).filter(Boolean))];
@@ -1643,9 +1665,11 @@ function buildPaymentSummaryResponse(
     );
   }
   if (expandedScanLimit !== undefined) {
-    summaryLines.push(
-      `You asked for a wider scan, so I used the expanded headers/snippets scan mode capped at ${expandedScanLimit} candidate message(s).`,
-    );
+    const reason =
+      expandedScanReason === "auto-cap-suspected"
+        ? "The first pass looked capped, so I automatically widened the headers/snippets scan"
+        : "You asked for a wider scan, so I used the expanded headers/snippets scan mode";
+    summaryLines.push(`${reason} capped at ${expandedScanLimit} candidate message(s).`);
   }
 
   if (records.length > 0) {
@@ -2159,7 +2183,9 @@ function formatPaymentFollowUp(
         `${capMessage}\n\n` +
         `상세 목록은 한 번에 최대 ${displayLimit}건만 보여주지만, 현재 합계는 스캔된 결제성 메일 ${records.length}건 기준 ${formatCurrency(total)}입니다.\n` +
         (scanLimit >= MAX_PAYMENT_SCAN_MESSAGES
-          ? `명시적 요청에 따라 이번 단계에서는 hard safety cap ${MAX_PAYMENT_SCAN_MESSAGES}건까지 넓게 보는 모드입니다.\n`
+          ? context.userExpandedScan
+            ? `명시적 요청에 따라 이번 단계에서는 hard safety cap ${MAX_PAYMENT_SCAN_MESSAGES}건까지 넓게 보는 모드입니다.\n`
+            : `초기 결과가 제한에 걸린 것으로 보여 이번 단계에서는 hard safety cap ${MAX_PAYMENT_SCAN_MESSAGES}건까지 자동 확장 스캔했습니다.\n`
           : "") +
         "더 넓게 보려면 기간, 보낸 사람, 카드사, 결제처 중 하나로 범위를 좁혀주세요.",
       source: "gmail-context",
@@ -2342,6 +2368,7 @@ async function runGmailTask(
   let usedBodyCheck = false;
   let scanLimitUsed = options.emailTokenBudget.maxMessages;
   const userExpandedScan = isExpandedPaymentScanRequest(sourceMessage);
+  let autoExpandedScan = false;
 
   if (taskFamily === "gmail_payment_summary" && topicKeywords.length > 0) {
     const searchResult = await searchTopicAwarePaymentCandidates(
@@ -2384,6 +2411,26 @@ async function runGmailTask(
           scanLimit,
           topicKeywords,
         );
+    if (
+      taskFamily === "gmail_payment_summary" &&
+      !shouldUseExpandedQueryLadder &&
+      broadPaymentQuery !== primaryQuery &&
+      shouldAutoExpandPaymentScan(
+        standardResult,
+        scanLimit,
+        userExpandedScan,
+      )
+    ) {
+      standardResult = await fetchPaymentMessagesAcrossQueries(
+        accessToken,
+        [primaryQuery, broadPaymentQuery],
+        MAX_PAYMENT_SCAN_MESSAGES,
+        topicKeywords,
+      );
+      query = `${primaryQuery} || ${broadPaymentQuery}`;
+      scanLimitUsed = MAX_PAYMENT_SCAN_MESSAGES;
+      autoExpandedScan = true;
+    }
     if (shouldUseExpandedQueryLadder) {
       query = `${primaryQuery} || ${broadPaymentQuery}`;
     }
@@ -2426,11 +2473,13 @@ async function runGmailTask(
       candidateCount,
       scanLimit: scanLimitUsed,
       queryCount: query.includes(" || ") ? 2 : 1,
-      expandedScan: userExpandedScan,
+      expandedScan: userExpandedScan || autoExpandedScan,
       queryMode: topicKeywords.length > 0
         ? "topic_filtered_payment_summary"
         : query.includes(" || ")
-          ? "expanded-query-ladder"
+          ? userExpandedScan
+            ? "expanded-query-ladder"
+            : "auto-expanded-query-ladder"
           : "payment_summary",
     });
   }
@@ -2452,6 +2501,7 @@ async function runGmailTask(
       topicKeywords.length > 0 ? "topic_filtered_payment_summary" : "payment_summary",
     refinedFromFollowUp: false,
     userExpandedScan,
+    autoExpandedScan,
     lastCandidateCount: candidateCount,
     lastScanLimit: scanLimitUsed,
     lastResultEstimate: resultEstimate,
@@ -2500,7 +2550,8 @@ async function runGmailTask(
               paymentRecords,
               options.emailTokenBudget.maxMessages,
               resultEstimate,
-              userExpandedScan ? scanLimitUsed : undefined,
+              userExpandedScan || autoExpandedScan ? scanLimitUsed : undefined,
+              autoExpandedScan ? "auto-cap-suspected" : "user-requested",
             )
         : `${messages.length === 0 ? "I did not find matching Gmail messages." : `I checked Gmail headers-first with query "${query}" and inspected ${messages.length} message(s).`}\n\n${buildEvidenceList(messages)}`,
     source: "gmail",

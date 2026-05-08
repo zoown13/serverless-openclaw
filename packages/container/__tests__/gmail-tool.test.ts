@@ -241,6 +241,7 @@ describe("gmail-tool", () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
       .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m1" }] } }))
+      .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m1" }] } }))
       .mockResolvedValueOnce(
         metadataResponse(
           "카드 결제 알림",
@@ -789,6 +790,7 @@ describe("gmail-tool", () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
       .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m2" }] } }))
+      .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m2" }] } }))
       .mockResolvedValueOnce(
         metadataResponse(
           "카드 결제 알림",
@@ -1057,6 +1059,14 @@ describe("gmail-tool", () => {
       .mockResolvedValueOnce(
         jsonResponse({
           body: {
+            messages: [{ id: "m1" }, { id: "m2" }, { id: "m3" }, { id: "m4" }, { id: "m5" }],
+            resultSizeEstimate: 5,
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          body: {
             messages: [
               { id: "m1" },
               { id: "m2" },
@@ -1127,6 +1137,7 @@ describe("gmail-tool", () => {
     });
 
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain("maxResults=50");
+    expect(String(fetchMock.mock.calls[2]?.[0])).toContain("maxResults=45");
     expect(followUp?.kind).toBe("direct");
     expect(followUp?.message).toContain("inspected 6 candidate message(s)");
     expect(followUp?.message).toContain("the total above uses all parsed records from the scan");
@@ -1142,6 +1153,13 @@ describe("gmail-tool", () => {
 
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          body: {
+            messages: [{ id: "m1" }, { id: "m2" }, { id: "m3" }, { id: "m4" }, { id: "m5" }],
+          },
+        }),
+      )
       .mockResolvedValueOnce(
         jsonResponse({
           body: {
@@ -1170,6 +1188,7 @@ describe("gmail-tool", () => {
     });
 
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain("maxResults=50");
+    expect(String(fetchMock.mock.calls[2]?.[0])).toContain("maxResults=45");
     expect(response?.kind).toBe("direct");
     expect(response?.message).toContain("inspected 6 candidate message(s)");
     expect(response?.message).toContain("expanded headers/snippets scan mode capped at 50");

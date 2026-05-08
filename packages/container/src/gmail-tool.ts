@@ -1752,6 +1752,62 @@ async function fetchPaymentMessages(
   };
 }
 
+async function fetchPaymentMessagesAcrossQueries(
+  accessToken: string,
+  queries: string[],
+  maxMessages: number,
+  topicKeywords: string[] = [],
+): Promise<{
+  candidateCount: number;
+  resultEstimate?: number;
+  messages: GmailMessageSummary[];
+  records: ParsedPaymentRecord[];
+}> {
+  const uniqueQueries = [...new Set(queries.filter((query) => query.trim().length > 0))];
+  if (uniqueQueries.length <= 1) {
+    return fetchPaymentMessages(accessToken, uniqueQueries[0] ?? "", maxMessages, topicKeywords);
+  }
+
+  const ids: string[] = [];
+  const seenIds = new Set<string>();
+  let resultEstimate: number | undefined;
+
+  for (const query of uniqueQueries) {
+    const remaining = maxMessages - ids.length;
+    if (remaining <= 0) {
+      break;
+    }
+    const listJson = await gmailApiRequest<GmailListResponse>(
+      accessToken,
+      `/messages?q=${encodeURIComponent(query)}&maxResults=${remaining}`,
+    );
+    if (typeof listJson.resultSizeEstimate === "number") {
+      resultEstimate = Math.max(resultEstimate ?? 0, listJson.resultSizeEstimate);
+    }
+    for (const item of listJson.messages ?? []) {
+      if (!seenIds.has(item.id)) {
+        seenIds.add(item.id);
+        ids.push(item.id);
+      }
+      if (ids.length >= maxMessages) {
+        break;
+      }
+    }
+  }
+
+  const messages = await Promise.all(ids.map((id) => fetchMessageSummary(accessToken, id)));
+  const records = messages
+    .map((summary) => buildPaymentRecord(summary, topicKeywords))
+    .filter((record): record is ParsedPaymentRecord => Boolean(record));
+
+  return {
+    candidateCount: messages.length,
+    resultEstimate,
+    messages,
+    records,
+  };
+}
+
 async function refineRecordsWithBodyChecks(
   accessToken: string,
   records: ParsedPaymentRecord[],
@@ -2304,14 +2360,35 @@ async function runGmailTask(
         ? resolvePaymentScanLimit(options.emailTokenBudget, sourceMessage)
         : options.emailTokenBudget.maxMessages;
     scanLimitUsed = scanLimit;
-    let standardResult = await fetchPaymentMessages(
-      accessToken,
-      primaryQuery,
-      scanLimit,
-      topicKeywords,
-    );
-    if (taskFamily === "gmail_payment_summary" && standardResult.records.length === 0) {
-      const fallbackQuery = buildPaymentSearchQuery(sourceMessage, unreadOnly, topicKeywords);
+    const broadPaymentQuery = taskFamily === "gmail_payment_summary"
+      ? buildPaymentSearchQuery(sourceMessage, unreadOnly, topicKeywords)
+      : primaryQuery;
+    const shouldUseExpandedQueryLadder =
+      taskFamily === "gmail_payment_summary" &&
+      isExpandedPaymentScanRequest(sourceMessage) &&
+      broadPaymentQuery !== primaryQuery;
+    let standardResult = shouldUseExpandedQueryLadder
+      ? await fetchPaymentMessagesAcrossQueries(
+          accessToken,
+          [primaryQuery, broadPaymentQuery],
+          scanLimit,
+          topicKeywords,
+        )
+      : await fetchPaymentMessages(
+          accessToken,
+          primaryQuery,
+          scanLimit,
+          topicKeywords,
+        );
+    if (shouldUseExpandedQueryLadder) {
+      query = `${primaryQuery} || ${broadPaymentQuery}`;
+    }
+    if (
+      taskFamily === "gmail_payment_summary" &&
+      standardResult.records.length === 0 &&
+      !shouldUseExpandedQueryLadder
+    ) {
+      const fallbackQuery = broadPaymentQuery;
       if (fallbackQuery !== primaryQuery) {
         const fallbackResult = await fetchPaymentMessages(
           accessToken,

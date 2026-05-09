@@ -15,6 +15,7 @@ import { resolveSecrets } from "./secrets.js";
 import { runAgent } from "./agent-runner.js";
 import { runDirectBedrockChat } from "./direct-bedrock-chat.js";
 import { publishLambdaDeliveryMetric } from "./metrics.js";
+import { RecentImageContextStore } from "./recent-image-context.js";
 import {
   ApiGatewayManagementApiClient,
   PostToConnectionCommand,
@@ -418,6 +419,19 @@ function shouldUseDirectBedrockChat(
   );
 }
 
+function isRecentImageFollowUp(message: string): boolean {
+  const normalized = message.trim();
+  if (!normalized || normalized.length > 220 || isToolRequest(normalized)) {
+    return false;
+  }
+
+  return [
+    /(?:이거|이\s*사진|방금|아까|위(?:에|의)?|그\s*이미지|그\s*사진|사진|이미지).*(?:다시|분석|봐줘|읽어|추출|정리|표|자세히|설명|뭐야|무엇)/i,
+    /(?:다시|분석|봐줘|읽어|추출|정리|표|자세히|설명).*(?:이거|이\s*사진|방금|아까|위(?:에|의)?|그\s*이미지|그\s*사진|사진|이미지)/i,
+    /^(?:다시\s*)?(?:분석|읽어|추출|정리|표로|자세히|설명)(?:해줘|해|해줄래)?$/i,
+  ].some((pattern) => pattern.test(normalized));
+}
+
 function buildDirectChatSystemPrompt(
   event: LambdaAgentEvent,
   runtimeConfig: ResolvedRuntimeConfig,
@@ -663,6 +677,7 @@ export async function handler(
   const configInit = await ensureInitialized();
   const runtimeConfig = configInit.runtimeConfig;
   const sessionId = buildRuntimeSessionId(runtimeConfig, event.channel, event.sessionId);
+  const recentImageStore = new RecentImageContextStore(bucket);
   const deliveryTarget = event.channel === "web"
     ? { type: "websocket", connectionId: event.connectionId ?? "unknown" }
     : { type: "telegram", chatId: telegramChatId ?? "unknown" };
@@ -707,7 +722,31 @@ export async function handler(
     telegramBotToken = secrets.get(telegramBotTokenPath);
   }
 
-  if (event.imageInput) {
+  let effectiveImageInput = event.imageInput;
+  let recentImageContextLoaded = false;
+  if (!effectiveImageInput && isRecentImageFollowUp(event.message)) {
+    try {
+      const recentImageContext = await recentImageStore.load(event.userId, sessionId);
+      if (recentImageContext) {
+        effectiveImageInput = recentImageContext.imageInput;
+        recentImageContextLoaded = true;
+        logLambdaEvent("lambda.recent_image.loaded", {
+          ...requestLogPayload,
+          recentImageCreatedAt: recentImageContext.createdAt,
+          recentImageExpiresAt: recentImageContext.expiresAt,
+          mediaType: recentImageContext.imageInput.mediaType,
+          imageBytes: recentImageContext.imageInput.fileSize,
+        });
+      }
+    } catch (err: unknown) {
+      logLambdaEvent("lambda.recent_image.load_failed", {
+        ...requestLogPayload,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  if (effectiveImageInput) {
     const visionStartedAt = Date.now();
     const visionModel = resolveDirectVisionModel(event, runtimeConfig);
     const visionPayload = runtimeConfig.provider === "bedrock"
@@ -739,21 +778,46 @@ export async function handler(
       };
     }
 
+    if (event.imageInput) {
+      try {
+        const saved = await recentImageStore.save(
+          event.userId,
+          sessionId,
+          event.imageInput,
+          event.message,
+        );
+        logLambdaEvent("lambda.recent_image.saved", {
+          ...requestLogPayload,
+          expiresAt: saved.expiresAt,
+          mediaType: event.imageInput.mediaType,
+          imageBytes: event.imageInput.fileSize,
+        });
+      } catch (err: unknown) {
+        logLambdaEvent("lambda.recent_image.save_failed", {
+          ...requestLogPayload,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
     logLambdaEvent("lambda.direct_vision.started", {
       ...requestLogPayload,
       model: visionModel,
-      mediaType: event.imageInput.mediaType,
-      imageBytes: event.imageInput.fileSize,
+      mediaType: effectiveImageInput.mediaType,
+      imageBytes: effectiveImageInput.fileSize,
+      recentImageContextLoaded,
       maxTokens: parseDirectVisionMaxTokens(),
     });
     try {
       const directResult = await runDirectBedrockChat({
-        message: event.message,
+        message: recentImageContextLoaded
+          ? `Use the recent Telegram image for this follow-up. User follow-up: ${event.message}`
+          : event.message,
         model: visionModel,
         systemPrompt: buildDirectVisionSystemPrompt(event, runtimeConfig),
         maxTokens: parseDirectVisionMaxTokens(),
         temperature: 0.1,
-        imageInput: event.imageInput,
+        imageInput: effectiveImageInput,
       });
       const payloads = [{ text: directResult.text }];
 

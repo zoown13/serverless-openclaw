@@ -9,6 +9,8 @@ const {
   mockResolveSecrets,
   mockRunAgent,
   mockRunDirectBedrockChat,
+  mockLoadRecentImage,
+  mockSaveRecentImage,
   mockAcquire,
   mockRelease,
   mockPublishLambdaDeliveryMetric,
@@ -56,6 +58,10 @@ const {
   ])),
   mockRunAgent: vi.fn(),
   mockRunDirectBedrockChat: vi.fn(),
+  mockLoadRecentImage: vi.fn().mockResolvedValue(null),
+  mockSaveRecentImage: vi.fn().mockResolvedValue({
+    expiresAt: "2099-01-01T00:00:00.000Z",
+  }),
   mockAcquire: vi.fn().mockResolvedValue(true),
   mockRelease: vi.fn().mockResolvedValue(undefined),
   mockPublishLambdaDeliveryMetric: vi.fn().mockResolvedValue(undefined),
@@ -88,6 +94,13 @@ vi.mock("../src/direct-bedrock-chat.js", () => ({
   runDirectBedrockChat: (...args: unknown[]) => mockRunDirectBedrockChat(...args),
 }));
 
+vi.mock("../src/recent-image-context.js", () => ({
+  RecentImageContextStore: vi.fn().mockImplementation(() => ({
+    load: mockLoadRecentImage,
+    save: mockSaveRecentImage,
+  })),
+}));
+
 vi.mock("../src/session-lock.js", () => ({
   SessionLock: vi.fn().mockImplementation(() => ({
     acquire: mockAcquire,
@@ -117,6 +130,12 @@ describe("handler", () => {
     mockResolveSecrets.mockClear();
     mockRunAgent.mockClear();
     mockRunDirectBedrockChat.mockClear();
+    mockLoadRecentImage.mockClear();
+    mockLoadRecentImage.mockResolvedValue(null);
+    mockSaveRecentImage.mockClear();
+    mockSaveRecentImage.mockResolvedValue({
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
     mockAcquire.mockClear();
     mockRelease.mockClear();
     mockPublishLambdaDeliveryMetric.mockClear();
@@ -848,12 +867,94 @@ describe("handler", () => {
         }),
       }),
     );
+    expect(mockSaveRecentImage).toHaveBeenCalledWith(
+      "user-123",
+      "bedrock-chat:web:session-456",
+      expect.objectContaining({
+        mediaType: "image/jpeg",
+        dataBase64: "AQID",
+      }),
+      "이 사진 분석해줘",
+    );
     expect(mockRunAgent).not.toHaveBeenCalled();
     expect(mockDownload).not.toHaveBeenCalled();
     expect(mockUpload).not.toHaveBeenCalled();
     expect(infoSpy).toHaveBeenCalledWith(
       expect.stringContaining("\"event\":\"lambda.direct_vision.completed\""),
     );
+  });
+
+  it("should reuse a recent image context for image follow-up messages", async () => {
+    process.env.AI_PROVIDER = "bedrock";
+    mockLoadRecentImage.mockResolvedValueOnce({
+      version: 1,
+      userId: "user-123",
+      sessionId: "bedrock-chat:web:session-456",
+      imageInput: {
+        source: "telegram",
+        mediaType: "image/jpeg",
+        dataBase64: "AQID",
+        fileId: "photo-1",
+        fileSize: 3,
+      },
+      lastPrompt: "이 사진 분석해줘",
+      createdAt: "2026-05-09T12:00:00.000Z",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+    mockRunDirectBedrockChat.mockResolvedValueOnce({
+      text: "방금 사진을 다시 보면 영수증 화면입니다.",
+      usage: { inputTokens: 30, outputTokens: 20, totalTokens: 50 },
+    });
+    mockInitConfig.mockResolvedValueOnce({
+      configDir: "/tmp/.openclaw",
+      sessionsDir: "/tmp/.openclaw/agents/default/sessions",
+      config: { gateway: { mode: "local" } },
+      runtimeConfig: {
+        provider: "bedrock",
+        openclawProvider: "amazon-bedrock",
+        openclawApi: "bedrock-converse-stream",
+        openclawAuth: "aws-sdk",
+        defaultModel: "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+        capability: "chat-only",
+        sessionNamespace: "bedrock-chat",
+        readiness: {
+          chatReady: true,
+          toolRuntimeReady: false,
+          gmailReady: true,
+        },
+        emailTokenBudget: {
+          mode: "headers-first",
+          maxMessages: 5,
+          paymentScanMessages: 25,
+          maxSnippetChars: 240,
+          maxBodyChars: 1600,
+          requireExplicitBodyAccess: true,
+        },
+      },
+    });
+
+    const handler = await loadHandler();
+    const result = await handler(createEvent({
+      message: "이거 다시 분석해줘",
+    })) as LambdaAgentResponse;
+
+    expect(result.success).toBe(true);
+    expect(result.payloads?.[0]?.text).toContain("영수증");
+    expect(mockLoadRecentImage).toHaveBeenCalledWith(
+      "user-123",
+      "bedrock-chat:web:session-456",
+    );
+    expect(mockRunDirectBedrockChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringContaining("Use the recent Telegram image"),
+        imageInput: expect.objectContaining({
+          mediaType: "image/jpeg",
+          dataBase64: "AQID",
+        }),
+      }),
+    );
+    expect(mockSaveRecentImage).not.toHaveBeenCalled();
+    expect(mockRunAgent).not.toHaveBeenCalled();
   });
 
   it("should retry the default direct chat model before falling back to OpenClaw", async () => {

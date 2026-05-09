@@ -63,6 +63,9 @@ describe("Bridge HTTP Server", () => {
   });
 
   afterEach(() => {
+    delete process.env.AGENTCORE_HTTP_DELIVERY_MODE;
+    delete process.env.AGENTCORE_ASYNC_CALLBACK_DELIVERY;
+    delete process.env.BRIDGE_DEFER_CALLBACK_PERSISTENCE;
     infoSpy.mockRestore();
     errorSpy.mockRestore();
   });
@@ -501,6 +504,61 @@ describe("Bridge HTTP Server", () => {
         source: "gmail",
       });
       expect(deps.callbackSender.send).not.toHaveBeenCalled();
+      expect(publishCountMetricMock).toHaveBeenCalledWith("DeliverySuccess", {
+        channel: "web",
+        runtime: "agentcore",
+        deliveryType: "websocket",
+      });
+    });
+
+    it("should accept /invocations asynchronously when AgentCore callback delivery is enabled", async () => {
+      process.env.AGENTCORE_HTTP_DELIVERY_MODE = "callback";
+      gmailToolMock.mockResolvedValue({
+        kind: "direct",
+        message: "AgentCore callback Gmail result",
+        source: "gmail",
+      });
+      app = createApp({
+        ...deps,
+        agentCoreHttpEnabled: true,
+        runtimeLabel: "agentcore",
+      });
+
+      const res = await request(app)
+        .post("/invocations")
+        .send({
+          userId: "user-1",
+          message: "Check my Gmail inbox",
+          channel: "web",
+          connectionId: "conn-agentcore",
+          callbackUrl: "https://example.com/prod",
+          runtimeClass: "tool-enabled",
+          traceId: "trace-agentcore-callback",
+          routeDecision: "agentcore",
+        });
+
+      expect(res.status).toBe(202);
+      expect(res.body).toEqual({
+        status: "processing",
+        source: "agentcore-callback",
+      });
+
+      await vi.waitFor(() => {
+        expect(deps.callbackSender.send).toHaveBeenCalledWith(
+          "conn-agentcore",
+          {
+            type: "stream_chunk",
+            content: "AgentCore callback Gmail result",
+            conversationId: undefined,
+          },
+        );
+        expect(deps.callbackSender.send).toHaveBeenCalledWith(
+          "conn-agentcore",
+          {
+            type: "stream_end",
+          },
+        );
+      });
       expect(publishCountMetricMock).toHaveBeenCalledWith("DeliverySuccess", {
         channel: "web",
         runtime: "agentcore",

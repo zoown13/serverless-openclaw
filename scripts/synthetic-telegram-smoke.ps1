@@ -7,7 +7,7 @@ param(
   [long]$ChatId,
   [long]$TelegramId,
   [string]$UserId,
-  [ValidateSet("PaymentFollowUp", "PaymentCoverageFollowUp", "PaymentCoverageThenIssuerBreakdown", "PaymentExpandedFirstTurn", "PaymentDeepScanFirstTurn", "PaymentHistoryCapability", "PaymentCapabilityThenChatHandoff", "PaymentThenEverydayChatHandoff", "PaymentDateRange", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff", "GenericPaymentThenTravelRefinement")]
+  [ValidateSet("PaymentFollowUp", "PaymentCoverageFollowUp", "PaymentCoverageThenIssuerBreakdown", "PaymentExpandedFirstTurn", "PaymentDeepScanFirstTurn", "PaymentHistoryCapability", "PaymentCapabilityThenChatHandoff", "PaymentThenEverydayChatHandoff", "RepeatedPaymentCacheHit", "PaymentDateRange", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff", "GenericPaymentThenTravelRefinement")]
   [string]$Scenario = "PaymentFollowUp",
   [int]$PauseSeconds = 10,
   [int]$BridgeSignalTimeoutSeconds = 180,
@@ -228,6 +228,12 @@ function Get-ScenarioMessages {
       return @(
         "최근 결제한 내역 알려줘",
         "저녁 메뉴 추천해줘"
+      )
+    }
+    "RepeatedPaymentCacheHit" {
+      return @(
+        "최근 결제한 내역 알려줘",
+        "최근 결제한 내역 알려줘"
       )
     }
     "PaymentDateRange" {
@@ -464,6 +470,7 @@ function Wait-BridgeSignals {
   $requiresPaymentCapabilitySignals = $SelectedScenario -in @("PaymentHistoryCapability", "PaymentCapabilityThenChatHandoff")
   $requiresTravelSignals = $SelectedScenario -in @("TravelPaymentFollowUp", "TravelPaymentThenChatHandoff", "GenericPaymentThenTravelRefinement")
   $requiresDeepScanSignals = $SelectedScenario -eq "PaymentDeepScanFirstTurn"
+  $requiresPaymentCacheHitSignals = $SelectedScenario -eq "RepeatedPaymentCacheHit"
   $requiresPaymentResponseQuality = $SelectedScenario -in @("PaymentCoverageFollowUp", "PaymentCoverageThenIssuerBreakdown", "PaymentExpandedFirstTurn", "PaymentDeepScanFirstTurn", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff", "GenericPaymentThenTravelRefinement")
   $requiresTravelResponseQuality = $requiresTravelSignals
   $requiresChatHandoff = $SelectedScenario -in @("TravelPaymentThenChatHandoff", "PaymentCapabilityThenChatHandoff", "PaymentThenEverydayChatHandoff")
@@ -491,6 +498,14 @@ function Wait-BridgeSignals {
   if ($requiresDeepScanSignals) {
     $requiredSignals += @(
       '"scanLimit":100'
+    )
+  }
+
+  if ($requiresPaymentCacheHitSignals) {
+    $requiredSignals += @(
+      "bridge.tool.context.reused",
+      '"action":"continue_active_task"',
+      '"source":"gmail-context"'
     )
   }
 

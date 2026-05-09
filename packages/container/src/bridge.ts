@@ -312,6 +312,38 @@ export function createApp(deps: BridgeDeps): express.Express {
   const app = express();
   let firstResponseSent = false;
   const runtimeLabel = deps.runtimeLabel ?? "fargate";
+  const shouldDeferCallbackPersistence =
+    process.env.BRIDGE_DEFER_CALLBACK_PERSISTENCE !== "false";
+
+  async function persistMessagePair(
+    deliveryMode: "callback" | "response",
+    logContext: Record<string, unknown>,
+    deliveryType: "websocket" | "telegram",
+    body: Partial<BridgeMessageRequest>,
+    assistantMessage: string,
+  ): Promise<void> {
+    if (!deps.onMessageComplete || !assistantMessage) {
+      return;
+    }
+
+    const persistence = deps.onMessageComplete(
+      body.userId!,
+      body.message!,
+      assistantMessage,
+      body.channel! as "web" | "telegram",
+    ).catch(() => {});
+
+    if (deliveryMode === "callback" && shouldDeferCallbackPersistence) {
+      logBridgeEvent("bridge.message.persist.deferred", {
+        ...logContext,
+        deliveryType,
+      });
+      void persistence;
+      return;
+    }
+
+    await persistence;
+  }
 
   async function processAcceptedMessage(
     body: Partial<BridgeMessageRequest>,
@@ -352,7 +384,7 @@ export function createApp(deps: BridgeDeps): express.Express {
               type: "stream_end",
             });
           }
-          if (deliveryMode !== "callback" && body.channel === "telegram") {
+          if (body.channel === "telegram") {
             logTelegramContentQuality(gmailResponse.message);
           }
 
@@ -368,14 +400,13 @@ export function createApp(deps: BridgeDeps): express.Express {
             void publishFirstResponseTime(Date.now() - deps.processStartTime, deps.channel);
           }
 
-          if (deps.onMessageComplete) {
-            await deps.onMessageComplete(
-              body.userId!,
-              body.message!,
-              gmailResponse.message,
-              body.channel! as "web" | "telegram",
-            ).catch(() => {});
-          }
+          await persistMessagePair(
+            deliveryMode,
+            logContext,
+            deliveryType,
+            body,
+            gmailResponse.message,
+          );
 
           logBridgeEvent("bridge.delivery.success", {
             ...logContext,
@@ -458,7 +489,7 @@ export function createApp(deps: BridgeDeps): express.Express {
           type: "stream_end",
         });
       }
-      if (deliveryMode !== "callback" && body.channel === "telegram") {
+      if (body.channel === "telegram") {
         logTelegramContentQuality(fullResponse);
       }
 
@@ -474,14 +505,13 @@ export function createApp(deps: BridgeDeps): express.Express {
         void publishFirstResponseTime(Date.now() - deps.processStartTime, deps.channel);
       }
 
-      if (deps.onMessageComplete && fullResponse) {
-        await deps.onMessageComplete(
-          body.userId!,
-          body.message!,
-          fullResponse,
-          body.channel! as "web" | "telegram",
-        ).catch(() => {});
-      }
+      await persistMessagePair(
+        deliveryMode,
+        logContext,
+        deliveryType,
+        body,
+        fullResponse,
+      );
 
       logBridgeEvent("bridge.delivery.success", {
         ...logContext,
@@ -522,10 +552,19 @@ export function createApp(deps: BridgeDeps): express.Express {
     let activeAgentCoreInvocations = 0;
     let agentCorePingStatus: "Healthy" | "HealthyBusy" = "Healthy";
     let agentCorePingStatusUpdatedAt = Math.floor(Date.now() / 1000);
+    const agentCoreCallbackDeliveryEnabled =
+      process.env.AGENTCORE_HTTP_DELIVERY_MODE === "callback" ||
+      process.env.AGENTCORE_ASYNC_CALLBACK_DELIVERY === "true";
     const updateAgentCorePingStatus = (nextStatus: "Healthy" | "HealthyBusy"): void => {
       if (agentCorePingStatus === nextStatus) return;
       agentCorePingStatus = nextStatus;
       agentCorePingStatusUpdatedAt = Math.floor(Date.now() / 1000);
+    };
+    const finishAgentCoreInvocation = (): void => {
+      activeAgentCoreInvocations = Math.max(0, activeAgentCoreInvocations - 1);
+      if (activeAgentCoreInvocations === 0) {
+        updateAgentCorePingStatus("Healthy");
+      }
     };
 
     app.get("/ping", (_req, res) => {
@@ -557,6 +596,28 @@ export function createApp(deps: BridgeDeps): express.Express {
       activeAgentCoreInvocations += 1;
       updateAgentCorePingStatus("HealthyBusy");
 
+      if (agentCoreCallbackDeliveryEnabled && body.callbackUrl) {
+        logBridgeEvent("agentcore.invocation.callback_delivery.accepted", {
+          ...buildBridgeLogContext(body),
+          deliveryMode: "callback",
+        });
+        res.status(202).json({
+          status: "processing",
+          source: "agentcore-callback",
+        });
+
+        void (async () => {
+          try {
+            await processAcceptedMessage(body, "callback");
+          } catch {
+            // processAcceptedMessage already emits a controlled callback error and failure log.
+          } finally {
+            finishAgentCoreInvocation();
+          }
+        })();
+        return;
+      }
+
       try {
         const result = await processAcceptedMessage(body, "response");
         res.json(
@@ -577,10 +638,7 @@ export function createApp(deps: BridgeDeps): express.Express {
           error: "AgentCore runtime failed to process the request",
         });
       } finally {
-        activeAgentCoreInvocations = Math.max(0, activeAgentCoreInvocations - 1);
-        if (activeAgentCoreInvocations === 0) {
-          updateAgentCorePingStatus("Healthy");
-        }
+        finishAgentCoreInvocation();
       }
     });
   }

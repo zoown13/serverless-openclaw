@@ -323,6 +323,7 @@ $environmentVariables = @{
   AI_PROVIDER = $AiProvider
   AI_MODEL = $AiModel
   TOOL_SLM_BACKEND = $ToolSlmBackend
+  AGENTCORE_HTTP_DELIVERY_MODE = "callback"
   IMAGE_TAG = $ImageTag
   RESPONSE_FORMAT_VERSION = $ResponseFormatVersion
   TOOL_CONTEXT_STORE = "ddb"

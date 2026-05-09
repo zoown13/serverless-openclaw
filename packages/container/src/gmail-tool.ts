@@ -3069,9 +3069,17 @@ function buildAdvisorInput(
     gmailReady,
     activeContext: activeContext
       ? {
+          status: activeContext.status,
           taskFamily: activeContext.taskFamily,
           sourceChoice: activeContext.sourceChoice,
           canonicalGoal: activeContext.canonicalGoal,
+          lastSearchQuery: activeContext.lastSearchQuery,
+          topicKeywords: activeContext.topicKeywords,
+          lastQueryMode: activeContext.lastQueryMode,
+          paymentRecordCount: activeContext.parsedPaymentRecords?.length,
+          lastCandidateCount: activeContext.lastCandidateCount,
+          lastScanLimit: activeContext.lastScanLimit,
+          lastResultEstimate: activeContext.lastResultEstimate,
           lastResultSummary: activeContext.lastResultSummary,
         }
       : undefined,

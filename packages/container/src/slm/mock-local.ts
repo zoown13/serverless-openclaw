@@ -9,9 +9,9 @@ const TRAVEL_CONTEXT_PATTERN =
 const BODY_OPEN_PATTERN =
   /(본문|자세히|열어줘|open|full body|details?|메일 보여|1번|2번|3번|4번|5번)/i;
 const TOPIC_REFINE_PATTERN =
-  /(관련된 것만|관련만|쪽만|여행 관련|일본 관련|travel|trip)/i;
+  /(관련된 것만|관련만|쪽만|여행 관련|일본 관련|일본\s*(?:것|쪽|관련)?만|travel|trip)/i;
 const DATE_REFINE_PATTERN =
-  /(\d+\s*월\s*\d+\s*일|이번주|이번 주|부터|까지|전후|날짜|date|기간)/i;
+  /(\d+\s*월\s*\d+\s*일|이번주|이번 주|지난주|지난 주|이번달|이번 달|지난달|지난 달|최근\s*\d+\s*일|부터|까지|전후|날짜|date|기간)/i;
 const ISSUER_BREAKDOWN_PATTERN = /(카드사|issuer)/i;
 const MERCHANT_BREAKDOWN_PATTERN = /(결제처|가맹점|merchant)/i;
 const AMOUNT_SUMMARY_PATTERN = /(합계|총액|sum|total|얼마)/i;
@@ -23,6 +23,8 @@ const CAPABILITY_QUERY_PATTERN =
   /((결제|지출|카드|거래|승인|영수증|명세서|payment|transaction|spending|expense|gmail|지메일|메일).*(할\s*수\s*있|가능(?!한)|볼\s*수\s*있|가져올\s*수\s*있|확인\s*가능(?!한)|접근\s*가능(?!한)|연결(?:돼|되어)|available|can\s+you|can\s+i))|((할\s*수\s*있|가능(?!한)|볼\s*수\s*있|가져올\s*수\s*있|확인\s*가능(?!한)|접근\s*가능(?!한)|available|can\s+you).*(결제|지출|카드|거래|승인|영수증|명세서|payment|transaction|spending|expense|gmail|지메일|메일))/i;
 const OBVIOUS_GENERAL_CHAT_PATTERN =
   /(날씨|weather|번역|translate|농담|joke|리눅스|linux|명령어|command|코드|code|설명해|추천해|맛집|일정|계획|어떻게|왜|무엇|뭐야|what|how|why)/i;
+const EXPLICIT_GENERAL_HANDOFF_PATTERN =
+  /(그거\s*말고|그건\s*됐고|다른\s*질문|일반\s*질문|툴\s*말고|지메일\s*말고|gmail\s*말고|not\s+gmail|different\s+question)/i;
 
 function classifyActiveFollowUp(input: SlmClassificationInput): SlmTaskDecision | null {
   if (!input.activeTaskFamily) {
@@ -55,7 +57,7 @@ function classifyActiveFollowUp(input: SlmClassificationInput): SlmTaskDecision 
     };
   }
   if (
-    OBVIOUS_GENERAL_CHAT_PATTERN.test(message) &&
+    (OBVIOUS_GENERAL_CHAT_PATTERN.test(message) || EXPLICIT_GENERAL_HANDOFF_PATTERN.test(message)) &&
     !PAYMENT_LOOKUP_PATTERN.test(message) &&
     !EXPLICIT_GMAIL_PATTERN.test(message) &&
     !TOPIC_REFINE_PATTERN.test(message) &&
@@ -65,7 +67,7 @@ function classifyActiveFollowUp(input: SlmClassificationInput): SlmTaskDecision 
       action: "switch_to_chat",
       taskFamily: "generic_tool_task",
       sourceChoice: "general",
-      confidence: 0.86,
+      confidence: EXPLICIT_GENERAL_HANDOFF_PATTERN.test(message) ? 0.95 : 0.9,
       reason: "mock-local active general chat handoff",
     };
   }

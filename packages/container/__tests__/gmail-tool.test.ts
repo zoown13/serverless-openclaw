@@ -434,6 +434,69 @@ describe("gmail-tool", () => {
     expect(decideToolIntentMock).not.toHaveBeenCalled();
   });
 
+  it("passes rich active payment context facts to the advisor before semantic handoff", async () => {
+    decideToolIntentMock
+      .mockResolvedValueOnce({
+        action: "gmail",
+        taskFamily: "gmail_payment_summary",
+        sourceChoice: "gmail",
+        confidence: 0.95,
+      })
+      .mockResolvedValueOnce({
+        action: "switch_to_chat",
+        taskFamily: "generic_tool_task",
+        sourceChoice: "general",
+        confidence: 0.95,
+      });
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m1" }] } }))
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "카드 결제 알림",
+          "Card Co <billing@example.com>",
+          "Fri, 03 Apr 2026 09:00:00 +0000",
+          "결제금액 12,300원 카드종류 삼성카드 가맹점명 스타벅스",
+        ),
+      );
+
+    await maybeHandleCustomGmailRequest({
+      userId: "user-rich-planner-context",
+      sessionKey: "session-rich-planner-context",
+      message: "최근 결제한 내역 알려줘",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    const response = await maybeHandleCustomGmailRequest({
+      userId: "user-rich-planner-context",
+      sessionKey: "session-rich-planner-context",
+      message: "그거 말고 일반 질문인데 저녁 메뉴 추천해줘",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    expect(response?.kind).toBe("handoff");
+    expect(decideToolIntentMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        message: "그거 말고 일반 질문인데 저녁 메뉴 추천해줘",
+        activeContext: expect.objectContaining({
+          status: "active",
+          taskFamily: "gmail_payment_summary",
+          sourceChoice: "gmail",
+          canonicalGoal: "최근 결제한 내역 알려줘",
+          lastSearchQuery: expect.any(String),
+          topicKeywords: [],
+          lastQueryMode: "payment_summary",
+          paymentRecordCount: 1,
+          lastCandidateCount: 1,
+          lastScanLimit: expect.any(Number),
+          lastResultSummary: expect.any(String),
+        }),
+      }),
+    );
+  });
+
   it("retries transient Gmail API rate limits before failing the payment lookup", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     fetchMock

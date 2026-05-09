@@ -19,6 +19,20 @@ describe("slm/planner-action-eval", () => {
       expectedFollowUpIntent: "refine_topic",
     },
     {
+      name: "refines terse destination-only corrections",
+      message: "일본 것만",
+      active: true,
+      expectedAction: "refine_current_task",
+      expectedFollowUpIntent: "refine_topic",
+    },
+    {
+      name: "reruns the active payment task for a different date range",
+      message: "지난주로 다시 봐줘",
+      active: true,
+      expectedAction: "refine_current_task",
+      expectedFollowUpIntent: "refine_date",
+    },
+    {
       name: "reruns coverage when the user says more records should exist",
       message: "결제 내역이 더 있을텐데",
       active: true,
@@ -35,6 +49,13 @@ describe("slm/planner-action-eval", () => {
     {
       name: "hands unrelated general questions back to chat",
       message: "리눅스에서 파일 찾는 명령어 알려줘",
+      active: true,
+      expectedAction: "switch_to_chat",
+      expectedFollowUpIntent: undefined,
+    },
+    {
+      name: "honors explicit general-chat handoff language",
+      message: "그거 말고 일반 질문인데 저녁 메뉴 추천해줘",
       active: true,
       expectedAction: "switch_to_chat",
       expectedFollowUpIntent: undefined,
@@ -57,6 +78,12 @@ describe("slm/planner-action-eval", () => {
             activeTaskFamily: "gmail_payment_summary" as const,
             activeSourceChoice: "gmail" as const,
             activeCanonicalGoal: "이번주 결제한 금액이 어느정도 되려나?",
+            activeLastSearchQuery: "결제 newer_than:7d",
+            activeTopicKeywords: ["일본"],
+            activeLastQueryMode: "topic_filtered_payment_summary",
+            activePaymentRecordCount: 4,
+            activeLastCandidateCount: 10,
+            activeLastScanLimit: 50,
             recentResultSummary: "Gmail payment context with parsed payment records",
           }
         : {}),

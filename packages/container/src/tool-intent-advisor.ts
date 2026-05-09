@@ -14,9 +14,17 @@ export interface DecideToolIntentInput {
   message: string;
   gmailReady: boolean;
   activeContext?: {
+    status?: "awaiting_source" | "active";
     taskFamily?: ToolTaskFamily;
     sourceChoice?: ToolSourceChoice | null;
     canonicalGoal?: string;
+    lastSearchQuery?: string;
+    topicKeywords?: string[];
+    lastQueryMode?: string;
+    paymentRecordCount?: number;
+    lastCandidateCount?: number;
+    lastScanLimit?: number;
+    lastResultEstimate?: number;
     lastResultSummary?: string;
   };
 }
@@ -33,9 +41,17 @@ function toSlmInput(input: DecideToolIntentInput): SlmClassificationInput {
   return {
     message: input.message,
     gmailReady: input.gmailReady,
+    activeStatus: input.activeContext?.status,
     activeTaskFamily: input.activeContext?.taskFamily,
     activeSourceChoice: input.activeContext?.sourceChoice,
     activeCanonicalGoal: input.activeContext?.canonicalGoal,
+    activeLastSearchQuery: input.activeContext?.lastSearchQuery,
+    activeTopicKeywords: input.activeContext?.topicKeywords,
+    activeLastQueryMode: input.activeContext?.lastQueryMode,
+    activePaymentRecordCount: input.activeContext?.paymentRecordCount,
+    activeLastCandidateCount: input.activeContext?.lastCandidateCount,
+    activeLastScanLimit: input.activeContext?.lastScanLimit,
+    activeLastResultEstimate: input.activeContext?.lastResultEstimate,
     recentResultSummary: input.activeContext?.lastResultSummary,
   };
 }

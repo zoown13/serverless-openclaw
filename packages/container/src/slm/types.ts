@@ -11,9 +11,17 @@ export type SlmBackendKind = "remote-api" | "mock-local";
 export interface SlmClassificationInput {
   message: string;
   gmailReady: boolean;
+  activeStatus?: "awaiting_source" | "active";
   activeTaskFamily?: ToolTaskFamily;
   activeSourceChoice?: ToolSourceChoice | null;
   activeCanonicalGoal?: string;
+  activeLastSearchQuery?: string;
+  activeTopicKeywords?: string[];
+  activeLastQueryMode?: string;
+  activePaymentRecordCount?: number;
+  activeLastCandidateCount?: number;
+  activeLastScanLimit?: number;
+  activeLastResultEstimate?: number;
   recentResultSummary?: string;
 }
 

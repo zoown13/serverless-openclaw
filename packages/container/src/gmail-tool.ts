@@ -95,6 +95,9 @@ const PAYMENT_AMOUNT_PATTERNS: RegExp[] = [
 const DEFAULT_PAYMENT_SCAN_MESSAGES = 25;
 const MAX_PAYMENT_SCAN_MESSAGES = 50;
 const EXTENDED_PAYMENT_SCAN_MESSAGES = 100;
+const GMAIL_API_MAX_RETRIES = 2;
+const GMAIL_API_RETRY_BASE_DELAY_MS = 150;
+const GMAIL_API_RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
 const DEFAULT_TOPIC_CANDIDATE_MESSAGES = 10;
 const EXPANDED_TOPIC_CANDIDATE_MESSAGES = 30;
 const MAX_TOPIC_BODY_CHECKS = 2;
@@ -1423,19 +1426,46 @@ async function gmailApiRequest<T>(
   path: string,
   init?: RequestInit,
 ): Promise<T> {
-  const response = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me${path}`, {
-    ...init,
-    headers: {
-      authorization: `Bearer ${accessToken}`,
-      ...(init?.headers ?? {}),
-    },
-  });
+  const url = `https://gmail.googleapis.com/gmail/v1/users/me${path}`;
+  let lastStatus = 0;
 
-  if (!response.ok) {
-    throw new Error(`gmail api request failed: ${response.status}`);
+  for (let attempt = 0; attempt <= GMAIL_API_MAX_RETRIES; attempt += 1) {
+    const response = await fetch(url, {
+      ...init,
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        ...(init?.headers ?? {}),
+      },
+    });
+
+    if (response.ok) {
+      return (await response.json()) as T;
+    }
+
+    lastStatus = response.status;
+    if (!GMAIL_API_RETRYABLE_STATUSES.has(response.status) || attempt >= GMAIL_API_MAX_RETRIES) {
+      break;
+    }
+
+    console.warn(
+      JSON.stringify({
+        component: "bridge",
+        event: "bridge.gmail_api.retry",
+        status: response.status,
+        attempt: attempt + 1,
+        maxRetries: GMAIL_API_MAX_RETRIES,
+      }),
+    );
+    await sleep(GMAIL_API_RETRY_BASE_DELAY_MS * (attempt + 1));
   }
 
-  return (await response.json()) as T;
+  throw new Error(`gmail api request failed: ${lastStatus}`);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 function getHeader(payload: GmailPayload | undefined, name: string): string {

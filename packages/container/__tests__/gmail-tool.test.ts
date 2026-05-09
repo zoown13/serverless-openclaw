@@ -211,6 +211,36 @@ describe("gmail-tool", () => {
     expect(fetchMock).toHaveBeenCalled();
   });
 
+  it("retries transient Gmail API rate limits before failing the payment lookup", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(jsonResponse({ ok: false, status: 429, body: {} }))
+      .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m1" }] } }))
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "카드 결제 알림",
+          "Card Co <billing@example.com>",
+          "Fri, 03 Apr 2026 09:00:00 +0000",
+          "결제금액 12,300원 카드종류 삼성카드 가맹점명 스타벅스",
+        ),
+      );
+
+    const response = await maybeHandleCustomGmailRequest({
+      userId: "user-payment-retry",
+      sessionKey: "session-payment-retry",
+      message: "이번주 결제한 금액이 어느정도 되려나?",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    expect(response?.kind).toBe("direct");
+    expect(response?.message).toContain("확인 가능한 합계: KRW 12,300");
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("bridge.gmail_api.retry"));
+    warnSpy.mockRestore();
+  });
+
   it("treats compact temporal amount questions as Gmail payment lookups when Gmail is ready", async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))

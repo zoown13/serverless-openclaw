@@ -11,6 +11,7 @@ import {
   type ToolEvent,
 } from "./gmail-tool.js";
 import { logTelegramContentQuality } from "./callback-sender.js";
+import { RecentCostContextStore, type RecentCostContext } from "./recent-cost-context.js";
 import type {
   BridgeMessageRequest,
   ServerMessage,
@@ -18,6 +19,7 @@ import type {
   EmailTokenBudgetPolicy,
   AssistantRuntimeContext,
 } from "@serverless-openclaw/shared";
+import { estimateCost, type CostEstimate } from "@serverless-openclaw/shared";
 
 export interface BridgeDeps {
   authToken: string;
@@ -308,10 +310,156 @@ function logToolEvent(
   }
 }
 
+function buildToolCostEstimate(
+  body: Partial<BridgeMessageRequest>,
+  logContext: Record<string, unknown>,
+  runtimeLabel: string,
+  durationMs: number,
+): CostEstimate {
+  return estimateCost({
+    traceId: String(logContext.traceId ?? resolveTraceId(body)),
+    userId: body.userId!,
+    channel: body.channel!,
+    runtimeClass: body.runtimeClass ?? "tool-enabled",
+    provider: runtimeLabel === "agentcore" ? "agentcore" : "fargate",
+    durationMs,
+    memoryMb: resolveToolMemoryMb(),
+    agentCoreVcpu: runtimeLabel === "agentcore" ? resolveAgentCoreVcpu() : undefined,
+    bedrockInputUsdPerMillionOverride: parseOptionalPositiveFloat(
+      process.env.BEDROCK_INPUT_USD_PER_MILLION_TOKENS,
+    ),
+    bedrockOutputUsdPerMillionOverride: parseOptionalPositiveFloat(
+      process.env.BEDROCK_OUTPUT_USD_PER_MILLION_TOKENS,
+    ),
+  });
+}
+
+async function saveToolCostEstimate(
+  costStore: RecentCostContextStore | undefined,
+  body: Partial<BridgeMessageRequest>,
+  logContext: Record<string, unknown>,
+  estimate: CostEstimate,
+): Promise<void> {
+  logBridgeEvent("bridge.cost.estimated", {
+    ...logContext,
+    provider: estimate.provider,
+    durationMs: estimate.durationMs,
+    estimatedUsd: estimate.estimatedUsd,
+    costConfidence: estimate.confidence,
+    costBreakdown: estimate.breakdown,
+    pricing: estimate.pricing,
+  });
+
+  if (!costStore) {
+    logBridgeEvent("bridge.cost.save_skipped", {
+      ...logContext,
+      reason: "session-bucket-not-configured",
+    });
+    return;
+  }
+
+  try {
+    const saved = await costStore.save(body.userId!, resolveToolCostSessionId(body), estimate);
+    logBridgeEvent("bridge.cost.saved", {
+      ...logContext,
+      estimatedUsd: estimate.estimatedUsd,
+      expiresAt: saved.expiresAt,
+    });
+  } catch (err: unknown) {
+    logBridgeEvent("bridge.cost.save_failed", {
+      ...logContext,
+      error: err instanceof Error ? err.message : String(err),
+    }, "error");
+  }
+}
+
+function parseOptionalPositiveFloat(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+function parseOptionalPositiveInt(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function resolveToolCostSessionId(body: Partial<BridgeMessageRequest>): string {
+  return body.assistantContext?.sessionId ?? `${body.channel ?? "unknown"}:${body.connectionId ?? "unknown"}`;
+}
+
+function resolveToolMemoryMb(): number | undefined {
+  return parseOptionalPositiveInt(
+    process.env.AGENTCORE_MEMORY_MB ??
+    process.env.TOOL_RUNTIME_MEMORY_MB ??
+    process.env.ECS_MEMORY_MB ??
+    "2048",
+  );
+}
+
+function resolveAgentCoreVcpu(): number | undefined {
+  return parseOptionalPositiveFloat(process.env.AGENTCORE_VCPU ?? process.env.TOOL_RUNTIME_VCPU ?? "1");
+}
+
+function isCostLookupRequest(message: string | undefined): boolean {
+  const normalized = message?.trim() ?? "";
+  if (!normalized || normalized.length > 120) {
+    return false;
+  }
+
+  return [
+    /^\/(?:cost|usage|요금|비용)\b/i,
+    /(?:이번|방금|직전|마지막|이전).*(?:질문|요청|응답|호출|조회).*(?:비용|요금|얼마|cost)/i,
+    /(?:비용|요금|cost).*(?:이번|방금|직전|마지막|이전|얼마)/i,
+    /(?:얼마).*(?:썼|나왔|들었).*(?:이번|방금|직전|마지막|요청|질문|호출|조회)/i,
+  ].some((pattern) => pattern.test(normalized));
+}
+
+function formatUsd(value: number | undefined): string {
+  if (value === undefined) return "unknown";
+  if (value > 0 && value < 0.000001) return "<$0.000001";
+  return `$${value.toFixed(9).replace(/0+$/, "").replace(/\.$/, "")}`;
+}
+
+function buildRecentCostMessage(context: RecentCostContext | undefined): string {
+  if (!context) {
+    return "아직 직전 tool runtime 비용 추정 기록이 없어요. Gmail 조회나 도구 요청을 한 번 실행한 뒤 /cost 또는 이번 질문 비용 얼마야? 라고 물어봐 주세요.";
+  }
+
+  const estimate = context.estimate;
+  const parts = [
+    `직전 tool runtime 질의 추정 비용은 약 ${formatUsd(estimate.estimatedUsd)} 입니다.`,
+    "",
+  ];
+
+  if (estimate.breakdown.agentCoreUsd !== undefined) {
+    parts.push(`- AgentCore Runtime: ${formatUsd(estimate.breakdown.agentCoreUsd)}`);
+  }
+  if (estimate.breakdown.fargateUsd !== undefined) {
+    parts.push(`- Fargate Runtime: ${formatUsd(estimate.breakdown.fargateUsd)}`);
+  }
+  if (estimate.breakdown.bedrockUsd !== undefined) {
+    parts.push(`- Bedrock: ${formatUsd(estimate.breakdown.bedrockUsd)}`);
+  }
+
+  parts.push(
+    `- Runtime: ${estimate.provider}${estimate.model ? ` / ${estimate.model}` : ""}`,
+    `- Duration: ${estimate.durationMs} ms`,
+    "",
+    "정확한 AWS 청구액은 Billing 반영 후 달라질 수 있고, 이 값은 질의 직후 추정치입니다.",
+  );
+
+  return parts.join("\n");
+}
+
 export function createApp(deps: BridgeDeps): express.Express {
   const app = express();
   let firstResponseSent = false;
   const runtimeLabel = deps.runtimeLabel ?? "fargate";
+  const costStore = process.env.SESSION_BUCKET
+    ? new RecentCostContextStore(process.env.SESSION_BUCKET)
+    : undefined;
   const shouldDeferCallbackPersistence =
     process.env.BRIDGE_DEFER_CALLBACK_PERSISTENCE !== "false";
 
@@ -362,6 +510,42 @@ export function createApp(deps: BridgeDeps): express.Express {
       });
     }
 
+    if (isCostLookupRequest(body.message)) {
+      let recentCostContext: RecentCostContext | undefined;
+      try {
+        recentCostContext = costStore
+          ? await costStore.load(body.userId!, resolveToolCostSessionId(body))
+          : undefined;
+        logBridgeEvent("bridge.cost.loaded", {
+          ...logContext,
+          hasRecentCost: Boolean(recentCostContext),
+          estimatedUsd: recentCostContext?.estimate.estimatedUsd,
+        });
+      } catch (err: unknown) {
+        logBridgeEvent("bridge.cost.load_failed", {
+          ...logContext,
+          error: err instanceof Error ? err.message : String(err),
+        }, "error");
+      }
+
+      const message = buildRecentCostMessage(recentCostContext);
+      if (deliveryMode === "callback") {
+        await deps.callbackSender.send(body.connectionId!, {
+          type: "stream_chunk",
+          content: message,
+          conversationId: undefined,
+        });
+        await deps.callbackSender.send(body.connectionId!, {
+          type: "stream_end",
+        });
+      }
+
+      return {
+        message,
+        source: "cost-context",
+      };
+    }
+
     try {
       const gmailReady = await isGmailReady();
       const gmailResponse = await maybeHandleCustomGmailRequest({
@@ -389,6 +573,8 @@ export function createApp(deps: BridgeDeps): express.Express {
           }
 
           const latency = Date.now() - msgStart;
+          const costEstimate = buildToolCostEstimate(body, logContext, runtimeLabel, latency);
+          await saveToolCostEstimate(costStore, body, logContext, costEstimate);
           void publishMessageMetrics({
             latency,
             responseLength: gmailResponse.message.length,
@@ -494,6 +680,8 @@ export function createApp(deps: BridgeDeps): express.Express {
       }
 
       const latency = Date.now() - msgStart;
+      const costEstimate = buildToolCostEstimate(body, logContext, runtimeLabel, latency);
+      await saveToolCostEstimate(costStore, body, logContext, costEstimate);
       void publishMessageMetrics({
         latency,
         responseLength: fullResponse.length,

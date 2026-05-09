@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { estimateCost, estimateLambdaCost, resolveBedrockTokenPricing } from "../src/index.js";
+import {
+  estimateAgentCoreCost,
+  estimateCost,
+  estimateLambdaCost,
+  resolveBedrockTokenPricing,
+} from "../src/index.js";
 
 describe("cost-estimator", () => {
   it("should estimate Lambda arm64 duration cost", () => {
@@ -40,5 +45,26 @@ describe("cost-estimator", () => {
     expect(estimate.breakdown.bedrockUsd).toBe(0.000105);
     expect(estimate.breakdown.lambdaUsd).toBe(0.000053334);
     expect(estimate.confidence).toBe("high");
+  });
+
+  it("should estimate AgentCore active runtime consumption", () => {
+    const runtimeCost = estimateAgentCoreCost(1200, 1, 2);
+
+    expect(runtimeCost?.agentCoreUsd).toBe(0.000036133);
+
+    const estimate = estimateCost({
+      traceId: "trace-agentcore",
+      userId: "user-1",
+      channel: "telegram",
+      runtimeClass: "tool-enabled",
+      provider: "agentcore",
+      durationMs: 1200,
+      memoryMb: 2048,
+      agentCoreVcpu: 1,
+    });
+
+    expect(estimate.estimatedUsd).toBe(0.000036133);
+    expect(estimate.breakdown.agentCoreUsd).toBe(0.000036133);
+    expect(estimate.confidence).toBe("partial");
   });
 });

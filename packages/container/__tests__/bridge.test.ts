@@ -3,10 +3,14 @@ import request from "supertest";
 import { createApp } from "../src/bridge.js";
 import type { BridgeDeps } from "../src/bridge.js";
 
-const { gmailToolMock, publishCountMetricMock, isGmailReadyMock } = vi.hoisted(() => ({
+const { gmailToolMock, publishCountMetricMock, isGmailReadyMock, recentCostLoadMock, recentCostSaveMock } = vi.hoisted(() => ({
   gmailToolMock: vi.fn(),
   publishCountMetricMock: vi.fn().mockResolvedValue(undefined),
   isGmailReadyMock: vi.fn().mockResolvedValue(true),
+  recentCostLoadMock: vi.fn().mockResolvedValue(undefined),
+  recentCostSaveMock: vi.fn().mockResolvedValue({
+    expiresAt: "2099-01-01T00:00:00.000Z",
+  }),
 }));
 
 vi.mock("../src/metrics.js", () => ({
@@ -18,6 +22,13 @@ vi.mock("../src/metrics.js", () => ({
 vi.mock("../src/gmail-tool.js", () => ({
   maybeHandleCustomGmailRequest: gmailToolMock,
   isGmailReady: isGmailReadyMock,
+}));
+
+vi.mock("../src/recent-cost-context.js", () => ({
+  RecentCostContextStore: vi.fn().mockImplementation(() => ({
+    load: recentCostLoadMock,
+    save: recentCostSaveMock,
+  })),
 }));
 
 function createMockDeps(): BridgeDeps {
@@ -56,6 +67,13 @@ describe("Bridge HTTP Server", () => {
     publishCountMetricMock.mockClear();
     isGmailReadyMock.mockReset();
     isGmailReadyMock.mockResolvedValue(true);
+    recentCostLoadMock.mockReset();
+    recentCostLoadMock.mockResolvedValue(undefined);
+    recentCostSaveMock.mockReset();
+    recentCostSaveMock.mockResolvedValue({
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+    process.env.SESSION_BUCKET = "test-session-bucket";
     deps = createMockDeps();
     app = createApp(deps);
     infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
@@ -66,6 +84,7 @@ describe("Bridge HTTP Server", () => {
     delete process.env.AGENTCORE_HTTP_DELIVERY_MODE;
     delete process.env.AGENTCORE_ASYNC_CALLBACK_DELIVERY;
     delete process.env.BRIDGE_DEFER_CALLBACK_PERSISTENCE;
+    delete process.env.SESSION_BUCKET;
     infoSpy.mockRestore();
     errorSpy.mockRestore();
   });
@@ -564,6 +583,73 @@ describe("Bridge HTTP Server", () => {
         runtime: "agentcore",
         deliveryType: "websocket",
       });
+      expect(recentCostSaveMock).toHaveBeenCalledWith(
+        "user-1",
+        "web:conn-agentcore",
+        expect.objectContaining({
+          provider: "agentcore",
+          estimatedUsd: expect.any(Number),
+          breakdown: expect.objectContaining({
+            agentCoreUsd: expect.any(Number),
+          }),
+        }),
+      );
+      expect(infoSpy).toHaveBeenCalledWith(
+        expect.stringContaining("\"event\":\"bridge.cost.estimated\""),
+      );
+    });
+
+    it("should answer AgentCore recent tool cost lookup without invoking tools", async () => {
+      recentCostLoadMock.mockResolvedValueOnce({
+        version: 1,
+        userId: "user-1",
+        sessionId: "web:conn-agentcore",
+        createdAt: "2026-05-09T12:00:00.000Z",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+        estimate: {
+          traceId: "trace-agentcore-cost-source",
+          userId: "user-1",
+          channel: "web",
+          runtimeClass: "tool-enabled",
+          provider: "agentcore",
+          durationMs: 1200,
+          memoryMb: 2048,
+          agentCoreVcpu: 1,
+          estimatedUsd: 0.000036472,
+          confidence: "partial",
+          breakdown: {
+            agentCoreUsd: 0.000036472,
+          },
+        },
+      });
+      app = createApp({
+        ...deps,
+        agentCoreHttpEnabled: true,
+        runtimeLabel: "agentcore",
+      });
+
+      const res = await request(app)
+        .post("/invocations")
+        .send({
+          userId: "user-1",
+          message: "/cost",
+          channel: "web",
+          connectionId: "conn-agentcore",
+          runtimeClass: "tool-enabled",
+          traceId: "trace-agentcore-cost",
+          routeDecision: "agentcore",
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({
+        content: expect.stringContaining("직전 tool runtime 질의 추정 비용"),
+        source: "cost-context",
+      });
+      expect(res.body.content).toContain("$0.000036472");
+      expect(gmailToolMock).not.toHaveBeenCalled();
+      expect(deps.openclawClient.sendMessage).not.toHaveBeenCalled();
+      expect(recentCostLoadMock).toHaveBeenCalledWith("user-1", "web:conn-agentcore");
+      expect(recentCostSaveMock).not.toHaveBeenCalled();
     });
 
     it("should emit direct Telegram content-quality signals for AgentCore responses", async () => {

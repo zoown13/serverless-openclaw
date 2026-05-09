@@ -24,6 +24,7 @@ export interface CostEstimateInput {
   model?: string;
   durationMs: number;
   memoryMb?: number;
+  agentCoreVcpu?: number;
   architecture?: "arm64" | "x86_64";
   tokenUsage?: TokenUsage;
   bedrockInputUsdPerMillionOverride?: number;
@@ -39,24 +40,31 @@ export interface CostEstimate {
   model?: string;
   durationMs: number;
   memoryMb?: number;
+  agentCoreVcpu?: number;
   architecture?: "arm64" | "x86_64";
   estimatedUsd: number;
   confidence: CostEstimateConfidence;
   breakdown: {
     bedrockUsd?: number;
     lambdaUsd?: number;
+    agentCoreUsd?: number;
+    fargateUsd?: number;
     requestUsd?: number;
   };
   tokenUsage?: TokenUsage;
   pricing?: {
     bedrock?: BedrockTokenPricing;
     lambdaGbSecondUsd?: number;
+    agentCoreVcpuHourUsd?: number;
+    agentCoreGbHourUsd?: number;
   };
 }
 
 const LAMBDA_ARM_GB_SECOND_USD = 0.0000133334;
 const LAMBDA_X86_GB_SECOND_USD = 0.0000166667;
 const LAMBDA_REQUEST_USD = 0.20 / 1_000_000;
+const AGENTCORE_VCPU_HOUR_USD = 0.0895;
+const AGENTCORE_GB_HOUR_USD = 0.00945;
 
 const DEFAULT_BEDROCK_PRICING: Array<{
   pattern: RegExp;
@@ -152,6 +160,35 @@ export function estimateLambdaCost(
   };
 }
 
+export function estimateAgentCoreCost(
+  durationMs: number,
+  vcpu: number | undefined,
+  memoryGb: number | undefined,
+): { agentCoreUsd: number; agentCoreVcpuHourUsd: number; agentCoreGbHourUsd: number } | undefined {
+  const safeDurationMs = safeNumber(durationMs);
+  const safeVcpu = safeNumber(vcpu);
+  const safeMemoryGb = safeNumber(memoryGb);
+  if (
+    safeDurationMs === undefined ||
+    safeVcpu === undefined ||
+    safeMemoryGb === undefined ||
+    safeVcpu <= 0 ||
+    safeMemoryGb <= 0
+  ) {
+    return undefined;
+  }
+
+  const hours = safeDurationMs / 1000 / 3600;
+  return {
+    agentCoreUsd: roundUsd(
+      hours * safeVcpu * AGENTCORE_VCPU_HOUR_USD +
+      hours * safeMemoryGb * AGENTCORE_GB_HOUR_USD,
+    ),
+    agentCoreVcpuHourUsd: AGENTCORE_VCPU_HOUR_USD,
+    agentCoreGbHourUsd: AGENTCORE_GB_HOUR_USD,
+  };
+}
+
 export function estimateCost(input: CostEstimateInput): CostEstimate {
   const bedrockPricing = resolveBedrockTokenPricing(
     input.model,
@@ -162,10 +199,18 @@ export function estimateCost(input: CostEstimateInput): CostEstimate {
   const lambdaCost = input.provider === "lambda"
     ? estimateLambdaCost(input.durationMs, input.memoryMb, input.architecture)
     : undefined;
+  const agentCoreCost = input.provider === "agentcore"
+    ? estimateAgentCoreCost(
+        input.durationMs,
+        input.agentCoreVcpu,
+        safeNumber(input.memoryMb) === undefined ? undefined : input.memoryMb! / 1024,
+      )
+    : undefined;
 
   const estimatedUsd = roundUsd(
     (bedrockUsd ?? 0) +
     (lambdaCost?.lambdaUsd ?? 0) +
+    (agentCoreCost?.agentCoreUsd ?? 0) +
     (lambdaCost?.requestUsd ?? 0),
   );
 
@@ -178,18 +223,22 @@ export function estimateCost(input: CostEstimateInput): CostEstimate {
     model: input.model,
     durationMs: input.durationMs,
     memoryMb: input.memoryMb,
+    agentCoreVcpu: input.agentCoreVcpu,
     architecture: input.architecture,
     estimatedUsd,
     confidence: bedrockUsd !== undefined ? "high" : "partial",
     breakdown: {
       bedrockUsd,
       lambdaUsd: lambdaCost?.lambdaUsd,
+      agentCoreUsd: agentCoreCost?.agentCoreUsd,
       requestUsd: lambdaCost?.requestUsd,
     },
     tokenUsage: input.tokenUsage,
     pricing: {
       bedrock: bedrockPricing,
       lambdaGbSecondUsd: lambdaCost?.lambdaGbSecondUsd,
+      agentCoreVcpuHourUsd: agentCoreCost?.agentCoreVcpuHourUsd,
+      agentCoreGbHourUsd: agentCoreCost?.agentCoreGbHourUsd,
     },
   };
 }

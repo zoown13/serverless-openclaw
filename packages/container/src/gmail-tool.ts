@@ -3715,7 +3715,7 @@ export async function maybeHandleCustomGmailRequest(
 
   const finalDecision = advisorDecision ?? {
     action: deterministicAction,
-    confidence: 0.5,
+    confidence: useDeterministicFastPath ? 0.9 : 0.5,
     sourceChoice: isStartNewTaskAction(deterministicAction) ? "gmail" : null,
     taskFamily: looksLikePaymentQuestion(options.message)
       ? "gmail_payment_summary"
@@ -3728,7 +3728,7 @@ export async function maybeHandleCustomGmailRequest(
     refreshedContext,
   );
 
-  if (!advisorDecision) {
+  if (!advisorDecision && !useDeterministicFastPath) {
     emitToolEvent(options.onToolEvent, {
       type: "handlerFallback",
       reason: "advisor-unavailable",

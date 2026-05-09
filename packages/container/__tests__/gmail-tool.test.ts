@@ -289,6 +289,7 @@ describe("gmail-tool", () => {
 
   it("can skip the advisor for high-confidence payment lookups when the fast path is enabled", async () => {
     process.env.TOOL_DETERMINISTIC_PAYMENT_FAST_PATH = "true";
+    const toolEvents: Array<{ type: string; reason?: string; confidence?: number }> = [];
     decideToolIntentMock.mockResolvedValueOnce({
       action: "clarify_source",
       taskFamily: "gmail_payment_summary",
@@ -313,12 +314,19 @@ describe("gmail-tool", () => {
       message: "최근 결제한 내역 알려줘",
       gmailReady: true,
       emailTokenBudget: EMAIL_BUDGET,
+      onToolEvent: (event) => toolEvents.push(event),
     });
 
     expect(response?.kind).toBe("direct");
     expect(response?.message).toContain("확인 가능한 합계: KRW 12,300");
     expect(fetchMock).toHaveBeenCalled();
     expect(decideToolIntentMock).not.toHaveBeenCalled();
+    expect(toolEvents).not.toContainEqual(
+      expect.objectContaining({ type: "handlerFallback", reason: "advisor-unavailable" }),
+    );
+    expect(toolEvents).toContainEqual(
+      expect.objectContaining({ type: "intentDecided", confidence: 0.9 }),
+    );
   });
 
   it("can restart an active payment context without the advisor for high-confidence fresh lookups", async () => {

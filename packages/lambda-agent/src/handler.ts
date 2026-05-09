@@ -702,55 +702,80 @@ export async function handler(
     const directStartedAt = Date.now();
     const directChatMaxTokens = resolveDirectChatMaxTokens(event.message);
     const directChatModel = resolveDirectChatModel(event, runtimeConfig);
-    logLambdaEvent("lambda.direct_chat.started", {
-      ...requestLogPayload,
-      model: directChatModel,
-      maxTokens: directChatMaxTokens,
-    });
-    try {
-      const directResult = await runDirectBedrockChat({
-        message: event.message,
-        model: directChatModel,
-        systemPrompt: buildDirectChatSystemPrompt(event, runtimeConfig),
+    const directChatFallbackModel = runtimeConfig.defaultModel;
+    const directChatModels = directChatModel === directChatFallbackModel
+      ? [directChatModel]
+      : [directChatModel, directChatFallbackModel];
+    let lastDirectChatError: unknown;
+
+    for (const [attemptIndex, model] of directChatModels.entries()) {
+      logLambdaEvent("lambda.direct_chat.started", {
+        ...requestLogPayload,
+        model,
         maxTokens: directChatMaxTokens,
-        temperature: 0.2,
+        attemptIndex,
+        fallbackFromModel: attemptIndex > 0 ? directChatModel : undefined,
       });
-      const payloads = [{ text: directResult.text }];
+      try {
+        const directResult = await runDirectBedrockChat({
+          message: event.message,
+          model,
+          systemPrompt: buildDirectChatSystemPrompt(event, runtimeConfig),
+          maxTokens: directChatMaxTokens,
+          temperature: 0.2,
+        });
+        const payloads = [{ text: directResult.text }];
 
-      await pushPayloads(payloads, {
-        canPush,
-        callbackUrl: event.callbackUrl,
-        connectionId: event.connectionId,
-        isTelegram,
-        telegramBotToken,
-        telegramChatId,
-        traceId,
-        channel: event.channel,
-      });
-      await pushIdleStatus(canPush, traceId, event.callbackUrl, event.connectionId);
-      await lock.release();
+        await pushPayloads(payloads, {
+          canPush,
+          callbackUrl: event.callbackUrl,
+          connectionId: event.connectionId,
+          isTelegram,
+          telegramBotToken,
+          telegramChatId,
+          traceId,
+          channel: event.channel,
+        });
+        await pushIdleStatus(canPush, traceId, event.callbackUrl, event.connectionId);
+        await lock.release();
 
-      logLambdaEvent("lambda.direct_chat.completed", {
-        ...requestLogPayload,
-        durationMs: Date.now() - directStartedAt,
-        inputTokens: directResult.usage?.inputTokens,
-        outputTokens: directResult.usage?.outputTokens,
-      });
+        logLambdaEvent("lambda.direct_chat.completed", {
+          ...requestLogPayload,
+          model,
+          durationMs: Date.now() - directStartedAt,
+          inputTokens: directResult.usage?.inputTokens,
+          outputTokens: directResult.usage?.outputTokens,
+          attemptIndex,
+          fallbackFromModel: attemptIndex > 0 ? directChatModel : undefined,
+        });
 
-      return {
-        success: true,
-        payloads,
-        durationMs: Date.now() - startTime,
-        provider: runtimeConfig.openclawProvider,
-        model: directChatModel,
-      };
-    } catch (err: unknown) {
-      logLambdaEvent("lambda.direct_chat.fallback", {
-        ...requestLogPayload,
-        durationMs: Date.now() - directStartedAt,
-        error: err instanceof Error ? err.message : String(err),
-      });
+        return {
+          success: true,
+          payloads,
+          durationMs: Date.now() - startTime,
+          provider: runtimeConfig.openclawProvider,
+          model,
+        };
+      } catch (err: unknown) {
+        lastDirectChatError = err;
+        logLambdaEvent("lambda.direct_chat.attempt_failed", {
+          ...requestLogPayload,
+          model,
+          durationMs: Date.now() - directStartedAt,
+          attemptIndex,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
+
+    logLambdaEvent("lambda.direct_chat.fallback", {
+        ...requestLogPayload,
+        durationMs: Date.now() - directStartedAt,
+        attemptedModels: directChatModels,
+        error: lastDirectChatError instanceof Error
+          ? lastDirectChatError.message
+          : String(lastDirectChatError),
+    });
   }
 
   const sync = new SessionSync(bucket, "/tmp/.openclaw");

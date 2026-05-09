@@ -5,8 +5,10 @@ import type {
 } from "./types.js";
 import {
   buildRuntimeSessionId,
+  estimateCost,
   resolveProviderConfig,
   type ResolvedRuntimeConfig,
+  type TokenUsage,
 } from "@serverless-openclaw/shared";
 import { initConfig } from "./config-init.js";
 import { SessionSync } from "./session-sync.js";
@@ -362,6 +364,62 @@ function parseEverydayDirectChatMaxTokens(): number {
 function parseDirectVisionMaxTokens(): number {
   const parsed = Number.parseInt(process.env.LAMBDA_DIRECT_VISION_MAX_TOKENS ?? "", 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 420;
+}
+
+function parseOptionalPositiveFloat(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+function parseLambdaMemoryMb(): number | undefined {
+  const parsed = Number.parseInt(process.env.AWS_LAMBDA_FUNCTION_MEMORY_SIZE ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function resolveLambdaArchitecture(): "arm64" | "x86_64" {
+  return process.env.LAMBDA_ARCHITECTURE === "x86_64" ? "x86_64" : "arm64";
+}
+
+function logCostEstimate(
+  event: LambdaAgentEvent,
+  basePayload: Record<string, unknown>,
+  params: {
+    model?: string;
+    durationMs: number;
+    tokenUsage?: TokenUsage;
+    runtimeClass?: "chat-only" | "tool-enabled";
+  },
+): void {
+  const estimate = estimateCost({
+    traceId: String(basePayload.traceId ?? event.traceId ?? `lambda-${event.sessionId}`),
+    userId: event.userId,
+    channel: event.channel,
+    runtimeClass: params.runtimeClass ?? event.assistantContext?.runtime.runtimeClass ?? "chat-only",
+    provider: "lambda",
+    model: params.model,
+    durationMs: params.durationMs,
+    memoryMb: parseLambdaMemoryMb(),
+    architecture: resolveLambdaArchitecture(),
+    tokenUsage: params.tokenUsage,
+    bedrockInputUsdPerMillionOverride: parseOptionalPositiveFloat(
+      process.env.BEDROCK_INPUT_USD_PER_MILLION_TOKENS,
+    ),
+    bedrockOutputUsdPerMillionOverride: parseOptionalPositiveFloat(
+      process.env.BEDROCK_OUTPUT_USD_PER_MILLION_TOKENS,
+    ),
+  });
+
+  logLambdaEvent("lambda.cost.estimated", {
+    ...basePayload,
+    model: params.model,
+    durationMs: params.durationMs,
+    estimatedUsd: estimate.estimatedUsd,
+    costConfidence: estimate.confidence,
+    costBreakdown: estimate.breakdown,
+    tokenUsage: estimate.tokenUsage,
+    pricing: estimate.pricing,
+  });
 }
 
 function resolveDirectChatModel(
@@ -836,12 +894,18 @@ export async function handler(
       await pushIdleStatus(canPush, traceId, event.callbackUrl, event.connectionId);
       await lock.release();
 
+      const visionDurationMs = Date.now() - visionStartedAt;
       logLambdaEvent("lambda.direct_vision.completed", {
         ...requestLogPayload,
         model: visionModel,
-        durationMs: Date.now() - visionStartedAt,
+        durationMs: visionDurationMs,
         inputTokens: directResult.usage?.inputTokens,
         outputTokens: directResult.usage?.outputTokens,
+      });
+      logCostEstimate(event, requestLogPayload, {
+        model: visionModel,
+        durationMs: visionDurationMs,
+        tokenUsage: directResult.usage,
       });
 
       return {
@@ -959,14 +1023,20 @@ export async function handler(
         await pushIdleStatus(canPush, traceId, event.callbackUrl, event.connectionId);
         await lock.release();
 
+        const directChatDurationMs = Date.now() - directStartedAt;
         logLambdaEvent("lambda.direct_chat.completed", {
           ...requestLogPayload,
           model,
-          durationMs: Date.now() - directStartedAt,
+          durationMs: directChatDurationMs,
           inputTokens: directResult.usage?.inputTokens,
           outputTokens: directResult.usage?.outputTokens,
           attemptIndex,
           fallbackFromModel: attemptIndex > 0 ? directChatModel : undefined,
+        });
+        logCostEstimate(event, requestLogPayload, {
+          model,
+          durationMs: directChatDurationMs,
+          tokenUsage: directResult.usage,
         });
 
         return {
@@ -1051,6 +1121,10 @@ export async function handler(
       });
 
       await pushIdleStatus(canPush, traceId, event.callbackUrl, event.connectionId);
+      logCostEstimate(event, requestLogPayload, {
+        model: result.meta.agentMeta.model,
+        durationMs: Date.now() - startTime,
+      });
 
       return {
         success: true,

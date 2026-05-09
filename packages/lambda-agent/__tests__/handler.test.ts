@@ -728,6 +728,12 @@ describe("handler", () => {
     expect(infoSpy).toHaveBeenCalledWith(
       expect.stringContaining("\"event\":\"lambda.direct_chat.completed\""),
     );
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"event\":\"lambda.cost.estimated\""),
+    );
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"estimatedUsd\""),
+    );
   });
 
   it("should use direct Bedrock chat for everyday standalone Telegram chat when enabled", async () => {
@@ -881,6 +887,9 @@ describe("handler", () => {
     expect(mockUpload).not.toHaveBeenCalled();
     expect(infoSpy).toHaveBeenCalledWith(
       expect.stringContaining("\"event\":\"lambda.direct_vision.completed\""),
+    );
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"event\":\"lambda.cost.estimated\""),
     );
   });
 

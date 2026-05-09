@@ -1,6 +1,11 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, ScanCommand, DeleteCommand } from "@aws-sdk/lib-dynamodb";
-import { ECSClient, StopTaskCommand, DescribeTasksCommand } from "@aws-sdk/client-ecs";
+import {
+  ECSClient,
+  StopTaskCommand,
+  DescribeTasksCommand,
+  ListTasksCommand,
+} from "@aws-sdk/client-ecs";
 import { CloudWatchClient, GetMetricStatisticsCommand } from "@aws-sdk/client-cloudwatch";
 import {
   TABLE_NAMES,
@@ -19,6 +24,10 @@ const ecs = new ECSClient({});
 const cloudwatch = new CloudWatchClient({});
 
 const STALE_STARTING_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+const ORPHAN_TASK_MIN_UPTIME_MS = Number.parseInt(
+  process.env.WATCHDOG_ORPHAN_TASK_MIN_UPTIME_MS ?? "",
+  10,
+) || 15 * 60 * 1000;
 
 async function getActiveTimeout(): Promise<number> {
   try {
@@ -79,6 +88,7 @@ export async function handler(): Promise<void> {
   )) as { Items?: TaskStateItem[] };
 
   const items = result.Items ?? [];
+  const referencedTaskArns = new Set(items.map((item) => item.taskArn));
 
   for (const item of items) {
     const startedAt = new Date(item.startedAt).getTime();
@@ -157,5 +167,72 @@ export async function handler(): Promise<void> {
         }),
       );
     }
+  }
+
+  try {
+    await stopOrphanStandaloneTasks(cluster, now, referencedTaskArns);
+  } catch (error) {
+    console.warn("[watchdog] orphan standalone task cleanup failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function resolveTaskFamily(taskDefinitionArn: string | undefined): string | undefined {
+  if (!taskDefinitionArn) return undefined;
+  const definition = taskDefinitionArn.split("/").pop();
+  return definition?.split(":")[0];
+}
+
+async function stopOrphanStandaloneTasks(
+  cluster: string,
+  now: number,
+  referencedTaskArns: Set<string>,
+): Promise<void> {
+  const family = resolveTaskFamily(process.env.TASK_DEFINITION_ARN);
+  if (!family) return;
+
+  const listed = await ecs.send(
+    new ListTasksCommand({
+      cluster,
+      desiredStatus: "RUNNING",
+      family,
+    }),
+  );
+
+  const orphanCandidates = (listed.taskArns ?? []).filter((taskArn) => !referencedTaskArns.has(taskArn));
+  if (orphanCandidates.length === 0) return;
+
+  const described = await ecs.send(
+    new DescribeTasksCommand({
+      cluster,
+      tasks: orphanCandidates,
+    }),
+  );
+
+  for (const task of described.tasks ?? []) {
+    const taskArn = task.taskArn;
+    if (!taskArn || referencedTaskArns.has(taskArn)) continue;
+    if (task.lastStatus !== "RUNNING" || task.desiredStatus === "STOPPED") continue;
+    if (task.launchType && task.launchType !== "FARGATE") continue;
+    if (task.group && !task.group.startsWith("family:")) continue;
+
+    const startedAt = task.startedAt?.getTime?.() ?? task.createdAt?.getTime?.() ?? now;
+    if (now - startedAt < ORPHAN_TASK_MIN_UPTIME_MS) continue;
+
+    console.log("[watchdog] stopping orphan standalone Fargate task", {
+      taskArn,
+      group: task.group,
+      taskDefinitionArn: task.taskDefinitionArn,
+      startedAt: task.startedAt?.toISOString?.() ?? task.createdAt?.toISOString?.(),
+    });
+
+    await ecs.send(
+      new StopTaskCommand({
+        cluster,
+        task: taskArn,
+        reason: "Watchdog: orphan standalone task without TaskState",
+      }),
+    );
   }
 }

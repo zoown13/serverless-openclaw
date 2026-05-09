@@ -7,7 +7,7 @@ param(
   [long]$ChatId,
   [long]$TelegramId,
   [string]$UserId,
-  [ValidateSet("PaymentFollowUp", "PaymentCoverageFollowUp", "PaymentCoverageThenIssuerBreakdown", "PaymentExpandedFirstTurn", "PaymentHistoryCapability", "PaymentCapabilityThenChatHandoff", "PaymentDateRange", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff", "GenericPaymentThenTravelRefinement")]
+  [ValidateSet("PaymentFollowUp", "PaymentCoverageFollowUp", "PaymentCoverageThenIssuerBreakdown", "PaymentExpandedFirstTurn", "PaymentDeepScanFirstTurn", "PaymentHistoryCapability", "PaymentCapabilityThenChatHandoff", "PaymentDateRange", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff", "GenericPaymentThenTravelRefinement")]
   [string]$Scenario = "PaymentFollowUp",
   [int]$PauseSeconds = 10,
   [int]$BridgeSignalTimeoutSeconds = 180,
@@ -206,6 +206,11 @@ function Get-ScenarioMessages {
     "PaymentExpandedFirstTurn" {
       return @(
         "이번주 결제한 금액 전체로 제한 풀고 봐줘"
+      )
+    }
+    "PaymentDeepScanFirstTurn" {
+      return @(
+        "이번주 결제한 금액 100건까지 더 깊게 봐줘"
       )
     }
     "PaymentHistoryCapability" {
@@ -452,7 +457,8 @@ function Wait-BridgeSignals {
   $requiresIssuerBreakdownSignals = $SelectedScenario -in @("PaymentCoverageThenIssuerBreakdown", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff")
   $requiresPaymentCapabilitySignals = $SelectedScenario -in @("PaymentHistoryCapability", "PaymentCapabilityThenChatHandoff")
   $requiresTravelSignals = $SelectedScenario -in @("TravelPaymentFollowUp", "TravelPaymentThenChatHandoff", "GenericPaymentThenTravelRefinement")
-  $requiresPaymentResponseQuality = $SelectedScenario -in @("PaymentCoverageFollowUp", "PaymentCoverageThenIssuerBreakdown", "PaymentExpandedFirstTurn", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff", "GenericPaymentThenTravelRefinement")
+  $requiresDeepScanSignals = $SelectedScenario -eq "PaymentDeepScanFirstTurn"
+  $requiresPaymentResponseQuality = $SelectedScenario -in @("PaymentCoverageFollowUp", "PaymentCoverageThenIssuerBreakdown", "PaymentExpandedFirstTurn", "PaymentDeepScanFirstTurn", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff", "GenericPaymentThenTravelRefinement")
   $requiresTravelResponseQuality = $requiresTravelSignals
   $requiresChatHandoff = $SelectedScenario -in @("TravelPaymentThenChatHandoff", "PaymentCapabilityThenChatHandoff")
 
@@ -472,6 +478,12 @@ function Wait-BridgeSignals {
   if ($requiresCoverageRerunSignals) {
     $requiredSignals += @(
       '"action":"rerun_current_task"'
+    )
+  }
+
+  if ($requiresDeepScanSignals) {
+    $requiredSignals += @(
+      '"scanLimit":100'
     )
   }
 

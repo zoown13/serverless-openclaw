@@ -19,6 +19,7 @@ export interface InvokeLambdaAgentParams {
   callbackUrl?: string;
   assistantContext?: AssistantRuntimeContext;
   imageInput?: LambdaAgentImageInput;
+  disableTools?: boolean;
 }
 
 /**
@@ -43,6 +44,7 @@ export async function invokeLambdaAgent(
     callbackUrl: params.callbackUrl,
     assistantContext: params.assistantContext,
     imageInput: params.imageInput,
+    disableTools: params.disableTools,
   };
 
   await lambda.send(

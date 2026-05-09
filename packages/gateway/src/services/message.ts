@@ -38,7 +38,10 @@ import {
 import type { RouteClassificationSignals } from "./route-classifier.js";
 import { publishGatewayCountMetric } from "./metrics.js";
 
-type FetchFn = (url: string, init: RequestInit) => Promise<{ ok: boolean; status: number; statusText: string }>;
+type FetchFn = (
+  url: string,
+  init: RequestInit,
+) => Promise<{ ok: boolean; status: number; statusText: string }>;
 type Send = (command: unknown) => Promise<unknown>;
 
 function logRouteEvent(
@@ -81,10 +84,7 @@ export async function sendToBridge(
   }
 }
 
-export async function savePendingMessage(
-  send: Send,
-  item: PendingMessageItem,
-): Promise<void> {
+export async function savePendingMessage(send: Send, item: PendingMessageItem): Promise<void> {
   await send(
     new PutCommand({
       TableName: TABLE_NAMES.PENDING_MESSAGES,

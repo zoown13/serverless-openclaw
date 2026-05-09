@@ -186,7 +186,9 @@ export async function handler(event: {
   const secretToken = event.headers["x-telegram-bot-api-secret-token"];
   const expectedToken = secrets.get(process.env.SSM_TELEGRAM_SECRET_TOKEN!) ?? "";
 
-  const tokenMatch = secretToken && expectedToken &&
+  const tokenMatch =
+    secretToken &&
+    expectedToken &&
     secretToken.length === expectedToken.length &&
     timingSafeEqual(Buffer.from(secretToken), Buffer.from(expectedToken));
   if (!tokenMatch) {
@@ -316,9 +318,10 @@ export async function handler(event: {
     });
     console.log("[telegram] /link result", { telegramId, success: !("error" in result) });
     if (botToken) {
-      const msg = "error" in result
-        ? `❌ ${result.error}`
-        : "✅ Account linked! Web and Telegram now share the same container.";
+      const msg =
+        "error" in result
+          ? `❌ ${result.error}`
+          : "✅ Account linked! Web and Telegram now share the same container.";
       await sendTelegramMessage(fetch as never, botToken, connectionId, msg);
     }
     return { statusCode: 200, body: "OK" };
@@ -363,6 +366,7 @@ export async function handler(event: {
   }
 
   console.log("[telegram] routing message", { userId, channel: "telegram", agentRuntime });
+  const lambdaAgentFunctionArn = process.env.LAMBDA_AGENT_FUNCTION_ARN ?? "";
   const routeResult = await routeMessage({
     userId,
     message: text,
@@ -398,8 +402,8 @@ export async function handler(event: {
     },
     agentRuntime,
     toolRuntimeProvider: (process.env.TOOL_RUNTIME_PROVIDER as "fargate" | "agentcore" | undefined) ?? "agentcore",
-    invokeLambdaAgent,
-    lambdaAgentFunctionArn: process.env.LAMBDA_AGENT_FUNCTION_ARN ?? "",
+    invokeLambdaAgent: lambdaAgentFunctionArn ? invokeLambdaAgent : undefined,
+    lambdaAgentFunctionArn: lambdaAgentFunctionArn || undefined,
     invokeAgentCoreRuntime,
     agentCoreRuntimeArn: process.env.AGENTCORE_RUNTIME_ARN ?? "",
     agentCoreRuntimeQualifier: process.env.AGENTCORE_RUNTIME_QUALIFIER,

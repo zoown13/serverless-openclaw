@@ -121,11 +121,11 @@ export class ApiStack extends cdk.Stack {
     const bundlingDefaults = {
       externalModules: ["@aws-sdk/*"],
       sourceMap: true,
-      target: "node24",
+      target: "node22",
     };
 
     const nodejsFunctionDefaults = {
-      runtime: lambda.Runtime.NODEJS_24_X,
+      runtime: lambda.Runtime.NODEJS_22_X,
       architecture: lambda.Architecture.ARM_64,
       memorySize: 256,
       timeout: cdk.Duration.seconds(30),
@@ -219,7 +219,10 @@ export class ApiStack extends cdk.Stack {
     for (const fn of secretFunctions) {
       fn.addEnvironment("SSM_BRIDGE_AUTH_TOKEN", SSM_SECRETS.BRIDGE_AUTH_TOKEN);
     }
-    telegramWebhookFn.addEnvironment("SSM_TELEGRAM_SECRET_TOKEN", SSM_SECRETS.TELEGRAM_WEBHOOK_SECRET);
+    telegramWebhookFn.addEnvironment(
+      "SSM_TELEGRAM_SECRET_TOKEN",
+      SSM_SECRETS.TELEGRAM_WEBHOOK_SECRET,
+    );
     telegramWebhookFn.addEnvironment("SSM_TELEGRAM_BOT_TOKEN", SSM_SECRETS.TELEGRAM_BOT_TOKEN);
 
     // Grant SSM read access for secret resolution at runtime
@@ -270,6 +273,7 @@ export class ApiStack extends cdk.Stack {
               "ecs:RunTask",
               "ecs:StopTask",
               "ecs:DescribeTasks",
+              "ecs:ListTasks",
             ],
             resources: ["*"],
           }),

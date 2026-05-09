@@ -706,7 +706,7 @@ describe("Preservation: fargate and both modes unchanged", () => {
     }
   });
 
-  it("IAM preservation: fargate mode has ECS RunTask/StopTask/DescribeTasks policies", () => {
+  it("IAM preservation: fargate mode has ECS RunTask/StopTask/DescribeTasks/ListTasks policies", () => {
     const app = new cdk.App();
     const network = new NetworkStack(app, "PresIamNetworkStack");
     const storage = new StorageStack(app, "PresIamStorageStack");
@@ -732,6 +732,7 @@ describe("Preservation: fargate and both modes unchanged", () => {
     expect(templateJson).toContain("ecs:RunTask");
     expect(templateJson).toContain("ecs:StopTask");
     expect(templateJson).toContain("ecs:DescribeTasks");
+    expect(templateJson).toContain("ecs:ListTasks");
   });
 
   it("dashboard preservation: fargate MonitoringStack has Cold Start, Pre-Warming, and ECS sections", () => {

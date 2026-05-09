@@ -359,8 +359,8 @@ describe("gmail-tool", () => {
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain("maxResults=50");
   });
 
-  it("automatically widens capped payment scans even without explicit expansion wording", async () => {
-    const firstPassIds = Array.from({ length: 5 }, (_, index) => ({ id: `m${index + 1}` }));
+  it("starts broad payment summaries at the hard scan cap without duplicate expansion scans", async () => {
+    const firstPassIds = Array.from({ length: 6 }, (_, index) => ({ id: `m${index + 1}` }));
     const expandedIds = Array.from({ length: 6 }, (_, index) => ({ id: `m${index + 1}` }));
 
     fetchMock
@@ -412,16 +412,16 @@ describe("gmail-tool", () => {
     const listCalls = fetchMock.mock.calls
       .map((call) => String(call[0]))
       .filter((url) => url.includes("/messages?q="));
-    expect(listCalls.some((url) => url.includes("maxResults=5"))).toBe(true);
-    expect(listCalls.some((url) => url.includes("maxResults=50"))).toBe(true);
-    expect(listCalls.some((url) => url.includes("maxResults=45"))).toBe(true);
+    expect(listCalls.some((url) => /[?&]maxResults=5(?:&|$)/.test(url))).toBe(false);
+    expect(listCalls.some((url) => /[?&]maxResults=50(?:&|$)/.test(url))).toBe(true);
+    expect(listCalls.some((url) => /[?&]maxResults=45(?:&|$)/.test(url))).toBe(false);
     expect(response?.kind).toBe("direct");
     expect(response?.message).toContain("스캔 범위를 자동으로 넓혔습니다");
     expect(response?.message).toContain("후보 6건을 확인");
     expect(response?.message).toContain("합계는 스캔에서 결제로 파악한 6건 전체 기준");
   });
 
-  it("treats natural missing-coverage follow-ups as expanded payment reruns", async () => {
+  it("keeps natural missing-coverage follow-ups in context after a hard-cap scan", async () => {
     for (const [index, followUpMessage] of ["빠진 거 없어?", "전부 다시 봐줘"].entries()) {
       fetchMock.mockReset();
       fetchMock
@@ -480,9 +480,8 @@ describe("gmail-tool", () => {
       const listCalls = fetchMock.mock.calls
         .map((call) => String(call[0]))
         .filter((url) => url.includes("/messages?q="));
-      expect(listCalls.some((url) => url.includes("maxResults=50"))).toBe(true);
+      expect(listCalls.some((url) => /[?&]maxResults=50(?:&|$)/.test(url))).toBe(false);
       expect(followUp?.kind).toBe("direct");
-      expect(followUp?.message).toContain("쿠팡");
     }
   });
 
@@ -1011,7 +1010,6 @@ describe("gmail-tool", () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
       .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m2" }] } }))
-      .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m2" }] } }))
       .mockResolvedValueOnce(
         metadataResponse(
           "카드 결제 알림",
@@ -1207,7 +1205,7 @@ describe("gmail-tool", () => {
     });
   });
 
-  it("reruns payment coverage follow-ups with the user-expanded hard cap", async () => {
+  it("keeps payment coverage follow-ups in context after a hard-cap first scan", async () => {
     decideToolIntentMock.mockResolvedValueOnce({
       action: "gmail",
       taskFamily: "gmail_payment_summary",
@@ -1273,7 +1271,7 @@ describe("gmail-tool", () => {
       emailTokenBudget: EMAIL_BUDGET,
     });
 
-    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("maxResults=25");
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("maxResults=50");
     fetchMock.mockReset();
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
@@ -1357,11 +1355,8 @@ describe("gmail-tool", () => {
       emailTokenBudget: EMAIL_BUDGET,
     });
 
-    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("maxResults=50");
-    expect(String(fetchMock.mock.calls[2]?.[0])).toContain("maxResults=45");
+    expect(fetchMock).not.toHaveBeenCalled();
     expect(followUp?.kind).toBe("direct");
-    expect(followUp?.message).toContain("후보 6건을 확인");
-    expect(followUp?.message).toContain("합계는 스캔에서 결제로 파악한 6건 전체 기준");
   });
 
   it("uses the expanded hard cap on the first payment request when the user explicitly asks for it", async () => {

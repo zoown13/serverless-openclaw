@@ -1046,7 +1046,7 @@ function resolvePaymentScanLimit(
     MAX_PAYMENT_SCAN_MESSAGES,
   );
 
-  if (isBroadPaymentSummaryRequest(message) && emailTokenBudget.maxMessages >= 10) {
+  if (isBroadPaymentSummaryRequest(message)) {
     return MAX_PAYMENT_SCAN_MESSAGES;
   }
 
@@ -2678,6 +2678,14 @@ async function runGmailTask(
         ? resolvePaymentScanLimit(options.emailTokenBudget, sourceMessage)
         : options.emailTokenBudget.maxMessages;
     scanLimitUsed = scanLimit;
+    if (
+      taskFamily === "gmail_payment_summary" &&
+      broadPaymentSummaryScan &&
+      scanLimit >= MAX_PAYMENT_SCAN_MESSAGES &&
+      !userExpandedScan
+    ) {
+      autoExpandedScan = true;
+    }
     const broadPaymentQuery = taskFamily === "gmail_payment_summary"
       ? buildPaymentSearchQuery(sourceMessage, unreadOnly, topicKeywords)
       : primaryQuery;

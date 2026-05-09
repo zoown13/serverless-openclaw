@@ -509,6 +509,14 @@ function buildRecentCostMessage(context: RecentCostContext | undefined): string 
   ];
   if (estimate.breakdown.upstreamUsd !== undefined) {
     parts.push(`- Gateway/frontdoor: ${formatUsd(estimate.breakdown.upstreamUsd)}`);
+    for (const upstream of estimate.upstreamCosts ?? []) {
+      const durationSuffix = upstream.durationMs !== undefined
+        ? ` (${upstream.durationMs} ms)`
+        : "";
+      parts.push(
+        `  - ${upstream.name}: ${formatUsd(upstream.estimatedUsd)}${durationSuffix}`,
+      );
+    }
   }
 
   if (estimate.tokenUsage?.inputTokens !== undefined || estimate.tokenUsage?.outputTokens !== undefined) {

@@ -212,23 +212,42 @@ function resolveGatewayElapsedMs(deps: RouteDeps): number {
   return parsePositiveInteger(process.env.GATEWAY_FRONTDOOR_COST_ESTIMATE_MS, 1);
 }
 
+function resolveGatewayCompletionReserveMs(routeDecision: RouteDecision): number {
+  const envKey = routeDecision === "agentcore"
+    ? "GATEWAY_FRONTDOOR_AGENTCORE_RESERVE_MS"
+    : routeDecision === "lambda"
+      ? "GATEWAY_FRONTDOOR_LAMBDA_RESERVE_MS"
+      : "GATEWAY_FRONTDOOR_FARGATE_RESERVE_MS";
+  const fallback = routeDecision === "agentcore"
+    ? 1200
+    : routeDecision === "lambda"
+      ? 350
+      : 500;
+
+  return parsePositiveInteger(process.env[envKey], fallback);
+}
+
 function buildGatewayCostSnapshot(
   deps: RouteDeps,
   runtimeClass: RuntimeClass,
+  routeDecision: RouteDecision,
 ): AssistantRuntimeCostSnapshot {
+  const measuredElapsedMs = resolveGatewayElapsedMs(deps);
+  const reserveMs = resolveGatewayCompletionReserveMs(routeDecision);
+  const estimatedRouteCompletionMs = measuredElapsedMs + reserveMs;
   const estimate = estimateCost({
     traceId: deps.traceId,
     userId: deps.userId,
     channel: deps.channel,
     runtimeClass,
     provider: "lambda",
-    durationMs: resolveGatewayElapsedMs(deps),
+    durationMs: estimatedRouteCompletionMs,
     memoryMb: resolveGatewayLambdaMemoryMb(),
     architecture: resolveGatewayLambdaArchitecture(),
   });
 
   return {
-    name: "gateway-frontdoor",
+    name: "gateway-frontdoor-estimated-to-route-completion",
     provider: "lambda",
     estimatedUsd: estimate.estimatedUsd,
     durationMs: estimate.durationMs,
@@ -409,7 +428,7 @@ function buildAssistantRuntimeContext(
   const sessionId = runtimeClass === "chat-only"
     ? resolveLambdaSessionId(deps, runtimeClass)
     : deps.sessionId ?? `session-${deps.userId}`;
-  const gatewayCost = buildGatewayCostSnapshot(deps, runtimeClass);
+  const gatewayCost = buildGatewayCostSnapshot(deps, runtimeClass, routeDecision);
   const context: AssistantRuntimeContext = {
     version: 1,
     userId: deps.userId,
@@ -467,6 +486,7 @@ function buildAssistantRuntimeContext(
     gmailCapability: context.capabilities.gmail.status,
     gatewayEstimatedUsd: gatewayCost.estimatedUsd,
     gatewayDurationMs: gatewayCost.durationMs,
+    gatewayCostName: gatewayCost.name,
   });
 
   return context;

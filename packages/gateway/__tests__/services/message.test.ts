@@ -191,7 +191,7 @@ describe("message service", () => {
             cost: expect.objectContaining({
               upstream: [
                 expect.objectContaining({
-                  name: "gateway-frontdoor",
+                  name: "gateway-frontdoor-estimated-to-route-completion",
                   provider: "lambda",
                   estimatedUsd: expect.any(Number),
                 }),

@@ -7,7 +7,7 @@ param(
   [long]$ChatId,
   [long]$TelegramId,
   [string]$UserId,
-  [ValidateSet("PaymentFollowUp", "PaymentCoverageFollowUp", "PaymentCoverageThenIssuerBreakdown", "PaymentExpandedFirstTurn", "PaymentDeepScanFirstTurn", "PaymentHistoryCapability", "PaymentCapabilityThenChatHandoff", "PaymentThenEverydayChatHandoff", "RepeatedPaymentCacheHit", "PaymentDateRange", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff", "GenericPaymentThenTravelRefinement")]
+  [ValidateSet("PaymentFollowUp", "PaymentCoverageFollowUp", "PaymentCoverageThenIssuerBreakdown", "PaymentExpandedFirstTurn", "PaymentDeepScanFirstTurn", "PaymentHistoryCapability", "PaymentCapabilityThenChatHandoff", "PaymentThenEverydayChatHandoff", "RepeatedPaymentCacheHit", "PaymentDateRange", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff", "PlannerSemanticHandoff", "GenericPaymentThenTravelRefinement")]
   [string]$Scenario = "PaymentFollowUp",
   [int]$PauseSeconds = 10,
   [int]$BridgeSignalTimeoutSeconds = 180,
@@ -276,6 +276,14 @@ function Get-ScenarioMessages {
         "리눅스에서 파일 찾는 명령어 알려줘"
       )
     }
+    "PlannerSemanticHandoff" {
+      return @(
+        "일본 여행가는데 결제한 내역들 알려줘",
+        "일본 것만",
+        "지난주로 다시 봐줘",
+        "그거 말고 일반 질문인데 저녁 메뉴 추천해줘"
+      )
+    }
     "GenericPaymentThenTravelRefinement" {
       return @(
         "최근 결제한 내역 알려줘",
@@ -485,12 +493,12 @@ function Wait-BridgeSignals {
   $requiresCoverageRerunSignals = $SelectedScenario -in @("PaymentCoverageFollowUp", "PaymentCoverageThenIssuerBreakdown", "GenericPaymentThenTravelRefinement")
   $requiresIssuerBreakdownSignals = $SelectedScenario -in @("PaymentCoverageThenIssuerBreakdown", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff")
   $requiresPaymentCapabilitySignals = $SelectedScenario -in @("PaymentHistoryCapability", "PaymentCapabilityThenChatHandoff")
-  $requiresTravelSignals = $SelectedScenario -in @("TravelPaymentFollowUp", "TravelPaymentThenChatHandoff", "GenericPaymentThenTravelRefinement")
+  $requiresTravelSignals = $SelectedScenario -in @("TravelPaymentFollowUp", "TravelPaymentThenChatHandoff", "PlannerSemanticHandoff", "GenericPaymentThenTravelRefinement")
   $requiresDeepScanSignals = $SelectedScenario -eq "PaymentDeepScanFirstTurn"
   $requiresPaymentCacheHitSignals = $SelectedScenario -eq "RepeatedPaymentCacheHit"
-  $requiresPaymentResponseQuality = $SelectedScenario -in @("PaymentCoverageFollowUp", "PaymentCoverageThenIssuerBreakdown", "PaymentExpandedFirstTurn", "PaymentDeepScanFirstTurn", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff", "GenericPaymentThenTravelRefinement")
+  $requiresPaymentResponseQuality = $SelectedScenario -in @("PaymentCoverageFollowUp", "PaymentCoverageThenIssuerBreakdown", "PaymentExpandedFirstTurn", "PaymentDeepScanFirstTurn", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff", "PlannerSemanticHandoff", "GenericPaymentThenTravelRefinement")
   $requiresTravelResponseQuality = $requiresTravelSignals
-  $requiresChatHandoff = $SelectedScenario -in @("TravelPaymentThenChatHandoff", "PaymentCapabilityThenChatHandoff", "PaymentThenEverydayChatHandoff")
+  $requiresChatHandoff = $SelectedScenario -in @("TravelPaymentThenChatHandoff", "PlannerSemanticHandoff", "PaymentCapabilityThenChatHandoff", "PaymentThenEverydayChatHandoff")
   $requiresFindCommandHandoff = $SelectedScenario -in @("TravelPaymentThenChatHandoff", "PaymentCapabilityThenChatHandoff")
 
   if ($requiresPaymentCapabilitySignals) {

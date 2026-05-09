@@ -788,6 +788,74 @@ describe("handler", () => {
     );
   });
 
+  it("should use direct Bedrock vision for image input without falling back to OpenClaw", async () => {
+    process.env.AI_PROVIDER = "bedrock";
+    mockRunDirectBedrockChat.mockResolvedValueOnce({
+      text: "사진에는 결제 영수증처럼 보이는 화면이 있습니다.",
+      usage: { inputTokens: 30, outputTokens: 20, totalTokens: 50 },
+    });
+    mockInitConfig.mockResolvedValueOnce({
+      configDir: "/tmp/.openclaw",
+      sessionsDir: "/tmp/.openclaw/agents/default/sessions",
+      config: { gateway: { mode: "local" } },
+      runtimeConfig: {
+        provider: "bedrock",
+        openclawProvider: "amazon-bedrock",
+        openclawApi: "bedrock-converse-stream",
+        openclawAuth: "aws-sdk",
+        defaultModel: "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+        capability: "chat-only",
+        sessionNamespace: "bedrock-chat",
+        readiness: {
+          chatReady: true,
+          toolRuntimeReady: false,
+          gmailReady: true,
+        },
+        emailTokenBudget: {
+          mode: "headers-first",
+          maxMessages: 5,
+          paymentScanMessages: 25,
+          maxSnippetChars: 240,
+          maxBodyChars: 1600,
+          requireExplicitBodyAccess: true,
+        },
+      },
+    });
+
+    const handler = await loadHandler();
+    const result = await handler(createEvent({
+      message: "이 사진 분석해줘",
+      imageInput: {
+        source: "telegram",
+        mediaType: "image/jpeg",
+        dataBase64: "AQID",
+        fileId: "photo-1",
+        fileSize: 3,
+      },
+    })) as LambdaAgentResponse;
+
+    expect(result.success).toBe(true);
+    expect(result.payloads?.[0]?.text).toContain("영수증");
+    expect(mockRunDirectBedrockChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: "이 사진 분석해줘",
+        model: "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+        maxTokens: 420,
+        temperature: 0.1,
+        imageInput: expect.objectContaining({
+          mediaType: "image/jpeg",
+          dataBase64: "AQID",
+        }),
+      }),
+    );
+    expect(mockRunAgent).not.toHaveBeenCalled();
+    expect(mockDownload).not.toHaveBeenCalled();
+    expect(mockUpload).not.toHaveBeenCalled();
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"event\":\"lambda.direct_vision.completed\""),
+    );
+  });
+
   it("should retry the default direct chat model before falling back to OpenClaw", async () => {
     process.env.AI_PROVIDER = "bedrock";
     process.env.LAMBDA_DIRECT_BEDROCK_CHAT = "true";

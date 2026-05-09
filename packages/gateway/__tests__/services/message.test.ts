@@ -1308,6 +1308,51 @@ describe("message service", () => {
       );
     });
 
+    it("should route image input to Lambda chat-only and clear active tool affinity", async () => {
+      const mockInvokeLambda = vi.fn().mockResolvedValue({ accepted: true });
+      const deps = makeDeps({
+        agentRuntime: "both",
+        invokeLambdaAgent: mockInvokeLambda,
+        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+        message: "이 사진 분석해줘",
+        imageInput: {
+          source: "telegram",
+          mediaType: "image/jpeg",
+          dataBase64: "AQID",
+          fileId: "photo-1",
+          fileSize: 3,
+        },
+        getTaskState: vi.fn().mockResolvedValue(null),
+        getRoutingContext: vi.fn().mockResolvedValue({
+          status: "active",
+          channel: "telegram",
+          connectionId: "telegram:12345",
+          callbackUrl: "https://cb",
+          createdAt: "2026-04-04T00:00:00Z",
+          lastActivityAt: "2026-04-04T00:00:00Z",
+          expiresAt: "2099-04-04T00:05:00Z",
+          runtimeClass: "tool-enabled",
+          provider: "agentcore",
+        }),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("lambda");
+      expect(deps.deleteRoutingContext).toHaveBeenCalledWith("user-123", "web");
+      expect(mockInvokeLambda).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: "이 사진 분석해줘",
+          imageInput: expect.objectContaining({
+            source: "telegram",
+            mediaType: "image/jpeg",
+            dataBase64: "AQID",
+          }),
+        }),
+      );
+      expect(deps.putRoutingContext).not.toHaveBeenCalled();
+    });
+
     it("should emit structured route logs and route metrics for Lambda requests", async () => {
       const mockInvokeLambda = vi.fn().mockResolvedValue({ accepted: true });
       const deps = makeDeps({

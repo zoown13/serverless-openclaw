@@ -3,6 +3,7 @@ import { timingSafeEqual } from "node:crypto";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { ECSClient } from "@aws-sdk/client-ecs";
+import type { LambdaAgentImageInput } from "@serverless-openclaw/shared";
 
 import { getTaskState, putTaskState, deleteTaskState } from "../services/task-state.js";
 import { routeMessage, savePendingMessage } from "../services/message.js";
@@ -40,8 +41,14 @@ interface TelegramUpdate {
   };
 }
 
+type TelegramPhotoSize = NonNullable<NonNullable<TelegramUpdate["message"]>["photo"]>[number];
+
 const TELEGRAM_UNSUPPORTED_MEDIA_MESSAGE =
-  "현재 Telegram 사진/파일 분석은 아직 지원하지 않습니다. 지금은 텍스트 질문과 Gmail/tool 조회를 처리할 수 있어요. 이미지 분석은 Telegram file download와 multimodal runtime을 붙이는 다음 단계에서 지원하겠습니다.";
+  "현재 이 Telegram 파일 형식은 아직 지원하지 않습니다. 지금은 텍스트 질문, Gmail/tool 조회, 작은 사진 분석을 처리할 수 있어요.";
+
+const TELEGRAM_IMAGE_TOO_LARGE_MESSAGE =
+  "사진을 받았는데 현재 Telegram 경로에서는 작은 이미지만 안전하게 분석할 수 있어요. 스크린샷을 조금 작게 다시 보내거나, 핵심 내용을 텍스트로 함께 적어 주세요.";
+const DEFAULT_TELEGRAM_IMAGE_MAX_BYTES = 160_000;
 
 function normalizeDiagnosticText(value: string): string {
   return value.normalize("NFKC").replace(/\s+/g, " ").trim();
@@ -73,6 +80,96 @@ function getTelegramMediaTypes(
   if (message.voice) types.push("voice");
   if (message.audio) types.push("audio");
   return types;
+}
+
+function parsePositiveInteger(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function resolveTelegramImageMaxBytes(): number {
+  return parsePositiveInteger(
+    process.env.TELEGRAM_IMAGE_MAX_BYTES,
+    DEFAULT_TELEGRAM_IMAGE_MAX_BYTES,
+  );
+}
+
+function selectTelegramPhoto(
+  photos: TelegramPhotoSize[] | undefined,
+  maxBytes: number,
+): TelegramPhotoSize | undefined {
+  if (!photos?.length) return undefined;
+  const knownSafe = photos
+    .filter((photo) => typeof photo.file_size === "number" && photo.file_size <= maxBytes)
+    .sort((a, b) => (b.file_size ?? 0) - (a.file_size ?? 0));
+  if (knownSafe[0]) return knownSafe[0];
+
+  const knownSmallest = photos
+    .filter((photo) => typeof photo.file_size === "number")
+    .sort((a, b) => (a.file_size ?? 0) - (b.file_size ?? 0))[0];
+  return knownSmallest ?? photos[0];
+}
+
+function resolveTelegramImageMediaType(filePath: string): LambdaAgentImageInput["mediaType"] {
+  const lower = filePath.toLowerCase();
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".webp")) return "image/webp";
+  return "image/jpeg";
+}
+
+async function buildTelegramImageInput(
+  botToken: string,
+  message: NonNullable<TelegramUpdate["message"]>,
+): Promise<{ imageInput?: LambdaAgentImageInput; tooLarge?: boolean }> {
+  const maxBytes = resolveTelegramImageMaxBytes();
+  const selected = selectTelegramPhoto(message.photo, maxBytes);
+  if (!selected) return {};
+  if (typeof selected.file_size === "number" && selected.file_size > maxBytes) {
+    return { tooLarge: true };
+  }
+
+  const fileResponse = await fetch(
+    `https://api.telegram.org/bot${botToken}/getFile?file_id=${encodeURIComponent(selected.file_id)}`,
+  );
+  if (!fileResponse.ok) {
+    throw new Error(`Telegram getFile failed with ${fileResponse.status}`);
+  }
+
+  const filePayload = await fileResponse.json() as {
+    ok?: boolean;
+    result?: { file_path?: string; file_size?: number };
+  };
+  const filePath = filePayload.result?.file_path;
+  if (!filePayload.ok || !filePath) {
+    throw new Error("Telegram getFile returned no file_path");
+  }
+  if (typeof filePayload.result?.file_size === "number" && filePayload.result.file_size > maxBytes) {
+    return { tooLarge: true };
+  }
+
+  const downloadResponse = await fetch(
+    `https://api.telegram.org/file/bot${botToken}/${filePath}`,
+  );
+  if (!downloadResponse.ok) {
+    throw new Error(`Telegram file download failed with ${downloadResponse.status}`);
+  }
+
+  const bytes = Buffer.from(await downloadResponse.arrayBuffer());
+  if (bytes.byteLength > maxBytes) {
+    return { tooLarge: true };
+  }
+
+  return {
+    imageInput: {
+      source: "telegram",
+      mediaType: resolveTelegramImageMediaType(filePath),
+      dataBase64: bytes.toString("base64"),
+      fileId: selected.file_id,
+      ...(selected.file_unique_id ? { fileUniqueId: selected.file_unique_id } : {}),
+      fileSize: bytes.byteLength,
+      ...(message.caption ? { caption: message.caption } : {}),
+    },
+  };
 }
 
 export async function handler(event: {
@@ -120,11 +217,46 @@ export async function handler(event: {
   const connectionId = `telegram:${chatId}`;
   const botToken = secrets.get(process.env.SSM_TELEGRAM_BOT_TOKEN!) ?? "";
   const mediaTypes = getTelegramMediaTypes(update.message);
-  if (mediaTypes.length > 0) {
+  let imageInput: LambdaAgentImageInput | undefined;
+  if (update.message.photo?.length) {
+    try {
+      const result = await buildTelegramImageInput(botToken, update.message);
+      if (result.tooLarge) {
+        if (botToken) {
+          await sendTelegramMessage(
+            fetch as never,
+            botToken,
+            connectionId,
+            TELEGRAM_IMAGE_TOO_LARGE_MESSAGE,
+          );
+        }
+        return { statusCode: 200, body: "OK" };
+      }
+      imageInput = result.imageInput;
+    } catch (err) {
+      console.warn("[telegram] photo download failed", {
+        chatId,
+        telegramId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      if (botToken) {
+        await sendTelegramMessage(
+          fetch as never,
+          botToken,
+          connectionId,
+          "사진을 받았지만 Telegram에서 이미지를 가져오지 못했어요. 잠시 후 다시 보내 주세요.",
+        );
+      }
+      return { statusCode: 200, body: "OK" };
+    }
+  }
+
+  const unsupportedMediaTypes = mediaTypes.filter((type) => type !== "photo");
+  if (unsupportedMediaTypes.length > 0) {
     console.log("[telegram] unsupported media message", {
       chatId,
       telegramId,
-      mediaTypes,
+      mediaTypes: unsupportedMediaTypes,
       hasCaption: Boolean(update.message.caption),
     });
     if (botToken) {
@@ -138,12 +270,12 @@ export async function handler(event: {
     return { statusCode: 200, body: "OK" };
   }
 
-  if (!update.message.text) {
+  if (!update.message.text && !imageInput) {
     console.log("[telegram] update has no message text, ignoring");
     return { statusCode: 200, body: "OK" };
   }
 
-  const text = update.message.text;
+  const text = update.message.text ?? update.message.caption ?? "이 사진을 분석해줘.";
 
   console.log("[telegram] received message", {
     chatId,
@@ -230,6 +362,7 @@ export async function handler(event: {
     telegramChatId: String(chatId),
     callbackUrl: process.env.WEBSOCKET_CALLBACK_URL ?? "",
     bridgeAuthToken: secrets.get(process.env.SSM_BRIDGE_AUTH_TOKEN!) ?? "",
+    imageInput,
     fetchFn: fetch as never,
     getTaskState: (uid) => getTaskState(dynamoSend, uid),
     startTask: (params) => startTask(ecsSend, params),

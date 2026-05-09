@@ -10,6 +10,8 @@ const mockVerifyOtpAndLink = vi.fn();
 const mockGetPendingClarification = vi.fn();
 const mockPutPendingClarification = vi.fn();
 const mockDeletePendingClarification = vi.fn();
+const fetchMock = vi.fn();
+vi.stubGlobal("fetch", fetchMock);
 
 vi.mock("../../src/services/message.js", () => ({
   routeMessage: (...args: unknown[]) => mockRouteMessage(...args),
@@ -98,6 +100,7 @@ describe("telegram-webhook handler", () => {
     vi.stubEnv("WEBSOCKET_CALLBACK_URL", "https://api.example.com");
     mockRouteMessage.mockResolvedValue(undefined);
     mockSendTelegramMessage.mockResolvedValue(undefined);
+    fetchMock.mockReset();
     mockGetTaskState.mockResolvedValue(null);
     mockResolveUserId.mockImplementation((_send: unknown, uid: string) => Promise.resolve(uid));
     mockVerifyOtpAndLink.mockResolvedValue({ error: "not set" });
@@ -239,7 +242,24 @@ describe("telegram-webhook handler", () => {
     expect(mockRouteMessage).not.toHaveBeenCalled();
   });
 
-  it("should return a controlled unsupported message for Telegram photo uploads", async () => {
+  it("should download Telegram photo uploads and route them as Lambda image input", async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: vi.fn().mockResolvedValue({
+          ok: true,
+          result: { file_path: "photos/file_1.jpg", file_size: 4 },
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        arrayBuffer: vi.fn().mockResolvedValue(
+          Uint8Array.from([1, 2, 3, 4]).buffer,
+        ),
+      });
+
     const event = makeEvent(
       {
         message: {
@@ -247,9 +267,46 @@ describe("telegram-webhook handler", () => {
           from: { id: 67890 },
           caption: "이 사진 분석해줘",
           photo: [
-            { file_id: "photo-small", file_unique_id: "small" },
-            { file_id: "photo-large", file_unique_id: "large" },
+            { file_id: "photo-small", file_unique_id: "small", file_size: 4 },
+            { file_id: "photo-large", file_unique_id: "large", file_size: 400_000 },
           ],
+        },
+      },
+      "my-secret",
+    );
+
+    const result = await handler(event);
+
+    expect(result.statusCode).toBe(200);
+    expect(mockRouteMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: "이 사진 분석해줘",
+        imageInput: expect.objectContaining({
+          source: "telegram",
+          mediaType: "image/jpeg",
+          dataBase64: Buffer.from([1, 2, 3, 4]).toString("base64"),
+          fileId: "photo-small",
+          fileUniqueId: "small",
+          fileSize: 4,
+          caption: "이 사진 분석해줘",
+        }),
+      }),
+    );
+    expect(mockSendTelegramMessage).not.toHaveBeenCalled();
+  });
+
+  it("should return a controlled unsupported message for non-photo Telegram media", async () => {
+    const event = makeEvent(
+      {
+        message: {
+          chat: { id: 12345 },
+          from: { id: 67890 },
+          caption: "이 파일 분석해줘",
+          document: {
+            file_id: "doc-1",
+            file_name: "receipt.pdf",
+            mime_type: "application/pdf",
+          },
         },
       },
       "my-secret",
@@ -263,7 +320,7 @@ describe("telegram-webhook handler", () => {
       expect.anything(),
       "123456:ABC-DEF",
       "telegram:12345",
-      expect.stringContaining("사진/파일 분석은 아직 지원하지 않습니다"),
+      expect.stringContaining("파일 형식은 아직 지원하지 않습니다"),
     );
   });
 

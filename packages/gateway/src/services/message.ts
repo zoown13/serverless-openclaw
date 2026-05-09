@@ -17,6 +17,7 @@ import type {
   BridgeMessageRequest,
   Channel,
   EmailTokenBudgetPolicy,
+  LambdaAgentImageInput,
   PendingMessageItem,
   RouteDecision,
   RuntimeClass,
@@ -126,6 +127,7 @@ export interface RouteDeps {
   agentCoreRuntimeQualifier?: string;
   agentCoreFallbackProvider?: ToolRuntimeProvider;
   sessionId?: string;
+  imageInput?: LambdaAgentImageInput;
 }
 
 export type RouteResult =
@@ -291,6 +293,7 @@ function buildRouteLogPayload(
     hasPublicIp: Boolean(taskState?.publicIp),
     pendingQueued,
     sessionId: deps.sessionId ?? `session-${deps.userId}`,
+    hasImageInput: Boolean(deps.imageInput),
     ...(process.env.AGENTCORE_SESSION_NAMESPACE
       ? { agentCoreSessionNamespace: process.env.AGENTCORE_SESSION_NAMESPACE }
       : {}),
@@ -824,6 +827,7 @@ async function invokeLambdaRoute(
     telegramChatId: deps.telegramChatId,
     callbackUrl: deps.callbackUrl,
     assistantContext,
+    imageInput: deps.imageInput,
   });
   assertLambdaInvokeAccepted(invokeResult);
   logRouteEvent(
@@ -916,6 +920,17 @@ async function maybeHandleToolRuntimeAffinity(
   }
 
   const normalized = normalizeMessage(deps.message);
+  if (deps.imageInput) {
+    await deps.deleteRoutingContext(deps.userId, deps.channel);
+    logRouteEvent("route.affinity.cleared", {
+      traceId: deps.traceId,
+      channel: deps.channel,
+      runtimeClass: affinity.runtimeClass,
+      reason: "image_handoff_chat_only",
+    });
+    return { handled: false };
+  }
+
   if (TOOL_AFFINITY_CANCEL_PATTERN.test(normalized)) {
     await deps.deleteRoutingContext(deps.userId, deps.channel);
     await deps.sendClarification(TOOL_AFFINITY_END_MESSAGE);
@@ -998,6 +1013,31 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
         providerOverride: affinityResolution.replayProvider,
       },
     );
+  }
+
+  if (deps.imageInput) {
+    if (
+      deps.agentRuntime === "fargate" ||
+      !deps.invokeLambdaAgent ||
+      !deps.lambdaAgentFunctionArn
+    ) {
+      await deps.sendClarification(
+        "현재 사진 분석은 Lambda/Bedrock chat runtime에서만 지원합니다. 잠시 후 다시 시도하거나 텍스트로 질문해 주세요.",
+      );
+      logRouteEvent("route.image.unsupported_runtime", {
+        traceId: deps.traceId,
+        channel: deps.channel,
+        agentRuntime: deps.agentRuntime,
+      }, "warn");
+      return "clarify";
+    }
+
+    logRouteEvent("route.image.chat_only", {
+      traceId: deps.traceId,
+      channel: deps.channel,
+      runtimeClass: "chat-only",
+    });
+    return routeForcedRuntimeClass(deps, deps.message, "chat-only");
   }
 
   // Phase 2: Lambda agent path

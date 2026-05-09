@@ -358,11 +358,26 @@ function parseEverydayDirectChatMaxTokens(): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 180;
 }
 
+function parseDirectVisionMaxTokens(): number {
+  const parsed = Number.parseInt(process.env.LAMBDA_DIRECT_VISION_MAX_TOKENS ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 420;
+}
+
 function resolveDirectChatModel(
   event: LambdaAgentEvent,
   runtimeConfig: ResolvedRuntimeConfig,
 ): string {
   return event.model ?? process.env.LAMBDA_DIRECT_CHAT_MODEL ?? runtimeConfig.defaultModel;
+}
+
+function resolveDirectVisionModel(
+  event: LambdaAgentEvent,
+  runtimeConfig: ResolvedRuntimeConfig,
+): string {
+  return event.model ??
+    process.env.LAMBDA_DIRECT_VISION_MODEL ??
+    process.env.LAMBDA_DIRECT_CHAT_MODEL ??
+    runtimeConfig.defaultModel;
 }
 
 function isEverydayStatelessChatQuestion(message: string): boolean {
@@ -416,6 +431,18 @@ function buildDirectChatSystemPrompt(
     buildAssistantContextPrompt(event),
     buildEmailTokenBudgetPrompt(runtimeConfig),
   ].filter((item): item is string => typeof item === "string" && item.length > 0).join(" ");
+}
+
+function buildDirectVisionSystemPrompt(
+  event: LambdaAgentEvent,
+  runtimeConfig: ResolvedRuntimeConfig,
+): string {
+  return [
+    buildDirectChatSystemPrompt(event, runtimeConfig),
+    "The user attached an image. Analyze only the visible image and the user's caption/message.",
+    "If the image contains private data, summarize only what is needed for the user's request and avoid exposing unnecessary sensitive details.",
+    "If the user asks for text extraction, transcribe visible text faithfully and mention uncertainty when the image is unclear.",
+  ].join(" ");
 }
 
 function buildToolUnavailableMessage(runtimeConfig: ResolvedRuntimeConfig): string {
@@ -662,6 +689,117 @@ export async function handler(
   } else if (isTelegram && telegramBotTokenPath) {
     const secrets = await resolveSecrets([telegramBotTokenPath]);
     telegramBotToken = secrets.get(telegramBotTokenPath);
+  }
+
+  if (event.imageInput) {
+    const visionStartedAt = Date.now();
+    const visionModel = resolveDirectVisionModel(event, runtimeConfig);
+    const visionPayload = runtimeConfig.provider === "bedrock"
+      ? undefined
+      : [{
+          text: "현재 사진 분석은 Bedrock 기반 Lambda chat runtime에서만 지원합니다. 텍스트 질문은 계속 처리할 수 있어요.",
+          isError: true,
+        }];
+
+    if (visionPayload) {
+      await pushPayloads(visionPayload, {
+        canPush,
+        callbackUrl: event.callbackUrl,
+        connectionId: event.connectionId,
+        isTelegram,
+        telegramBotToken,
+        telegramChatId,
+        traceId,
+        channel: event.channel,
+      });
+      await pushIdleStatus(canPush, traceId, event.callbackUrl, event.connectionId);
+      await lock.release();
+      return {
+        success: true,
+        payloads: visionPayload,
+        durationMs: Date.now() - startTime,
+        provider: runtimeConfig.openclawProvider,
+        model: visionModel,
+      };
+    }
+
+    logLambdaEvent("lambda.direct_vision.started", {
+      ...requestLogPayload,
+      model: visionModel,
+      mediaType: event.imageInput.mediaType,
+      imageBytes: event.imageInput.fileSize,
+      maxTokens: parseDirectVisionMaxTokens(),
+    });
+    try {
+      const directResult = await runDirectBedrockChat({
+        message: event.message,
+        model: visionModel,
+        systemPrompt: buildDirectVisionSystemPrompt(event, runtimeConfig),
+        maxTokens: parseDirectVisionMaxTokens(),
+        temperature: 0.1,
+        imageInput: event.imageInput,
+      });
+      const payloads = [{ text: directResult.text }];
+
+      await pushPayloads(payloads, {
+        canPush,
+        callbackUrl: event.callbackUrl,
+        connectionId: event.connectionId,
+        isTelegram,
+        telegramBotToken,
+        telegramChatId,
+        traceId,
+        channel: event.channel,
+      });
+      await pushIdleStatus(canPush, traceId, event.callbackUrl, event.connectionId);
+      await lock.release();
+
+      logLambdaEvent("lambda.direct_vision.completed", {
+        ...requestLogPayload,
+        model: visionModel,
+        durationMs: Date.now() - visionStartedAt,
+        inputTokens: directResult.usage?.inputTokens,
+        outputTokens: directResult.usage?.outputTokens,
+      });
+
+      return {
+        success: true,
+        payloads,
+        durationMs: Date.now() - startTime,
+        provider: runtimeConfig.openclawProvider,
+        model: visionModel,
+      };
+    } catch (err: unknown) {
+      const payloads = [{
+        text: "사진을 받았지만 현재 이미지 분석 경로에서 처리하지 못했어요. 이미지를 조금 작게 다시 보내거나, 핵심 내용을 텍스트로 적어 주세요.",
+        isError: true,
+      }];
+      logLambdaEvent("lambda.direct_vision.failed", {
+        ...requestLogPayload,
+        model: visionModel,
+        durationMs: Date.now() - visionStartedAt,
+        error: err instanceof Error ? err.message : String(err),
+      }, "error");
+      await pushPayloads(payloads, {
+        canPush,
+        callbackUrl: event.callbackUrl,
+        connectionId: event.connectionId,
+        isTelegram,
+        telegramBotToken,
+        telegramChatId,
+        traceId,
+        channel: event.channel,
+      });
+      await pushIdleStatus(canPush, traceId, event.callbackUrl, event.connectionId);
+      await lock.release();
+      return {
+        success: true,
+        payloads,
+        durationMs: Date.now() - startTime,
+        provider: runtimeConfig.openclawProvider,
+        model: visionModel,
+      };
+    }
   }
 
   if ((event.channel === "telegram" || !runtimeConfig.readiness.toolRuntimeReady) && isToolRequest(event.message)) {

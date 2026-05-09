@@ -232,6 +232,7 @@ export interface LambdaAgentEvent {
   channel: Channel;
   telegramChatId?: string;
   assistantContext?: AssistantRuntimeContext;
+  imageInput?: LambdaAgentImageInput;
 }
 
 export interface LambdaAgentResponse {
@@ -241,6 +242,18 @@ export interface LambdaAgentResponse {
   durationMs?: number;
   provider?: string;
   model?: string;
+}
+
+export type LambdaAgentImageMediaType = "image/jpeg" | "image/png" | "image/webp";
+
+export interface LambdaAgentImageInput {
+  source: "telegram";
+  mediaType: LambdaAgentImageMediaType;
+  dataBase64: string;
+  fileId: string;
+  fileUniqueId?: string;
+  fileSize?: number;
+  caption?: string;
 }
 
 // === JSON-RPC 2.0 (implementation-plan.md §2.2) ===

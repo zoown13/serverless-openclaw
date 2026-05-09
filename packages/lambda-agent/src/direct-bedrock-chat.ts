@@ -1,4 +1,5 @@
 import { BedrockRuntimeClient, ConverseCommand } from "@aws-sdk/client-bedrock-runtime";
+import type { LambdaAgentImageInput } from "@serverless-openclaw/shared";
 
 export interface DirectBedrockChatParams {
   message: string;
@@ -6,6 +7,7 @@ export interface DirectBedrockChatParams {
   systemPrompt: string;
   maxTokens?: number;
   temperature?: number;
+  imageInput?: LambdaAgentImageInput;
 }
 
 export interface DirectBedrockChatResult {
@@ -26,9 +28,31 @@ function client(): BedrockRuntimeClient {
   return cachedClient;
 }
 
+function resolveBedrockImageFormat(
+  mediaType: LambdaAgentImageInput["mediaType"],
+): "jpeg" | "png" | "webp" {
+  if (mediaType === "image/png") return "png";
+  if (mediaType === "image/webp") return "webp";
+  return "jpeg";
+}
+
 export async function runDirectBedrockChat(
   params: DirectBedrockChatParams,
 ): Promise<DirectBedrockChatResult> {
+  const content = params.imageInput
+    ? [
+        { text: params.message },
+        {
+          image: {
+            format: resolveBedrockImageFormat(params.imageInput.mediaType),
+            source: {
+              bytes: Buffer.from(params.imageInput.dataBase64, "base64"),
+            },
+          },
+        },
+      ]
+    : [{ text: params.message }];
+
   const response = await client().send(
     new ConverseCommand({
       modelId: params.model,
@@ -36,7 +60,7 @@ export async function runDirectBedrockChat(
       messages: [
         {
           role: "user",
-          content: [{ text: params.message }],
+          content,
         },
       ],
       inferenceConfig: {

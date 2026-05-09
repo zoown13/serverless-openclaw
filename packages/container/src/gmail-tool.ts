@@ -565,6 +565,75 @@ function isHighConfidencePaymentLookupRequest(message: string): boolean {
   return hasPaymentAction && hasLookupScope;
 }
 
+function getPaymentContextCacheTtlMs(): number {
+  const raw = Number.parseInt(process.env.GMAIL_PAYMENT_CONTEXT_CACHE_TTL_MS ?? "", 10);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 120_000;
+}
+
+function isFreshPaymentContextCache(context: ToolTaskContext): boolean {
+  const lastActivity = Date.parse(context.lastActivityAt);
+  if (!Number.isFinite(lastActivity)) {
+    return false;
+  }
+  return Date.now() - lastActivity <= getPaymentContextCacheTtlMs();
+}
+
+function inferPaymentLookupScope(message: string): string {
+  const normalized = normalizeWhitespace(message).toLowerCase();
+  if (/(오늘|today)/i.test(normalized)) {
+    return "today";
+  }
+  if (/(어제|yesterday)/i.test(normalized)) {
+    return "yesterday";
+  }
+  if (/(이번\s*주|이번주|this\s+week)/i.test(normalized)) {
+    return "this-week";
+  }
+  if (/(지난\s*주|지난주|last\s+week)/i.test(normalized)) {
+    return "last-week";
+  }
+  if (/(이번\s*달|이번달|this\s+month)/i.test(normalized)) {
+    return "this-month";
+  }
+  if (/(지난\s*달|지난달|last\s+month)/i.test(normalized)) {
+    return "last-month";
+  }
+  if (/(최근|recent|latest)/i.test(normalized)) {
+    return "recent";
+  }
+  const monthMatch = normalized.match(/\d{1,2}\s*월/);
+  return monthMatch?.[0].replace(/\s+/g, "") ?? "default";
+}
+
+function topicKeywordSet(values: string[] | undefined): string {
+  return [...new Set(values ?? [])].sort().join("|");
+}
+
+function canReuseCachedPaymentContext(
+  context: ToolTaskContext,
+  message: string,
+): boolean {
+  if (
+    context.status !== "active" ||
+    context.taskFamily !== "gmail_payment_summary" ||
+    !context.parsedPaymentRecords?.length ||
+    isExpandedPaymentScanRequest(message) ||
+    isPaymentCoverageFollowUp(message) ||
+    isTopicRefinementFollowUp(message) ||
+    !isFreshPaymentContextCache(context)
+  ) {
+    return false;
+  }
+
+  const incomingTopics = extractTopicKeywords(message);
+  const existingTopics = context.topicKeywords ?? extractTopicKeywords(context.canonicalGoal);
+  if (topicKeywordSet(incomingTopics) !== topicKeywordSet(existingTopics)) {
+    return false;
+  }
+
+  return inferPaymentLookupScope(context.canonicalGoal) === inferPaymentLookupScope(message);
+}
+
 function looksLikeCapabilityQuestion(message: string): boolean {
   return CAPABILITY_QUERY_PATTERN.test(normalizeWhitespace(message));
 }
@@ -3530,6 +3599,34 @@ export async function maybeHandleCustomGmailRequest(
     isHighConfidencePaymentLookupRequest(options.message) &&
     isFreshPaymentLookupRequest(options.message, refreshedContext, null)
   ) {
+    if (canReuseCachedPaymentContext(refreshedContext, options.message)) {
+      const nextContext: ToolTaskContext = {
+        ...refreshedContext,
+        lastActivityAt: nowIso(),
+        expiresAt: futureIso(DEFAULT_CONTEXT_TTL_MS),
+      };
+      await setTaskContext(contextKey, nextContext);
+      emitToolEvent(options.onToolEvent, {
+        type: "intentDecided",
+        decisionSource: "deterministic",
+        action: "continue_active_task",
+        taskFamily: "gmail_payment_summary",
+        sourceChoice: "gmail",
+        confidence: 0.92,
+      });
+      emitToolEvent(options.onToolEvent, {
+        type: "contextReused",
+        taskFamily: nextContext.taskFamily,
+        sourceChoice: nextContext.sourceChoice,
+      });
+      return formatPaymentFollowUp(
+        nextContext,
+        options.message,
+        options.emailTokenBudget,
+        "continue_active_task",
+      );
+    }
+
     emitToolEvent(options.onToolEvent, {
       type: "intentDecided",
       decisionSource: "deterministic",

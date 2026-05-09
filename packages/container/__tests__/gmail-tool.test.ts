@@ -381,6 +381,51 @@ describe("gmail-tool", () => {
     expect(fetchMock).toHaveBeenCalled();
     expect(decideToolIntentMock).not.toHaveBeenCalled();
   });
+
+  it("reuses cached active payment records for repeated high-confidence fresh lookups", async () => {
+    decideToolIntentMock.mockResolvedValueOnce({
+      action: "gmail",
+      taskFamily: "gmail_payment_summary",
+      sourceChoice: "gmail",
+      confidence: 0.95,
+    });
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m1" }] } }))
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "카드 결제 알림",
+          "Card Co <billing@example.com>",
+          "Fri, 03 Apr 2026 09:00:00 +0000",
+          "결제금액 12,300원 카드종류 삼성카드 가맹점명 스타벅스",
+        ),
+      );
+
+    await maybeHandleCustomGmailRequest({
+      userId: "user-active-payment-cache",
+      sessionKey: "session-active-payment-cache",
+      message: "최근 결제한 내역 알려줘",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    vi.clearAllMocks();
+    process.env.TOOL_DETERMINISTIC_PAYMENT_FAST_PATH = "true";
+
+    const response = await maybeHandleCustomGmailRequest({
+      userId: "user-active-payment-cache",
+      sessionKey: "session-active-payment-cache",
+      message: "최근 결제한 내역 알려줘",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    expect(response?.kind).toBe("direct");
+    expect(response?.message).toContain("확인 가능한 합계는 KRW 12,300");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(decideToolIntentMock).not.toHaveBeenCalled();
+  });
+
   it("retries transient Gmail API rate limits before failing the payment lookup", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     fetchMock

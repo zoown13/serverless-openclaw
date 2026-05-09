@@ -239,6 +239,34 @@ describe("telegram-webhook handler", () => {
     expect(mockRouteMessage).not.toHaveBeenCalled();
   });
 
+  it("should return a controlled unsupported message for Telegram photo uploads", async () => {
+    const event = makeEvent(
+      {
+        message: {
+          chat: { id: 12345 },
+          from: { id: 67890 },
+          caption: "이 사진 분석해줘",
+          photo: [
+            { file_id: "photo-small", file_unique_id: "small" },
+            { file_id: "photo-large", file_unique_id: "large" },
+          ],
+        },
+      },
+      "my-secret",
+    );
+
+    const result = await handler(event);
+
+    expect(result.statusCode).toBe(200);
+    expect(mockRouteMessage).not.toHaveBeenCalled();
+    expect(mockSendTelegramMessage).toHaveBeenCalledWith(
+      expect.anything(),
+      "123456:ABC-DEF",
+      "telegram:12345",
+      expect.stringContaining("사진/파일 분석은 아직 지원하지 않습니다"),
+    );
+  });
+
   // ── /link command tests ──
 
   it("should handle /link command successfully", async () => {

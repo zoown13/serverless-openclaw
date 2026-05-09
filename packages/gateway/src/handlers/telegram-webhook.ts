@@ -30,8 +30,18 @@ interface TelegramUpdate {
     chat: { id: number };
     from?: { id: number };
     text?: string;
+    caption?: string;
+    photo?: Array<{ file_id: string; file_unique_id?: string; file_size?: number }>;
+    document?: { file_id: string; file_name?: string; mime_type?: string; file_size?: number };
+    video?: { file_id: string; file_size?: number };
+    animation?: { file_id: string; file_size?: number };
+    voice?: { file_id: string; file_size?: number };
+    audio?: { file_id: string; file_size?: number };
   };
 }
+
+const TELEGRAM_UNSUPPORTED_MEDIA_MESSAGE =
+  "현재 Telegram 사진/파일 분석은 아직 지원하지 않습니다. 지금은 텍스트 질문과 Gmail/tool 조회를 처리할 수 있어요. 이미지 분석은 Telegram file download와 multimodal runtime을 붙이는 다음 단계에서 지원하겠습니다.";
 
 function normalizeDiagnosticText(value: string): string {
   return value.normalize("NFKC").replace(/\s+/g, " ").trim();
@@ -50,6 +60,19 @@ function hasHangulCharacters(value: string): boolean {
   return /[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]/u.test(
     normalizeDiagnosticText(value),
   );
+}
+
+function getTelegramMediaTypes(
+  message: NonNullable<TelegramUpdate["message"]>,
+): string[] {
+  const types: string[] = [];
+  if (message.photo?.length) types.push("photo");
+  if (message.document) types.push("document");
+  if (message.video) types.push("video");
+  if (message.animation) types.push("animation");
+  if (message.voice) types.push("voice");
+  if (message.audio) types.push("audio");
+  return types;
 }
 
 export async function handler(event: {
@@ -86,7 +109,7 @@ export async function handler(event: {
     return { statusCode: 400, body: JSON.stringify({ error: "Invalid JSON" }) };
   }
 
-  if (!update.message?.text) {
+  if (!update.message) {
     console.log("[telegram] update has no message text, ignoring");
     return { statusCode: 200, body: "OK" };
   }
@@ -96,6 +119,30 @@ export async function handler(event: {
   const rawUserId = `telegram:${telegramId}`;
   const connectionId = `telegram:${chatId}`;
   const botToken = secrets.get(process.env.SSM_TELEGRAM_BOT_TOKEN!) ?? "";
+  const mediaTypes = getTelegramMediaTypes(update.message);
+  if (mediaTypes.length > 0) {
+    console.log("[telegram] unsupported media message", {
+      chatId,
+      telegramId,
+      mediaTypes,
+      hasCaption: Boolean(update.message.caption),
+    });
+    if (botToken) {
+      await sendTelegramMessage(
+        fetch as never,
+        botToken,
+        connectionId,
+        TELEGRAM_UNSUPPORTED_MEDIA_MESSAGE,
+      );
+    }
+    return { statusCode: 200, body: "OK" };
+  }
+
+  if (!update.message.text) {
+    console.log("[telegram] update has no message text, ignoring");
+    return { statusCode: 200, body: "OK" };
+  }
+
   const text = update.message.text;
 
   console.log("[telegram] received message", {

@@ -14,6 +14,10 @@ param(
   [string]$AgentCoreRuntimeQualifier = $(if ($env:AGENTCORE_RUNTIME_QUALIFIER) { $env:AGENTCORE_RUNTIME_QUALIFIER } else { "" }),
   [string]$AgentCoreSessionNamespace = $(if ($env:AGENTCORE_SESSION_NAMESPACE) { $env:AGENTCORE_SESSION_NAMESPACE } else { "" }),
   [string]$LambdaAgentImageTag = $(if ($env:LAMBDA_AGENT_IMAGE_TAG) { $env:LAMBDA_AGENT_IMAGE_TAG } else { "" }),
+  [string]$LambdaAgentRepositoryName = $(if ($env:LAMBDA_AGENT_ECR_REPOSITORY) { $env:LAMBDA_AGENT_ECR_REPOSITORY } else { "serverless-openclaw-lambda-agent" }),
+  [string]$LambdaAgentFunctionName = $(if ($env:LAMBDA_AGENT_FUNCTION_NAME) { $env:LAMBDA_AGENT_FUNCTION_NAME } else { "serverless-openclaw-agent" }),
+  [switch]$PushLambdaAgentImage,
+  [switch]$UpdateLambdaAgentCode,
   [switch]$ApiOnly,
   [switch]$SkipEnvFile
 )
@@ -88,6 +92,181 @@ function Resolve-AgentCoreRuntimeArn {
   return [string]$runtime.agentRuntimeArn
 }
 
+function Invoke-Checked {
+  param(
+    [Parameter(Mandatory = $true)][string]$Command,
+    [Parameter(Mandatory = $true)][string[]]$Arguments
+  )
+
+  & $Command @Arguments
+  if ($LASTEXITCODE -ne 0) {
+    throw "Command failed: $Command $($Arguments -join ' ')"
+  }
+}
+
+function Resolve-GitShortSha {
+  param([Parameter(Mandatory = $true)][string]$WorkingDirectory)
+
+  Push-Location $WorkingDirectory
+  try {
+    $sha = git rev-parse --short HEAD 2>$null
+    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($sha)) {
+      return $sha.Trim()
+    }
+  } finally {
+    Pop-Location
+  }
+
+  return (Get-Date -Format "yyyyMMddHHmmss")
+}
+
+function Resolve-AwsAccountId {
+  param(
+    [Parameter(Mandatory = $true)][string]$AwsRegion,
+    [Parameter(Mandatory = $true)][string]$AwsProfile
+  )
+
+  $args = @(
+    "sts",
+    "get-caller-identity",
+    "--query",
+    "Account",
+    "--output",
+    "text",
+    "--region",
+    $AwsRegion
+  )
+  if (-not [string]::IsNullOrWhiteSpace($AwsProfile)) {
+    $args += @("--profile", $AwsProfile)
+  }
+
+  $accountId = aws @args
+  if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($accountId)) {
+    throw "Failed to resolve AWS account id for Lambda Agent image deployment."
+  }
+
+  return $accountId.Trim()
+}
+
+function Push-LambdaAgentImage {
+  param(
+    [Parameter(Mandatory = $true)][string]$RepositoryUri,
+    [Parameter(Mandatory = $true)][string]$ImageTag,
+    [Parameter(Mandatory = $true)][string]$AwsRegion,
+    [Parameter(Mandatory = $true)][string]$AwsProfile,
+    [Parameter(Mandatory = $true)][string]$RootDirectory
+  )
+
+  Write-Host "Building and pushing Lambda Agent image"
+  Write-Host "  Repository: $RepositoryUri"
+  Write-Host "  Tag       : $ImageTag"
+
+  $registry = $RepositoryUri.Split("/")[0]
+  $passwordArgs = @("ecr", "get-login-password", "--region", $AwsRegion)
+  if (-not [string]::IsNullOrWhiteSpace($AwsProfile)) {
+    $passwordArgs += @("--profile", $AwsProfile)
+  }
+  $password = aws @passwordArgs
+  if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($password)) {
+    throw "Failed to get ECR login password."
+  }
+
+  # On Windows PowerShell, --password-stdin can intermittently fail against ECR.
+  # Passing the short-lived ECR token as an argument is acceptable for this local
+  # deployment helper and avoids a false-negative deploy.
+  Invoke-Checked -Command "docker" -Arguments @(
+    "login",
+    "--username",
+    "AWS",
+    "--password",
+    $password.Trim(),
+    $registry
+  )
+
+  Push-Location $RootDirectory
+  try {
+    Invoke-Checked -Command "docker" -Arguments @(
+      "buildx",
+      "build",
+      "--platform",
+      "linux/arm64",
+      "--provenance=false",
+      "--sbom=false",
+      "-f",
+      "packages/lambda-agent/Dockerfile",
+      "-t",
+      "${RepositoryUri}:latest",
+      "-t",
+      "${RepositoryUri}:${ImageTag}",
+      "--push",
+      "."
+    )
+  } finally {
+    Pop-Location
+  }
+}
+
+function Update-LambdaAgentFunctionCode {
+  param(
+    [Parameter(Mandatory = $true)][string]$FunctionName,
+    [Parameter(Mandatory = $true)][string]$ImageUri,
+    [Parameter(Mandatory = $true)][string]$AwsRegion,
+    [Parameter(Mandatory = $true)][string]$AwsProfile
+  )
+
+  Write-Host "Updating Lambda Agent function code"
+  Write-Host "  Function: $FunctionName"
+  Write-Host "  Image   : $ImageUri"
+
+  $updateArgs = @(
+    "lambda",
+    "update-function-code",
+    "--function-name",
+    $FunctionName,
+    "--region",
+    $AwsRegion,
+    "--image-uri",
+    $ImageUri,
+    "--output",
+    "json"
+  )
+  if (-not [string]::IsNullOrWhiteSpace($AwsProfile)) {
+    $updateArgs += @("--profile", $AwsProfile)
+  }
+  Invoke-Checked -Command "aws" -Arguments $updateArgs
+
+  $waitArgs = @(
+    "lambda",
+    "wait",
+    "function-updated",
+    "--function-name",
+    $FunctionName,
+    "--region",
+    $AwsRegion
+  )
+  if (-not [string]::IsNullOrWhiteSpace($AwsProfile)) {
+    $waitArgs += @("--profile", $AwsProfile)
+  }
+  Invoke-Checked -Command "aws" -Arguments $waitArgs
+
+  $checkArgs = @(
+    "lambda",
+    "get-function-configuration",
+    "--function-name",
+    $FunctionName,
+    "--region",
+    $AwsRegion,
+    "--query",
+    "{LastUpdateStatus:LastUpdateStatus,CodeSha256:CodeSha256,AI_PROVIDER:Environment.Variables.AI_PROVIDER}",
+    "--output",
+    "json"
+  )
+  if (-not [string]::IsNullOrWhiteSpace($AwsProfile)) {
+    $checkArgs += @("--profile", $AwsProfile)
+  }
+  Invoke-Checked -Command "aws" -Arguments $checkArgs
+}
+
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $cdkDir = Join-Path $repoRoot "packages/cdk"
 
@@ -109,6 +288,9 @@ if ([string]::IsNullOrWhiteSpace($AgentCoreSessionNamespace) -and $env:AGENTCORE
 }
 if ([string]::IsNullOrWhiteSpace($LambdaAgentImageTag) -and $env:LAMBDA_AGENT_IMAGE_TAG) {
   $LambdaAgentImageTag = $env:LAMBDA_AGENT_IMAGE_TAG
+}
+if (($PushLambdaAgentImage -or $UpdateLambdaAgentCode) -and [string]::IsNullOrWhiteSpace($LambdaAgentImageTag)) {
+  $LambdaAgentImageTag = "lambda-$(Resolve-GitShortSha -WorkingDirectory $repoRoot)"
 }
 
 if (
@@ -172,6 +354,12 @@ Write-Host "  AGENTCORE_DEADLINE_MS : $env:AGENTCORE_INVOKE_DEADLINE_MS"
 if ($env:LAMBDA_AGENT_IMAGE_TAG) {
   Write-Host "  LAMBDA_AGENT_IMAGE_TAG: $env:LAMBDA_AGENT_IMAGE_TAG"
 }
+if ($PushLambdaAgentImage -or $UpdateLambdaAgentCode) {
+  Write-Host "  LAMBDA_AGENT_REPO     : $LambdaAgentRepositoryName"
+  Write-Host "  LAMBDA_AGENT_FUNCTION : $LambdaAgentFunctionName"
+  Write-Host "  LAMBDA_IMAGE_PUSH     : $PushLambdaAgentImage"
+  Write-Host "  LAMBDA_CODE_UPDATE    : $UpdateLambdaAgentCode"
+}
 if ($ToolRuntimeProvider -eq "agentcore") {
   Write-Host "  AGENTCORE_RUNTIME_ARN : $env:AGENTCORE_RUNTIME_ARN"
   Write-Host "  AGENTCORE_RUNTIME_NAME: $AgentCoreRuntimeName"
@@ -190,7 +378,37 @@ Write-Host "  - DynamoDB-backed tool context remains enabled unless explicitly o
 if ($ApiOnly) {
   Write-Host "  - ApiOnly mode updates Gateway wiring only; ComputeStack and LambdaAgentStack are left untouched."
 }
+if ($PushLambdaAgentImage -or $UpdateLambdaAgentCode) {
+  Write-Host "  - Lambda Agent image deploy uses docker buildx with --provenance=false and --sbom=false so AWS Lambda accepts the image manifest."
+  Write-Host "  - UpdateLambdaAgentCode updates the live function image directly after ECR push."
+}
 Write-Host ""
+
+$lambdaAgentRepositoryUri = ""
+if ($PushLambdaAgentImage -or $UpdateLambdaAgentCode) {
+  if ([string]::IsNullOrWhiteSpace($LambdaAgentImageTag)) {
+    throw "LambdaAgentImageTag is required when PushLambdaAgentImage or UpdateLambdaAgentCode is enabled."
+  }
+  $accountId = Resolve-AwsAccountId -AwsRegion $Region -AwsProfile $Profile
+  $lambdaAgentRepositoryUri = "$accountId.dkr.ecr.$Region.amazonaws.com/$LambdaAgentRepositoryName"
+}
+
+if ($PushLambdaAgentImage) {
+  Push-LambdaAgentImage `
+    -RepositoryUri $lambdaAgentRepositoryUri `
+    -ImageTag $LambdaAgentImageTag `
+    -AwsRegion $Region `
+    -AwsProfile $Profile `
+    -RootDirectory $repoRoot
+}
+
+if ($UpdateLambdaAgentCode) {
+  Update-LambdaAgentFunctionCode `
+    -FunctionName $LambdaAgentFunctionName `
+    -ImageUri "${lambdaAgentRepositoryUri}:${LambdaAgentImageTag}" `
+    -AwsRegion $Region `
+    -AwsProfile $Profile
+}
 
 Push-Location $cdkDir
 try {

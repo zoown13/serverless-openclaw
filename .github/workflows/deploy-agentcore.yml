@@ -196,6 +196,7 @@ jobs:
           build-args: |
             OPENCLAW_VERSION=${{ steps.meta.outputs.openclaw_version }}
           provenance: false
+          sbom: false
 
       - name: Build and push Lambda Agent image
         if: ${{ steps.meta.outputs.lambda_agent_changed == 'true' }}
@@ -213,6 +214,7 @@ jobs:
           build-args: |
             OPENCLAW_VERSION=${{ steps.meta.outputs.openclaw_version }}
           provenance: false
+          sbom: false
 
       - name: Verify pushed image
         if: ${{ steps.meta.outputs.runtime_changed == 'true' }}

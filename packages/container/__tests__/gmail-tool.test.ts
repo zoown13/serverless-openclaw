@@ -1320,6 +1320,42 @@ describe("gmail-tool", () => {
     expect(response?.message).toContain("합계는 스캔에서 결제로 파악한 6건 전체 기준");
   });
 
+  it("allows an explicit deep headers-only payment scan up to 100 candidates", async () => {
+    decideToolIntentMock.mockResolvedValueOnce({
+      action: "gmail",
+      taskFamily: "gmail_payment_summary",
+      sourceChoice: "gmail",
+      confidence: 0.95,
+    });
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m1" }] } }))
+      .mockResolvedValueOnce(jsonResponse({ body: { messages: [] } }))
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "[네이버페이] 결제하신 내역을 안내해드립니다.",
+          '"네이버페이" <naverpayadmin_noreply@navercorp.com>',
+          "Mon, 13 Apr 2026 03:08:14 +0000",
+          "병천순대전문점 총 결제 금액 35000원 결제수단 카드 간편결제",
+          "m1",
+        ),
+      );
+
+    const response = await maybeHandleCustomGmailRequest({
+      userId: "user-payment-deep-scan",
+      sessionKey: "session-payment-deep-scan",
+      message: "이번주 결제한 금액 100건까지 더 깊게 봐줘",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("maxResults=100");
+    expect(String(fetchMock.mock.calls[2]?.[0])).toContain("maxResults=99");
+    expect(response?.kind).toBe("direct");
+    expect(response?.message).toContain("병천순대전문점");
+  });
+
   it("builds a topic-aware travel payment query and excludes policy notices", async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))

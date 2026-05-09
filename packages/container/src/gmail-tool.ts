@@ -1468,6 +1468,70 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
+function parsePositiveIntegerEnv(name: string, fallback: number): number {
+  const parsed = Number.parseInt(process.env[name] ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function resolveGmailSummaryFetchConcurrency(): number {
+  return Math.max(
+    1,
+    Math.min(parsePositiveIntegerEnv("GMAIL_SUMMARY_FETCH_CONCURRENCY", 10), 20),
+  );
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  mapper: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+
+  async function worker(): Promise<void> {
+    while (nextIndex < items.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      results[currentIndex] = await mapper(items[currentIndex] as T);
+    }
+  }
+
+  const workerCount = Math.min(Math.max(concurrency, 1), items.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  return results;
+}
+
+async function fetchMessageSummaries(
+  accessToken: string,
+  messageIds: string[],
+): Promise<GmailMessageSummary[]> {
+  if (messageIds.length === 0) {
+    return [];
+  }
+
+  const startedAt = Date.now();
+  const concurrency = resolveGmailSummaryFetchConcurrency();
+  const summaries = await mapWithConcurrency(
+    messageIds,
+    concurrency,
+    (id) => fetchMessageSummary(accessToken, id),
+  );
+
+  if (messageIds.length > concurrency) {
+    console.info(
+      JSON.stringify({
+        component: "bridge",
+        event: "bridge.gmail_summary_fetch.completed",
+        messageCount: messageIds.length,
+        concurrency,
+        durationMs: Date.now() - startedAt,
+      }),
+    );
+  }
+
+  return summaries;
+}
+
 function getHeader(payload: GmailPayload | undefined, name: string): string {
   const match = payload?.headers?.find(
     (header) => header.name.toLowerCase() === name.toLowerCase(),
@@ -1877,7 +1941,7 @@ async function fetchPaymentMessages(
     `/messages?q=${encodeURIComponent(query)}&maxResults=${maxMessages}`,
   );
   const ids = listJson.messages?.map((item) => item.id) ?? [];
-  const messages = await Promise.all(ids.map((id) => fetchMessageSummary(accessToken, id)));
+  const messages = await fetchMessageSummaries(accessToken, ids);
   const records = messages
     .map((summary) => buildPaymentRecord(summary, topicKeywords))
     .filter((record): record is ParsedPaymentRecord => Boolean(record));
@@ -1933,7 +1997,7 @@ async function fetchPaymentMessagesAcrossQueries(
     }
   }
 
-  const messages = await Promise.all(ids.map((id) => fetchMessageSummary(accessToken, id)));
+  const messages = await fetchMessageSummaries(accessToken, ids);
   const records = messages
     .map((summary) => buildPaymentRecord(summary, topicKeywords))
     .filter((record): record is ParsedPaymentRecord => Boolean(record));

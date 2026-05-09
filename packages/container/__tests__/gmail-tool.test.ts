@@ -91,9 +91,11 @@ function fullBodyResponse(bodyText: string) {
 describe("gmail-tool", () => {
   let tempHomeDir: string;
   let fetchMock: FetchMock;
+  let originalSummaryFetchConcurrency: string | undefined;
 
   beforeEach(() => {
     tempHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "gmail-tool-"));
+    originalSummaryFetchConcurrency = process.env.GMAIL_SUMMARY_FETCH_CONCURRENCY;
     process.env.HOME = tempHomeDir;
     process.env.USERPROFILE = tempHomeDir;
     fs.mkdirSync(path.join(tempHomeDir, ".openclaw", "credentials"), { recursive: true });
@@ -128,6 +130,11 @@ describe("gmail-tool", () => {
     vi.restoreAllMocks();
     delete process.env.HOME;
     delete process.env.USERPROFILE;
+    if (originalSummaryFetchConcurrency !== undefined) {
+      process.env.GMAIL_SUMMARY_FETCH_CONCURRENCY = originalSummaryFetchConcurrency;
+    } else {
+      delete process.env.GMAIL_SUMMARY_FETCH_CONCURRENCY;
+    }
     fs.rmSync(tempHomeDir, { recursive: true, force: true });
   });
 
@@ -182,6 +189,65 @@ describe("gmail-tool", () => {
         taskFamily: "gmail_payment_summary",
         sourceChoice: "gmail",
       }),
+    );
+  });
+
+  it("bounds Gmail metadata fetch concurrency for payment scans", async () => {
+    process.env.GMAIL_SUMMARY_FETCH_CONCURRENCY = "2";
+    let activeMetadataRequests = 0;
+    let maxActiveMetadataRequests = 0;
+    const messageIds = Array.from({ length: 5 }, (_, index) => `m${index + 1}`);
+
+    fetchMock.mockImplementation(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("oauth2.googleapis.com/token")) {
+        return jsonResponse({
+          body: { access_token: "access-token" },
+        });
+      }
+
+      if (url.includes("/messages?")) {
+        return jsonResponse({
+          body: {
+            resultSizeEstimate: messageIds.length,
+            messages: messageIds.map((id) => ({ id })),
+          },
+        });
+      }
+
+      const messageMatch = url.match(/\/messages\/([^?]+)/);
+      if (messageMatch) {
+        activeMetadataRequests += 1;
+        maxActiveMetadataRequests = Math.max(maxActiveMetadataRequests, activeMetadataRequests);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        activeMetadataRequests -= 1;
+        const id = messageMatch[1] ?? "m1";
+        const index = Number.parseInt(id.replace("m", ""), 10);
+        return metadataResponse(
+          "[네이버페이] 결제하신 내역을 안내해드립니다.",
+          "네이버페이 <pay@example.com>",
+          "Tue, 14 Apr 2026 09:00:00 +0900",
+          `가맹점명 테스트상점${index} 총 결제 금액 ${index * 1000}원 결제수단 카드`,
+          id,
+        );
+      }
+
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+
+    const response = await maybeHandleCustomGmailRequest({
+      userId: "user-concurrency",
+      sessionKey: "session-concurrency",
+      message: "최근 결제한 내역 알려줘",
+      gmailReady: true,
+      emailTokenBudget: LOW_PAYMENT_SCAN_BUDGET,
+    });
+
+    expect(response?.kind).toBe("direct");
+    expect(maxActiveMetadataRequests).toBeLessThanOrEqual(2);
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/messages?"),
+      expect.anything(),
     );
   });
 

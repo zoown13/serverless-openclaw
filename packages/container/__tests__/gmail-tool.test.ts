@@ -321,6 +321,66 @@ describe("gmail-tool", () => {
     expect(decideToolIntentMock).not.toHaveBeenCalled();
   });
 
+  it("can restart an active payment context without the advisor for high-confidence fresh lookups", async () => {
+    decideToolIntentMock.mockResolvedValueOnce({
+      action: "gmail",
+      taskFamily: "gmail_payment_summary",
+      sourceChoice: "gmail",
+      confidence: 0.95,
+    });
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m1" }] } }))
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "카드 결제 알림",
+          "Card Co <billing@example.com>",
+          "Fri, 03 Apr 2026 09:00:00 +0000",
+          "결제금액 12,300원 카드종류 삼성카드 가맹점명 스타벅스",
+        ),
+      );
+
+    await maybeHandleCustomGmailRequest({
+      userId: "user-active-payment-fast-path",
+      sessionKey: "session-active-payment-fast-path",
+      message: "이번주 결제한 금액이 어느정도 되려나?",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    vi.clearAllMocks();
+    process.env.TOOL_DETERMINISTIC_PAYMENT_FAST_PATH = "true";
+    decideToolIntentMock.mockResolvedValueOnce({
+      action: "generic_openclaw",
+      taskFamily: "generic_tool_task",
+      sourceChoice: "general",
+      confidence: 0.99,
+    });
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m2" }] } }))
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "카드 결제 알림",
+          "Card Co <billing@example.com>",
+          "Sat, 04 Apr 2026 09:00:00 +0000",
+          "결제금액 45,600원 카드종류 현대카드 가맹점명 교보문고",
+        ),
+      );
+
+    const response = await maybeHandleCustomGmailRequest({
+      userId: "user-active-payment-fast-path",
+      sessionKey: "session-active-payment-fast-path",
+      message: "최근 결제한 내역 알려줘",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    expect(response?.kind).toBe("direct");
+    expect(response?.message).toContain("확인 가능한 합계: KRW 45,600");
+    expect(fetchMock).toHaveBeenCalled();
+    expect(decideToolIntentMock).not.toHaveBeenCalled();
+  });
   it("retries transient Gmail API rate limits before failing the payment lookup", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     fetchMock

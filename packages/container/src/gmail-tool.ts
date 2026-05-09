@@ -554,7 +554,7 @@ function isHighConfidencePaymentLookupRequest(message: string): boolean {
   }
 
   const hasPaymentAction =
-    /(?:결제(?:한| 내역| 이력| 금액)?|카드값|명세서|청구서|영수증|지출|쓴 돈|얼마|합계|총액|payment|receipt|statement|spent|spend|transaction)/i.test(
+    /(?:결제(?:한| 내역| 이력| 금액)?|카드값|명세서|청구서|영수증|지출|쓴 돈|payment|receipt|statement|spent|spend|transaction)/i.test(
       normalized,
     );
   const hasLookupScope =
@@ -3522,8 +3522,26 @@ export async function maybeHandleCustomGmailRequest(
 
   const refreshedContext = await getTaskContext(contextKey);
   let advisorDecision: ToolIntentDecision | null = null;
-  if (refreshedContext?.status === "active") {
-    advisorDecision = await decideToolIntent(
+  if (
+    refreshedContext?.status === "active" &&
+    isDeterministicPaymentFastPathEnabled() &&
+    options.gmailReady &&
+    refreshedContext.taskFamily === "gmail_payment_summary" &&
+    isHighConfidencePaymentLookupRequest(options.message) &&
+    isFreshPaymentLookupRequest(options.message, refreshedContext, null)
+  ) {
+    emitToolEvent(options.onToolEvent, {
+      type: "intentDecided",
+      decisionSource: "deterministic",
+      action: "start_new_task",
+      taskFamily: "gmail_payment_summary",
+      sourceChoice: "gmail",
+      confidence: 0.9,
+    });
+    return restartPaymentTaskFromActiveContext(contextKey, refreshedContext, options);
+  }
+
+  if (refreshedContext?.status === "active") {    advisorDecision = await decideToolIntent(
       buildAdvisorInput(options.message, options.gmailReady, refreshedContext),
     );
     if (!advisorDecision) {

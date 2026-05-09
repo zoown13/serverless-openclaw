@@ -7,6 +7,7 @@ import {
   buildRuntimeSessionId,
   estimateCost,
   resolveProviderConfig,
+  type CostEstimate,
   type ResolvedRuntimeConfig,
   type TokenUsage,
 } from "@serverless-openclaw/shared";
@@ -18,6 +19,7 @@ import { runAgent } from "./agent-runner.js";
 import { runDirectBedrockChat } from "./direct-bedrock-chat.js";
 import { publishLambdaDeliveryMetric } from "./metrics.js";
 import { RecentImageContextStore } from "./recent-image-context.js";
+import { RecentCostContextStore, type RecentCostContext } from "./recent-cost-context.js";
 import {
   ApiGatewayManagementApiClient,
   PostToConnectionCommand,
@@ -390,7 +392,7 @@ function logCostEstimate(
     tokenUsage?: TokenUsage;
     runtimeClass?: "chat-only" | "tool-enabled";
   },
-): void {
+): CostEstimate {
   const estimate = estimateCost({
     traceId: String(basePayload.traceId ?? event.traceId ?? `lambda-${event.sessionId}`),
     userId: event.userId,
@@ -421,6 +423,78 @@ function logCostEstimate(
     tokenUsage: estimate.tokenUsage,
     pricing: estimate.pricing,
   });
+  return estimate;
+}
+
+async function saveRecentCostEstimate(
+  store: RecentCostContextStore,
+  event: LambdaAgentEvent,
+  sessionId: string,
+  estimate: CostEstimate,
+  basePayload: Record<string, unknown>,
+): Promise<void> {
+  try {
+    const saved = await store.save(event.userId, sessionId, estimate);
+    logLambdaEvent("lambda.cost.saved", {
+      ...basePayload,
+      estimatedUsd: estimate.estimatedUsd,
+      expiresAt: saved.expiresAt,
+    });
+  } catch (err: unknown) {
+    logLambdaEvent("lambda.cost.save_failed", {
+      ...basePayload,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+function isCostLookupRequest(message: string): boolean {
+  const normalized = message.trim();
+  if (!normalized || normalized.length > 120 || isToolRequest(normalized)) {
+    return false;
+  }
+
+  return [
+    /^\/(?:cost|usage|요금|비용)\b/i,
+    /(?:이번|방금|직전|마지막|이전).*(?:질문|요청|응답|호출).*(?:비용|요금|얼마|cost)/i,
+    /(?:비용|요금|cost).*(?:이번|방금|직전|마지막|이전|얼마)/i,
+    /(?:얼마).*(?:썼|나왔|들었).*(?:이번|방금|직전|마지막|요청|질문|호출)/i,
+  ].some((pattern) => pattern.test(normalized));
+}
+
+function formatUsd(value: number | undefined): string {
+  if (value === undefined) return "unknown";
+  if (value > 0 && value < 0.000001) return "<$0.000001";
+  return `$${value.toFixed(9).replace(/0+$/, "").replace(/\.$/, "")}`;
+}
+
+function buildRecentCostMessage(context: RecentCostContext | undefined): string {
+  if (!context) {
+    return "아직 직전 질의 비용 추정 기록이 없어요. 일반 대화나 이미지 분석을 한 번 실행한 뒤 `/cost` 또는 `이번 질문 비용 얼마야?`라고 물어봐 주세요.";
+  }
+
+  const estimate = context.estimate;
+  const parts = [
+    `직전 질의 추정 비용은 약 ${formatUsd(estimate.estimatedUsd)} 입니다.`,
+    "",
+    `- Bedrock: ${formatUsd(estimate.breakdown.bedrockUsd)}`,
+    `- Lambda 실행: ${formatUsd(estimate.breakdown.lambdaUsd)}`,
+    `- Lambda 요청: ${formatUsd(estimate.breakdown.requestUsd)}`,
+  ];
+
+  if (estimate.tokenUsage?.inputTokens !== undefined || estimate.tokenUsage?.outputTokens !== undefined) {
+    parts.push(
+      `- Tokens: input ${estimate.tokenUsage.inputTokens ?? 0}, output ${estimate.tokenUsage.outputTokens ?? 0}`,
+    );
+  }
+
+  parts.push(
+    `- Runtime: ${estimate.provider}${estimate.model ? ` / ${estimate.model}` : ""}`,
+    "",
+    "정확한 AWS 청구액은 Billing 반영 후 달라질 수 있고, 이 값은 질의 직후 추정치입니다.",
+  );
+
+  return parts.join("\n");
 }
 
 function resolveDirectChatModel(
@@ -739,6 +813,7 @@ export async function handler(
   const runtimeConfig = configInit.runtimeConfig;
   const sessionId = buildRuntimeSessionId(runtimeConfig, event.channel, event.sessionId);
   const recentImageStore = new RecentImageContextStore(bucket);
+  const recentCostStore = new RecentCostContextStore(bucket);
   const deliveryTarget = event.channel === "web"
     ? { type: "websocket", connectionId: event.connectionId ?? "unknown" }
     : { type: "telegram", chatId: telegramChatId ?? "unknown" };
@@ -781,6 +856,45 @@ export async function handler(
   } else if (isTelegram && telegramBotTokenPath) {
     const secrets = await resolveSecrets([telegramBotTokenPath]);
     telegramBotToken = secrets.get(telegramBotTokenPath);
+  }
+
+  if (isCostLookupRequest(event.message)) {
+    let recentCostContext: RecentCostContext | undefined;
+    try {
+      recentCostContext = await recentCostStore.load(event.userId, sessionId);
+      logLambdaEvent("lambda.cost.loaded", {
+        ...requestLogPayload,
+        hasRecentCost: Boolean(recentCostContext),
+        estimatedUsd: recentCostContext?.estimate.estimatedUsd,
+      });
+    } catch (err: unknown) {
+      logLambdaEvent("lambda.cost.load_failed", {
+        ...requestLogPayload,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    const payloads = [{ text: buildRecentCostMessage(recentCostContext) }];
+    await pushPayloads(payloads, {
+      canPush,
+      callbackUrl: event.callbackUrl,
+      connectionId: event.connectionId,
+      isTelegram,
+      telegramBotToken,
+      telegramChatId,
+      traceId,
+      channel: event.channel,
+    });
+    await pushIdleStatus(canPush, traceId, event.callbackUrl, event.connectionId);
+    await lock.release();
+
+    return {
+      success: true,
+      payloads,
+      durationMs: Date.now() - startTime,
+      provider: runtimeConfig.openclawProvider,
+      model: event.model ?? runtimeConfig.defaultModel,
+    };
   }
 
   let effectiveImageInput = event.imageInput;
@@ -903,11 +1017,12 @@ export async function handler(
         inputTokens: directResult.usage?.inputTokens,
         outputTokens: directResult.usage?.outputTokens,
       });
-      logCostEstimate(event, requestLogPayload, {
+      const costEstimate = logCostEstimate(event, requestLogPayload, {
         model: visionModel,
         durationMs: Date.now() - startTime,
         tokenUsage: directResult.usage,
       });
+      await saveRecentCostEstimate(recentCostStore, event, sessionId, costEstimate, requestLogPayload);
 
       return {
         success: true,
@@ -1034,11 +1149,12 @@ export async function handler(
           attemptIndex,
           fallbackFromModel: attemptIndex > 0 ? directChatModel : undefined,
         });
-        logCostEstimate(event, requestLogPayload, {
+        const costEstimate = logCostEstimate(event, requestLogPayload, {
           model,
           durationMs: Date.now() - startTime,
           tokenUsage: directResult.usage,
         });
+        await saveRecentCostEstimate(recentCostStore, event, sessionId, costEstimate, requestLogPayload);
 
         return {
           success: true,
@@ -1122,10 +1238,11 @@ export async function handler(
       });
 
       await pushIdleStatus(canPush, traceId, event.callbackUrl, event.connectionId);
-      logCostEstimate(event, requestLogPayload, {
+      const costEstimate = logCostEstimate(event, requestLogPayload, {
         model: result.meta.agentMeta.model,
         durationMs: Date.now() - startTime,
       });
+      await saveRecentCostEstimate(recentCostStore, event, sessionId, costEstimate, requestLogPayload);
 
       return {
         success: true,

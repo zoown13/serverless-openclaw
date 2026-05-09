@@ -11,6 +11,8 @@ const {
   mockRunDirectBedrockChat,
   mockLoadRecentImage,
   mockSaveRecentImage,
+  mockLoadRecentCost,
+  mockSaveRecentCost,
   mockAcquire,
   mockRelease,
   mockPublishLambdaDeliveryMetric,
@@ -62,6 +64,10 @@ const {
   mockSaveRecentImage: vi.fn().mockResolvedValue({
     expiresAt: "2099-01-01T00:00:00.000Z",
   }),
+  mockLoadRecentCost: vi.fn().mockResolvedValue(undefined),
+  mockSaveRecentCost: vi.fn().mockResolvedValue({
+    expiresAt: "2099-01-01T00:00:00.000Z",
+  }),
   mockAcquire: vi.fn().mockResolvedValue(true),
   mockRelease: vi.fn().mockResolvedValue(undefined),
   mockPublishLambdaDeliveryMetric: vi.fn().mockResolvedValue(undefined),
@@ -101,6 +107,13 @@ vi.mock("../src/recent-image-context.js", () => ({
   })),
 }));
 
+vi.mock("../src/recent-cost-context.js", () => ({
+  RecentCostContextStore: vi.fn().mockImplementation(() => ({
+    load: mockLoadRecentCost,
+    save: mockSaveRecentCost,
+  })),
+}));
+
 vi.mock("../src/session-lock.js", () => ({
   SessionLock: vi.fn().mockImplementation(() => ({
     acquire: mockAcquire,
@@ -134,6 +147,12 @@ describe("handler", () => {
     mockLoadRecentImage.mockResolvedValue(null);
     mockSaveRecentImage.mockClear();
     mockSaveRecentImage.mockResolvedValue({
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+    mockLoadRecentCost.mockClear();
+    mockLoadRecentCost.mockResolvedValue(undefined);
+    mockSaveRecentCost.mockClear();
+    mockSaveRecentCost.mockResolvedValue({
       expiresAt: "2099-01-01T00:00:00.000Z",
     });
     mockAcquire.mockClear();
@@ -734,6 +753,16 @@ describe("handler", () => {
     expect(infoSpy).toHaveBeenCalledWith(
       expect.stringContaining("\"estimatedUsd\""),
     );
+    expect(mockSaveRecentCost).toHaveBeenCalledWith(
+      "user-123",
+      "bedrock-chat:telegram:session-456",
+      expect.objectContaining({
+        estimatedUsd: expect.any(Number),
+        breakdown: expect.objectContaining({
+          bedrockUsd: expect.any(Number),
+        }),
+      }),
+    );
   });
 
   it("should use direct Bedrock chat for everyday standalone Telegram chat when enabled", async () => {
@@ -891,6 +920,13 @@ describe("handler", () => {
     expect(infoSpy).toHaveBeenCalledWith(
       expect.stringContaining("\"event\":\"lambda.cost.estimated\""),
     );
+    expect(mockSaveRecentCost).toHaveBeenCalledWith(
+      "user-123",
+      "bedrock-chat:web:session-456",
+      expect.objectContaining({
+        estimatedUsd: expect.any(Number),
+      }),
+    );
   });
 
   it("should reuse a recent image context for image follow-up messages", async () => {
@@ -964,6 +1000,59 @@ describe("handler", () => {
     );
     expect(mockSaveRecentImage).not.toHaveBeenCalled();
     expect(mockRunAgent).not.toHaveBeenCalled();
+  });
+
+  it("should answer a recent cost lookup without invoking the model", async () => {
+    mockLoadRecentCost.mockResolvedValueOnce({
+      version: 1,
+      userId: "user-123",
+      sessionId: "anthropic-tools:web:session-456",
+      createdAt: "2026-05-09T12:00:00.000Z",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      estimate: {
+        traceId: "trace-cost",
+        userId: "user-123",
+        channel: "web",
+        runtimeClass: "chat-only",
+        provider: "lambda",
+        model: "apac.amazon.nova-micro-v1:0",
+        durationMs: 1068,
+        memoryMb: 2048,
+        architecture: "arm64",
+        estimatedUsd: 0.000047195,
+        confidence: "high",
+        breakdown: {
+          bedrockUsd: 0.000018515,
+          lambdaUsd: 0.00002848,
+          requestUsd: 0.0000002,
+        },
+        tokenUsage: {
+          inputTokens: 105,
+          outputTokens: 106,
+          totalTokens: 211,
+        },
+      },
+    });
+
+    const handler = await loadHandler();
+    const result = await handler(createEvent({
+      message: "이번 질문 비용 얼마야?",
+    })) as LambdaAgentResponse;
+
+    expect(result.success).toBe(true);
+    expect(result.payloads?.[0]?.text).toContain("직전 질의 추정 비용");
+    expect(result.payloads?.[0]?.text).toContain("$0.000047195");
+    expect(result.payloads?.[0]?.text).toContain("input 105, output 106");
+    expect(mockLoadRecentCost).toHaveBeenCalledWith(
+      "user-123",
+      "anthropic-tools:web:session-456",
+    );
+    expect(mockRunDirectBedrockChat).not.toHaveBeenCalled();
+    expect(mockRunAgent).not.toHaveBeenCalled();
+    expect(mockSaveRecentCost).not.toHaveBeenCalled();
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"event\":\"lambda.cost.loaded\""),
+    );
   });
 
   it("should retry the default direct chat model before falling back to OpenClaw", async () => {

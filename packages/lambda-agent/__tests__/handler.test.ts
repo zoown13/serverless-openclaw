@@ -702,6 +702,81 @@ describe("handler", () => {
     );
   });
 
+  it("should use direct Bedrock chat for everyday standalone Telegram chat when enabled", async () => {
+    process.env.AI_PROVIDER = "bedrock";
+    process.env.LAMBDA_DIRECT_BEDROCK_CHAT = "true";
+    process.env.SSM_TELEGRAM_BOT_TOKEN = "/serverless-openclaw/secrets/telegram-bot-token";
+    mockResolveSecrets.mockResolvedValue(
+      new Map([
+        ["/serverless-openclaw/secrets/telegram-bot-token", "telegram-token"],
+      ]),
+    );
+    mockRunDirectBedrockChat.mockResolvedValueOnce({
+      text: "오늘은 가볍게 김치볶음밥이나 우동을 추천해요.",
+      usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 },
+    });
+    mockInitConfig.mockResolvedValueOnce({
+      configDir: "/tmp/.openclaw",
+      sessionsDir: "/tmp/.openclaw/agents/default/sessions",
+      config: { gateway: { mode: "local" } },
+      runtimeConfig: {
+        provider: "bedrock",
+        openclawProvider: "amazon-bedrock",
+        openclawApi: "bedrock-converse-stream",
+        openclawAuth: "aws-sdk",
+        defaultModel: "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+        capability: "chat-only",
+        sessionNamespace: "bedrock-chat",
+        readiness: {
+          chatReady: true,
+          toolRuntimeReady: false,
+          gmailReady: true,
+        },
+        emailTokenBudget: {
+          mode: "headers-first",
+          maxMessages: 5,
+          paymentScanMessages: 25,
+          maxSnippetChars: 240,
+          maxBodyChars: 1600,
+          requireExplicitBodyAccess: true,
+        },
+        secretContract: {
+          requiresAnthropicApiKey: false,
+          supportsOpenclawAuthProfiles: true,
+          supportsOpenclawOauth: true,
+          supportsGoogleOauthClient: true,
+        },
+      },
+      gmailReady: true,
+      toolRuntimeReady: false,
+      sessionNamespace: "bedrock-chat",
+    });
+
+    const handler = await loadHandler();
+    const result = await handler(createEvent({
+      channel: "telegram",
+      connectionId: undefined,
+      callbackUrl: undefined,
+      telegramChatId: "8585874705",
+      message: "저녁 메뉴 추천해줘",
+    })) as LambdaAgentResponse;
+
+    expect(result.success).toBe(true);
+    expect(result.payloads?.[0]?.text).toContain("김치볶음밥");
+    expect(mockRunDirectBedrockChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: "저녁 메뉴 추천해줘",
+        model: "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+      }),
+    );
+    expect(mockRunAgent).not.toHaveBeenCalled();
+    expect(mockDownload).not.toHaveBeenCalled();
+    expect(mockUpload).not.toHaveBeenCalled();
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"event\":\"lambda.direct_chat.completed\""),
+    );
+  });
+
   it("should fallback to OpenClaw when direct Bedrock chat fails", async () => {
     process.env.AI_PROVIDER = "bedrock";
     process.env.LAMBDA_DIRECT_BEDROCK_CHAT = "true";

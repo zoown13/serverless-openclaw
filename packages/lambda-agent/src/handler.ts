@@ -362,6 +362,9 @@ function isStatelessChatQuestion(message: string): boolean {
   return [
     /(?:리눅스|linux|파이썬|python|자바스크립트|javascript|타입스크립트|typescript|git|깃|docker|도커|kubernetes|쿠버네티스|aws|lambda|람다|명령어|코드|개념|뜻|의미|차이|예시|방법|문법|영어).*(?:알려줘|설명해|가르쳐|어떻게|뭐야|무엇|작성해|번역해)/i,
     /(?:알려줘|설명해|가르쳐|어떻게|뭐야|무엇|작성해|번역해).*(?:리눅스|linux|파이썬|python|자바스크립트|javascript|타입스크립트|typescript|git|깃|docker|도커|kubernetes|쿠버네티스|aws|lambda|람다|명령어|코드|개념|뜻|의미|차이|예시|방법|문법|영어)/i,
+    /(?:메뉴|음식|저녁|점심|아침|간식|야식|레시피|recipe|menu|dinner|lunch|breakfast|snack).*(?:추천|골라|뭐\s*먹|어때|정해|알려줘|suggest|recommend|pick)/i,
+    /(?:추천|골라|뭐\s*먹|어때|정해|알려줘|suggest|recommend|pick).*(?:메뉴|음식|저녁|점심|아침|간식|야식|레시피|recipe|menu|dinner|lunch|breakfast|snack)/i,
+    /(?:날씨|weather|농담|joke).*(?:알려줘|어때|해줘|말해줘|tell|what)/i,
     /^(?:what|how|why|explain|translate)\b/i,
   ].some((pattern) => pattern.test(normalized));
 }

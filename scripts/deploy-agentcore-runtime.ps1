@@ -327,7 +327,8 @@ $environmentVariables = @{
   RESPONSE_FORMAT_VERSION = $ResponseFormatVersion
   TOOL_CONTEXT_STORE = "ddb"
   GMAIL_SUMMARY_FETCH_CONCURRENCY = "10"
-  TOOL_DETERMINISTIC_PAYMENT_FAST_PATH = "true"  AWS_REGION = $Region
+  TOOL_DETERMINISTIC_PAYMENT_FAST_PATH = "true"
+  AWS_REGION = $Region
   SSM_BRIDGE_AUTH_TOKEN = "/serverless-openclaw/secrets/bridge-auth-token"
   SSM_OPENCLAW_GATEWAY_TOKEN = "/serverless-openclaw/secrets/openclaw-gateway-token"
   SSM_TELEGRAM_BOT_TOKEN = "/serverless-openclaw/secrets/telegram-bot-token"

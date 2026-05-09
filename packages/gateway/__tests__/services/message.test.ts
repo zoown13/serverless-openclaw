@@ -365,9 +365,15 @@ describe("message service", () => {
       );
     });
 
-    it("should clear active tool affinity for an independent general how-to question", async () => {
+    it("should delegate independent general how-to handoff to active AgentCore context", async () => {
       const mockInvokeLambda = vi.fn().mockResolvedValue({ accepted: true });
-      const mockInvokeAgentCore = vi.fn();
+      const mockInvokeAgentCore = vi.fn().mockResolvedValue({
+        accepted: true,
+        source: "chat-handoff",
+        handoffRuntimeClass: "chat-only",
+        handoffMessage: "리눅스에서 파일 찾는 명령어 알려줘",
+        clearToolAffinity: true,
+      });
       const deps = makeDeps({
         message: "리눅스에서 파일 찾는 명령어 알려줘",
         agentRuntime: "both",
@@ -392,8 +398,13 @@ describe("message service", () => {
       const result = await routeMessage(deps);
 
       expect(result).toBe("lambda");
+      expect(mockInvokeAgentCore).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: "리눅스에서 파일 찾는 명령어 알려줘",
+          runtimeClass: "tool-enabled",
+        }),
+      );
       expect(deps.deleteRoutingContext).toHaveBeenCalledWith("user-123", "web");
-      expect(mockInvokeAgentCore).not.toHaveBeenCalled();
       expect(mockInvokeLambda).toHaveBeenCalledWith(
         expect.objectContaining({
           message: "리눅스에서 파일 찾는 명령어 알려줘",
@@ -402,9 +413,15 @@ describe("message service", () => {
       );
     });
 
-    it("should clear active tool affinity for an everyday standalone chat request", async () => {
+    it("should delegate everyday standalone chat handoff to active AgentCore context", async () => {
       const mockInvokeLambda = vi.fn().mockResolvedValue({ accepted: true });
-      const mockInvokeAgentCore = vi.fn();
+      const mockInvokeAgentCore = vi.fn().mockResolvedValue({
+        accepted: true,
+        source: "chat-handoff",
+        handoffRuntimeClass: "chat-only",
+        handoffMessage: "저녁 메뉴 추천해줘",
+        clearToolAffinity: true,
+      });
       const deps = makeDeps({
         message: "저녁 메뉴 추천해줘",
         agentRuntime: "both",
@@ -429,8 +446,13 @@ describe("message service", () => {
       const result = await routeMessage(deps);
 
       expect(result).toBe("lambda");
+      expect(mockInvokeAgentCore).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: "저녁 메뉴 추천해줘",
+          runtimeClass: "tool-enabled",
+        }),
+      );
       expect(deps.deleteRoutingContext).toHaveBeenCalledWith("user-123", "web");
-      expect(mockInvokeAgentCore).not.toHaveBeenCalled();
       expect(mockInvokeLambda).toHaveBeenCalledWith(
         expect.objectContaining({
           message: "저녁 메뉴 추천해줘",
@@ -439,9 +461,15 @@ describe("message service", () => {
       );
     });
 
-    it("should clear active tool affinity when the user explicitly switches to a different chat topic", async () => {
+    it("should delegate explicit chat-topic switches to active AgentCore context", async () => {
       const mockInvokeLambda = vi.fn().mockResolvedValue({ accepted: true });
-      const mockInvokeAgentCore = vi.fn();
+      const mockInvokeAgentCore = vi.fn().mockResolvedValue({
+        accepted: true,
+        source: "chat-handoff",
+        handoffRuntimeClass: "chat-only",
+        handoffMessage: "그거 말고 일반 질문으로 커피 원두 추천해줘",
+        clearToolAffinity: true,
+      });
       const deps = makeDeps({
         message: "그거 말고 일반 질문으로 커피 원두 추천해줘",
         agentRuntime: "both",
@@ -466,8 +494,13 @@ describe("message service", () => {
       const result = await routeMessage(deps);
 
       expect(result).toBe("lambda");
+      expect(mockInvokeAgentCore).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: "그거 말고 일반 질문으로 커피 원두 추천해줘",
+          runtimeClass: "tool-enabled",
+        }),
+      );
       expect(deps.deleteRoutingContext).toHaveBeenCalledWith("user-123", "web");
-      expect(mockInvokeAgentCore).not.toHaveBeenCalled();
       expect(mockInvokeLambda).toHaveBeenCalledWith(
         expect.objectContaining({
           message: "그거 말고 일반 질문으로 커피 원두 추천해줘",

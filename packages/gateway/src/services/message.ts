@@ -478,6 +478,18 @@ function shouldKeepToolAffinity(message: string): boolean {
   return true;
 }
 
+function shouldDelegateToolAffinityDecisionToRuntime(
+  deps: RouteDeps,
+  affinity: ToolRuntimeAffinityState,
+): boolean {
+  const provider = affinity.fallbackProvider ??
+    affinity.provider ??
+    resolveToolRuntimeProvider(deps);
+
+  return provider === "agentcore" &&
+    Boolean(deps.invokeAgentCoreRuntime && deps.agentCoreRuntimeArn);
+}
+
 function validateLambdaDeliveryTarget(deps: RouteDeps): void {
   if (deps.channel === "web") {
     if (!hasValue(deps.connectionId) || !hasValue(deps.callbackUrl)) {
@@ -916,13 +928,19 @@ async function maybeHandleToolRuntimeAffinity(
     return { handled: true, result: "clarify" };
   }
 
-  if (shouldKeepToolAffinity(deps.message)) {
+  const affinityProvider = affinity.fallbackProvider ??
+    affinity.provider ??
+    resolveToolRuntimeProvider(deps);
+  if (
+    shouldDelegateToolAffinityDecisionToRuntime(deps, affinity) ||
+    shouldKeepToolAffinity(deps.message)
+  ) {
     await deps.putRoutingContext(
       deps.userId,
       buildToolRuntimeAffinityState(
         deps,
         affinity.createdAt,
-        affinity.fallbackProvider ?? affinity.provider ?? resolveToolRuntimeProvider(deps),
+        affinityProvider,
         affinity.fallbackProvider,
         affinity.providerLockedAt,
         affinity.providerLockReason,
@@ -932,19 +950,23 @@ async function maybeHandleToolRuntimeAffinity(
       traceId: deps.traceId,
       channel: deps.channel,
       runtimeClass: affinity.runtimeClass,
-      provider: affinity.fallbackProvider ?? affinity.provider ?? resolveToolRuntimeProvider(deps),
+      provider: affinityProvider,
+      delegatedSemanticDecision: shouldDelegateToolAffinityDecisionToRuntime(
+        deps,
+        affinity,
+      ),
     });
     logRouteEvent("gateway.harness.session.reused", {
       traceId: deps.traceId,
       channel: deps.channel,
       runtimeClass: affinity.runtimeClass,
-      provider: affinity.fallbackProvider ?? affinity.provider ?? resolveToolRuntimeProvider(deps),
+      provider: affinityProvider,
     });
     return {
       handled: false,
       replayMessage: deps.message,
       replayRuntimeClass: affinity.runtimeClass,
-      replayProvider: affinity.fallbackProvider ?? affinity.provider,
+      replayProvider: affinityProvider,
     };
   }
 

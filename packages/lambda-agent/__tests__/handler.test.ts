@@ -935,7 +935,7 @@ describe("handler", () => {
 
     const handler = await loadHandler();
     const result = await handler(createEvent({
-      message: "이거 다시 분석해줘",
+      message: "표로 정리해줘",
     })) as LambdaAgentResponse;
 
     expect(result.success).toBe(true);

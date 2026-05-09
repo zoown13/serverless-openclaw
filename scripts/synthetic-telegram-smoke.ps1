@@ -131,7 +131,8 @@ function Clear-SyntheticRuntimeState {
   param(
     [Parameter(Mandatory = $true)][string]$SelectedProfile,
     [Parameter(Mandatory = $true)][string]$SelectedRegion,
-    [Parameter(Mandatory = $true)][string]$SelectedUserId
+    [Parameter(Mandatory = $true)][string]$SelectedUserId,
+    [Parameter(Mandatory = $true)][long]$SelectedTelegramId
   )
 
   $taskKeyPath = Join-Path `
@@ -140,6 +141,9 @@ function Clear-SyntheticRuntimeState {
   $affinityKeyPath = Join-Path `
     ([System.IO.Path]::GetTempPath()) `
     ("active-tool-key-{0}.json" -f [Guid]::NewGuid().ToString("N"))
+  $toolContextKeyPath = Join-Path `
+    ([System.IO.Path]::GetTempPath()) `
+    ("tool-context-key-{0}.json" -f [Guid]::NewGuid().ToString("N"))
 
   try {
     Write-Utf8NoBomJson `
@@ -148,6 +152,9 @@ function Clear-SyntheticRuntimeState {
     Write-Utf8NoBomJson `
       -Path $affinityKeyPath `
       -Json "{`"PK`":{`"S`":`"USER#$SelectedUserId`"},`"SK`":{`"S`":`"SETTING#active-tool:telegram`"}}"
+    Write-Utf8NoBomJson `
+      -Path $toolContextKeyPath `
+      -Json "{`"PK`":{`"S`":`"USER#${SelectedUserId}:telegram:$SelectedTelegramId`"},`"SK`":{`"S`":`"SETTING#tool-task-context`"}}"
 
     aws dynamodb delete-item `
       --table-name serverless-openclaw-TaskState `
@@ -168,8 +175,18 @@ function Clear-SyntheticRuntimeState {
     if ($LASTEXITCODE -ne 0) {
       throw "Failed to clear active tool affinity."
     }
+
+    aws dynamodb delete-item `
+      --table-name serverless-openclaw-Settings `
+      --key "file://$toolContextKeyPath" `
+      --profile $SelectedProfile `
+      --region $SelectedRegion | Out-Null
+
+    if ($LASTEXITCODE -ne 0) {
+      throw "Failed to clear tool task context."
+    }
   } finally {
-    foreach ($path in @($taskKeyPath, $affinityKeyPath)) {
+    foreach ($path in @($taskKeyPath, $affinityKeyPath, $toolContextKeyPath)) {
       if (Test-Path -LiteralPath $path) {
         Remove-Item -LiteralPath $path -Force
       }
@@ -694,7 +711,8 @@ if (-not $SkipStateReset) {
   Clear-SyntheticRuntimeState `
     -SelectedProfile $Profile `
     -SelectedRegion $Region `
-    -SelectedUserId $resolvedUserId
+    -SelectedUserId $resolvedUserId `
+    -SelectedTelegramId $TelegramId
 }
 
 Write-Host "Synthetic Telegram smoke"

@@ -414,6 +414,7 @@ function logCostEstimate(
     ...basePayload,
     model: params.model,
     durationMs: params.durationMs,
+    durationSource: "handler_measured_excludes_init",
     estimatedUsd: estimate.estimatedUsd,
     costConfidence: estimate.confidence,
     costBreakdown: estimate.breakdown,
@@ -904,7 +905,7 @@ export async function handler(
       });
       logCostEstimate(event, requestLogPayload, {
         model: visionModel,
-        durationMs: visionDurationMs,
+        durationMs: Date.now() - startTime,
         tokenUsage: directResult.usage,
       });
 
@@ -1035,7 +1036,7 @@ export async function handler(
         });
         logCostEstimate(event, requestLogPayload, {
           model,
-          durationMs: directChatDurationMs,
+          durationMs: Date.now() - startTime,
           tokenUsage: directResult.usage,
         });
 

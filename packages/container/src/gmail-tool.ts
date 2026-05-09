@@ -1,4 +1,4 @@
-﻿import { readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -541,6 +541,28 @@ function getSearchContext(key: string): SearchContext | undefined {
 
 function looksLikePaymentQuestion(message: string): boolean {
   return PAYMENT_HINT_PATTERN.test(message);
+}
+
+function isDeterministicPaymentFastPathEnabled(): boolean {
+  return process.env.TOOL_DETERMINISTIC_PAYMENT_FAST_PATH === "true";
+}
+
+function isHighConfidencePaymentLookupRequest(message: string): boolean {
+  const normalized = normalizeWhitespace(message);
+  if (!looksLikePaymentQuestion(normalized)) {
+    return false;
+  }
+
+  const hasPaymentAction =
+    /(?:결제(?:한| 내역| 이력| 금액)?|카드값|명세서|청구서|영수증|지출|쓴 돈|얼마|합계|총액|payment|receipt|statement|spent|spend|transaction)/i.test(
+      normalized,
+    );
+  const hasLookupScope =
+    /(?:이번\s*주|이번주|지난\s*주|지난주|최근|오늘|어제|이번\s*달|이번달|지난\s*달|지난달|\d{1,2}\s*월|내역|목록|알려|보여|정리|조회|검색|찾아|얼마|합계|총액|week|month|today|yesterday|history|records?|total|amount)/i.test(
+      normalized,
+    );
+
+  return hasPaymentAction && hasLookupScope;
 }
 
 function looksLikeCapabilityQuestion(message: string): boolean {
@@ -3563,10 +3585,18 @@ export async function maybeHandleCustomGmailRequest(
     options.gmailReady,
     refreshedContext,
   );
+  const useDeterministicFastPath =
+    isDeterministicPaymentFastPathEnabled() &&
+    !refreshedContext &&
+    options.gmailReady &&
+    isStartNewTaskAction(deterministicAction) &&
+    isHighConfidencePaymentLookupRequest(options.message);
 
-  advisorDecision ??= await decideToolIntent(
-    buildAdvisorInput(options.message, options.gmailReady, refreshedContext),
-  );
+  if (!useDeterministicFastPath) {
+    advisorDecision ??= await decideToolIntent(
+      buildAdvisorInput(options.message, options.gmailReady, refreshedContext),
+    );
+  }
 
   const finalDecision = advisorDecision ?? {
     action: deterministicAction,

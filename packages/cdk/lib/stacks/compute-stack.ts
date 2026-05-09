@@ -1,4 +1,4 @@
-﻿import * as cdk from "aws-cdk-lib";
+import * as cdk from "aws-cdk-lib";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as ecr from "aws-cdk-lib/aws-ecr";
@@ -125,7 +125,8 @@ export class ComputeStack extends cdk.Stack {
         TOOL_CONTEXT_STORE: process.env.TOOL_CONTEXT_STORE ?? "ddb",
         GMAIL_SUMMARY_FETCH_CONCURRENCY:
           process.env.GMAIL_SUMMARY_FETCH_CONCURRENCY ?? "10",
-        AWS_REGION: this.region,
+        TOOL_DETERMINISTIC_PAYMENT_FAST_PATH:
+          process.env.TOOL_DETERMINISTIC_PAYMENT_FAST_PATH ?? "false",        AWS_REGION: this.region,
         // Pending queue retry tuning stays in env vars so operations can adjust
         // backoff/dead-letter behaviour without rebuilding the Fargate image.
         PENDING_MESSAGE_MAX_RETRIES:

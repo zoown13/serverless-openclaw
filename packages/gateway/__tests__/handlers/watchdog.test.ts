@@ -20,6 +20,7 @@ vi.mock("@aws-sdk/client-ecs", () => ({
   ECSClient: vi.fn(() => ({ send: mockEcsSend })),
   StopTaskCommand: vi.fn((params: unknown) => ({ input: params, _tag: "StopTaskCommand" })),
   DescribeTasksCommand: vi.fn((params: unknown) => ({ input: params, _tag: "DescribeTasksCommand" })),
+  ListTasksCommand: vi.fn((params: unknown) => ({ input: params, _tag: "ListTasksCommand" })),
 }));
 
 vi.mock("@aws-sdk/client-cloudwatch", () => ({
@@ -30,6 +31,7 @@ vi.mock("@aws-sdk/client-cloudwatch", () => ({
 describe("watchdog handler", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
     vi.stubEnv("ECS_CLUSTER_ARN", "arn:cluster");
     // Default: CW returns no data → fallback 15-min timeout
     mockCloudWatchSend.mockResolvedValue({ Datapoints: [] });
@@ -136,6 +138,113 @@ describe("watchdog handler", () => {
     await handler();
 
     expect(mockEcsSend).not.toHaveBeenCalled();
+  });
+
+  it("should stop orphan standalone Fargate tasks without TaskState", async () => {
+    vi.stubEnv(
+      "TASK_DEFINITION_ARN",
+      "arn:aws:ecs:ap-northeast-2:123456789012:task-definition/ComputeStackTaskDefCD5729AC:12",
+    );
+    const { handler } = await import("../../src/handlers/watchdog.js");
+
+    mockDynamoSend.mockResolvedValueOnce({ Items: [] });
+    mockEcsSend
+      .mockResolvedValueOnce({ taskArns: ["arn:task-orphan"] })
+      .mockResolvedValueOnce({
+        tasks: [
+          {
+            taskArn: "arn:task-orphan",
+            lastStatus: "RUNNING",
+            desiredStatus: "RUNNING",
+            group: "family:ComputeStackTaskDefCD5729AC",
+            taskDefinitionArn:
+              "arn:aws:ecs:ap-northeast-2:123456789012:task-definition/ComputeStackTaskDefCD5729AC:12",
+            startedAt: new Date(Date.now() - 60 * 60 * 1000),
+          },
+        ],
+      })
+      .mockResolvedValueOnce({});
+
+    await handler();
+
+    expect(mockEcsSend).toHaveBeenCalledWith(
+      expect.objectContaining({
+        _tag: "ListTasksCommand",
+        input: expect.objectContaining({
+          cluster: "arn:cluster",
+          desiredStatus: "RUNNING",
+          family: "ComputeStackTaskDefCD5729AC",
+        }),
+      }),
+    );
+    expect(mockEcsSend).toHaveBeenCalledWith(
+      expect.objectContaining({
+        _tag: "StopTaskCommand",
+        input: expect.objectContaining({
+          cluster: "arn:cluster",
+          task: "arn:task-orphan",
+          reason: expect.stringContaining("orphan standalone task"),
+        }),
+      }),
+    );
+  });
+
+  it("should not stop recently started orphan tasks", async () => {
+    vi.stubEnv(
+      "TASK_DEFINITION_ARN",
+      "arn:aws:ecs:ap-northeast-2:123456789012:task-definition/ComputeStackTaskDefCD5729AC:12",
+    );
+    const { handler } = await import("../../src/handlers/watchdog.js");
+
+    mockDynamoSend.mockResolvedValueOnce({ Items: [] });
+    mockEcsSend
+      .mockResolvedValueOnce({ taskArns: ["arn:task-recent-orphan"] })
+      .mockResolvedValueOnce({
+        tasks: [
+          {
+            taskArn: "arn:task-recent-orphan",
+            lastStatus: "RUNNING",
+            desiredStatus: "RUNNING",
+            group: "family:ComputeStackTaskDefCD5729AC",
+            startedAt: new Date(Date.now() - 5 * 60 * 1000),
+          },
+        ],
+      });
+
+    await handler();
+
+    expect(mockEcsSend).not.toHaveBeenCalledWith(
+      expect.objectContaining({ _tag: "StopTaskCommand" }),
+    );
+  });
+
+  it("should not stop service-owned tasks during orphan cleanup", async () => {
+    vi.stubEnv(
+      "TASK_DEFINITION_ARN",
+      "arn:aws:ecs:ap-northeast-2:123456789012:task-definition/ComputeStackTaskDefCD5729AC:12",
+    );
+    const { handler } = await import("../../src/handlers/watchdog.js");
+
+    mockDynamoSend.mockResolvedValueOnce({ Items: [] });
+    mockEcsSend
+      .mockResolvedValueOnce({ taskArns: ["arn:service-task"] })
+      .mockResolvedValueOnce({
+        tasks: [
+          {
+            taskArn: "arn:service-task",
+            lastStatus: "RUNNING",
+            desiredStatus: "RUNNING",
+            group: "service:production",
+            startedAt: new Date(Date.now() - 60 * 60 * 1000),
+          },
+        ],
+      });
+
+    await handler();
+
+    expect(mockEcsSend).not.toHaveBeenCalledWith(
+      expect.objectContaining({ _tag: "StopTaskCommand" }),
+    );
   });
 
   it("should clean up stale Starting entries when ECS task is stopped", async () => {

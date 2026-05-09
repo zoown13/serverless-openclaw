@@ -250,7 +250,12 @@ export class ApiStack extends cdk.Stack {
       for (const fn of containerFunctions) {
         fn.addToRolePolicy(
           new iam.PolicyStatement({
-            actions: ["ecs:RunTask", "ecs:StopTask", "ecs:DescribeTasks"],
+            actions: [
+              "ecs:RunTask",
+              "ecs:StopTask",
+              "ecs:DescribeTasks",
+              "ecs:ListTasks",
+            ],
             resources: ["*"],
           }),
         );

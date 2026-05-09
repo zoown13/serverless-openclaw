@@ -105,6 +105,7 @@ describe("handler", () => {
   let originalAnthropicPath: string | undefined;
   let originalTelegramTokenPath: string | undefined;
   let originalDirectBedrockChat: string | undefined;
+  let originalDirectChatModel: string | undefined;
   let infoSpy: ReturnType<typeof vi.spyOn>;
   let errorSpy: ReturnType<typeof vi.spyOn>;
 
@@ -134,11 +135,13 @@ describe("handler", () => {
     originalAnthropicPath = process.env.SSM_ANTHROPIC_API_KEY;
     originalTelegramTokenPath = process.env.SSM_TELEGRAM_BOT_TOKEN;
     originalDirectBedrockChat = process.env.LAMBDA_DIRECT_BEDROCK_CHAT;
+    originalDirectChatModel = process.env.LAMBDA_DIRECT_CHAT_MODEL;
     process.env.SESSION_BUCKET = "test-session-bucket";
     process.env.AI_PROVIDER = "anthropic";
     delete process.env.SSM_ANTHROPIC_API_KEY;
     delete process.env.SSM_TELEGRAM_BOT_TOKEN;
     delete process.env.LAMBDA_DIRECT_BEDROCK_CHAT;
+    delete process.env.LAMBDA_DIRECT_CHAT_MODEL;
 
     mockRunAgent.mockResolvedValue({
       payloads: [{ text: "Hello from agent!" }],
@@ -182,6 +185,12 @@ describe("handler", () => {
       process.env.LAMBDA_DIRECT_BEDROCK_CHAT = originalDirectBedrockChat;
     } else {
       delete process.env.LAMBDA_DIRECT_BEDROCK_CHAT;
+    }
+
+    if (originalDirectChatModel !== undefined) {
+      process.env.LAMBDA_DIRECT_CHAT_MODEL = originalDirectChatModel;
+    } else {
+      delete process.env.LAMBDA_DIRECT_CHAT_MODEL;
     }
   });
 
@@ -705,6 +714,7 @@ describe("handler", () => {
   it("should use direct Bedrock chat for everyday standalone Telegram chat when enabled", async () => {
     process.env.AI_PROVIDER = "bedrock";
     process.env.LAMBDA_DIRECT_BEDROCK_CHAT = "true";
+    process.env.LAMBDA_DIRECT_CHAT_MODEL = "amazon.nova-micro-v1:0";
     process.env.SSM_TELEGRAM_BOT_TOKEN = "/serverless-openclaw/secrets/telegram-bot-token";
     mockResolveSecrets.mockResolvedValue(
       new Map([
@@ -766,7 +776,7 @@ describe("handler", () => {
     expect(mockRunDirectBedrockChat).toHaveBeenCalledWith(
       expect.objectContaining({
         message: "저녁 메뉴 추천해줘",
-        model: "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+        model: "amazon.nova-micro-v1:0",
         maxTokens: 180,
       }),
     );

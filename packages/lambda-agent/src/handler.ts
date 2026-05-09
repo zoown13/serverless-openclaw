@@ -358,6 +358,13 @@ function parseEverydayDirectChatMaxTokens(): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 180;
 }
 
+function resolveDirectChatModel(
+  event: LambdaAgentEvent,
+  runtimeConfig: ResolvedRuntimeConfig,
+): string {
+  return event.model ?? process.env.LAMBDA_DIRECT_CHAT_MODEL ?? runtimeConfig.defaultModel;
+}
+
 function isEverydayStatelessChatQuestion(message: string): boolean {
   return [
     /(?:메뉴|음식|저녁|점심|아침|간식|야식|레시피|recipe|menu|dinner|lunch|breakfast|snack).*(?:추천|골라|뭐\s*먹|어때|정해|알려줘|suggest|recommend|pick)/i,
@@ -694,14 +701,16 @@ export async function handler(
   if (shouldUseDirectBedrockChat(event, runtimeConfig)) {
     const directStartedAt = Date.now();
     const directChatMaxTokens = resolveDirectChatMaxTokens(event.message);
+    const directChatModel = resolveDirectChatModel(event, runtimeConfig);
     logLambdaEvent("lambda.direct_chat.started", {
       ...requestLogPayload,
+      model: directChatModel,
       maxTokens: directChatMaxTokens,
     });
     try {
       const directResult = await runDirectBedrockChat({
         message: event.message,
-        model: event.model ?? runtimeConfig.defaultModel,
+        model: directChatModel,
         systemPrompt: buildDirectChatSystemPrompt(event, runtimeConfig),
         maxTokens: directChatMaxTokens,
         temperature: 0.2,
@@ -733,7 +742,7 @@ export async function handler(
         payloads,
         durationMs: Date.now() - startTime,
         provider: runtimeConfig.openclawProvider,
-        model: event.model ?? runtimeConfig.defaultModel,
+        model: directChatModel,
       };
     } catch (err: unknown) {
       logLambdaEvent("lambda.direct_chat.fallback", {

@@ -10,6 +10,7 @@ import {
   type CostEstimate,
   type ResolvedRuntimeConfig,
   type TokenUsage,
+  type UpstreamCostEstimate,
 } from "@serverless-openclaw/shared";
 import { initConfig } from "./config-init.js";
 import { SessionSync } from "./session-sync.js";
@@ -404,6 +405,7 @@ function logCostEstimate(
     memoryMb: parseLambdaMemoryMb(),
     architecture: resolveLambdaArchitecture(),
     tokenUsage: params.tokenUsage,
+    upstreamCosts: resolveUpstreamCosts(event),
     bedrockInputUsdPerMillionOverride: parseOptionalPositiveFloat(
       process.env.BEDROCK_INPUT_USD_PER_MILLION_TOKENS,
     ),
@@ -421,9 +423,33 @@ function logCostEstimate(
     costConfidence: estimate.confidence,
     costBreakdown: estimate.breakdown,
     tokenUsage: estimate.tokenUsage,
+    upstreamCosts: estimate.upstreamCosts,
     pricing: estimate.pricing,
   });
   return estimate;
+}
+
+function resolveUpstreamCosts(event: LambdaAgentEvent): UpstreamCostEstimate[] | undefined {
+  const upstream = event.assistantContext?.cost?.upstream;
+  if (!upstream?.length) return undefined;
+
+  const safe = upstream
+    .filter((item) =>
+      item.name.trim().length > 0 &&
+      Number.isFinite(item.estimatedUsd) &&
+      item.estimatedUsd >= 0)
+    .map((item) => ({
+      name: item.name,
+      provider: item.provider,
+      estimatedUsd: item.estimatedUsd,
+      ...(typeof item.durationMs === "number" && Number.isFinite(item.durationMs)
+        ? { durationMs: item.durationMs }
+        : {}),
+      ...(item.confidence ? { confidence: item.confidence } : {}),
+      ...(item.breakdown ? { breakdown: item.breakdown } : {}),
+    }));
+
+  return safe.length > 0 ? safe : undefined;
 }
 
 async function saveRecentCostEstimate(
@@ -481,6 +507,9 @@ function buildRecentCostMessage(context: RecentCostContext | undefined): string 
     `- Lambda 실행: ${formatUsd(estimate.breakdown.lambdaUsd)}`,
     `- Lambda 요청: ${formatUsd(estimate.breakdown.requestUsd)}`,
   ];
+  if (estimate.breakdown.upstreamUsd !== undefined) {
+    parts.push(`- Gateway/frontdoor: ${formatUsd(estimate.breakdown.upstreamUsd)}`);
+  }
 
   if (estimate.tokenUsage?.inputTokens !== undefined || estimate.tokenUsage?.outputTokens !== undefined) {
     parts.push(

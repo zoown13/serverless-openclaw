@@ -101,10 +101,29 @@ export interface AssistantRuntimeContext {
     providerLockReason?: ToolRuntimeAffinityState["providerLockReason"];
   };
   emailTokenBudget?: EmailTokenBudgetPolicy;
+  cost?: {
+    upstream?: AssistantRuntimeCostSnapshot[];
+  };
   guidance: {
     selfAwareness: string;
     lambda: string;
     toolRuntime: string;
+  };
+}
+
+export interface AssistantRuntimeCostSnapshot {
+  name: string;
+  provider: "lambda" | "agentcore" | "fargate";
+  estimatedUsd: number;
+  durationMs?: number;
+  confidence?: "high" | "partial";
+  breakdown?: {
+    bedrockUsd?: number;
+    lambdaUsd?: number;
+    agentCoreUsd?: number;
+    fargateUsd?: number;
+    requestUsd?: number;
+    upstreamUsd?: number;
   };
 }
 

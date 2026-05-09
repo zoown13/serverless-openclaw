@@ -176,6 +176,7 @@ export async function handler(event: {
   headers: Record<string, string | undefined>;
   body?: string;
 }, context?: Pick<Context, "awsRequestId">): Promise<APIGatewayProxyResultV2> {
+  const requestStartedAtMs = Date.now();
   const secrets = await resolveSecrets([
     process.env.SSM_BRIDGE_AUTH_TOKEN!,
     process.env.SSM_TELEGRAM_BOT_TOKEN!,
@@ -403,6 +404,7 @@ export async function handler(event: {
     agentCoreRuntimeArn: process.env.AGENTCORE_RUNTIME_ARN ?? "",
     agentCoreRuntimeQualifier: process.env.AGENTCORE_RUNTIME_QUALIFIER,
     agentCoreFallbackProvider: (process.env.AGENTCORE_FALLBACK_PROVIDER as "fargate" | undefined) ?? "fargate",
+    requestStartedAtMs,
   });
 
   if ((routeResult === "started" || routeResult === "queued") && botToken) {

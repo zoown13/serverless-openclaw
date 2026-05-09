@@ -29,6 +29,25 @@ export interface CostEstimateInput {
   tokenUsage?: TokenUsage;
   bedrockInputUsdPerMillionOverride?: number;
   bedrockOutputUsdPerMillionOverride?: number;
+  upstreamCosts?: UpstreamCostEstimate[];
+}
+
+export interface CostEstimateBreakdown {
+  bedrockUsd?: number;
+  lambdaUsd?: number;
+  agentCoreUsd?: number;
+  fargateUsd?: number;
+  requestUsd?: number;
+  upstreamUsd?: number;
+}
+
+export interface UpstreamCostEstimate {
+  name: string;
+  provider: CostRuntimeProvider;
+  estimatedUsd: number;
+  durationMs?: number;
+  confidence?: CostEstimateConfidence;
+  breakdown?: CostEstimateBreakdown;
 }
 
 export interface CostEstimate {
@@ -44,14 +63,9 @@ export interface CostEstimate {
   architecture?: "arm64" | "x86_64";
   estimatedUsd: number;
   confidence: CostEstimateConfidence;
-  breakdown: {
-    bedrockUsd?: number;
-    lambdaUsd?: number;
-    agentCoreUsd?: number;
-    fargateUsd?: number;
-    requestUsd?: number;
-  };
+  breakdown: CostEstimateBreakdown;
   tokenUsage?: TokenUsage;
+  upstreamCosts?: UpstreamCostEstimate[];
   pricing?: {
     bedrock?: BedrockTokenPricing;
     lambdaGbSecondUsd?: number;
@@ -94,6 +108,23 @@ function roundUsd(value: number): number {
 
 function safeNumber(value: number | undefined): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function sanitizeUpstreamCosts(
+  upstreamCosts: UpstreamCostEstimate[] | undefined,
+): UpstreamCostEstimate[] | undefined {
+  const safe = upstreamCosts
+    ?.filter((item) => item.name.trim().length > 0 && safeNumber(item.estimatedUsd) !== undefined)
+    .map((item) => ({
+      name: item.name,
+      provider: item.provider,
+      estimatedUsd: roundUsd(item.estimatedUsd),
+      ...(safeNumber(item.durationMs) !== undefined ? { durationMs: item.durationMs } : {}),
+      ...(item.confidence ? { confidence: item.confidence } : {}),
+      ...(item.breakdown ? { breakdown: item.breakdown } : {}),
+    }));
+
+  return safe && safe.length > 0 ? safe : undefined;
 }
 
 export function resolveBedrockTokenPricing(
@@ -190,6 +221,10 @@ export function estimateAgentCoreCost(
 }
 
 export function estimateCost(input: CostEstimateInput): CostEstimate {
+  const upstreamCosts = sanitizeUpstreamCosts(input.upstreamCosts);
+  const upstreamUsd = upstreamCosts
+    ? roundUsd(upstreamCosts.reduce((sum, item) => sum + item.estimatedUsd, 0))
+    : undefined;
   const bedrockPricing = resolveBedrockTokenPricing(
     input.model,
     input.bedrockInputUsdPerMillionOverride,
@@ -211,7 +246,8 @@ export function estimateCost(input: CostEstimateInput): CostEstimate {
     (bedrockUsd ?? 0) +
     (lambdaCost?.lambdaUsd ?? 0) +
     (agentCoreCost?.agentCoreUsd ?? 0) +
-    (lambdaCost?.requestUsd ?? 0),
+    (lambdaCost?.requestUsd ?? 0) +
+    (upstreamUsd ?? 0),
   );
 
   return {
@@ -226,14 +262,20 @@ export function estimateCost(input: CostEstimateInput): CostEstimate {
     agentCoreVcpu: input.agentCoreVcpu,
     architecture: input.architecture,
     estimatedUsd,
-    confidence: bedrockUsd !== undefined ? "high" : "partial",
+    confidence: bedrockUsd !== undefined && upstreamCosts?.every((item) => item.confidence === "high")
+      ? "high"
+      : bedrockUsd !== undefined && !upstreamCosts
+        ? "high"
+        : "partial",
     breakdown: {
       bedrockUsd,
       lambdaUsd: lambdaCost?.lambdaUsd,
       agentCoreUsd: agentCoreCost?.agentCoreUsd,
       requestUsd: lambdaCost?.requestUsd,
+      upstreamUsd,
     },
     tokenUsage: input.tokenUsage,
+    upstreamCosts,
     pricing: {
       bedrock: bedrockPricing,
       lambdaGbSecondUsd: lambdaCost?.lambdaGbSecondUsd,

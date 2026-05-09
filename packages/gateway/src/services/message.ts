@@ -6,6 +6,7 @@ import {
   BRIDGE_HTTP_TIMEOUT_MS,
   PENDING_MESSAGE_TTL_SEC,
   PREWARM_USER_ID,
+  estimateCost,
 } from "@serverless-openclaw/shared";
 import type {
   AgentCoreRuntimeResult,
@@ -13,6 +14,7 @@ import type {
 } from "./agentcore.js";
 import type {
   AgentRuntimeMode,
+  AssistantRuntimeCostSnapshot,
   AssistantRuntimeContext,
   BridgeMessageRequest,
   Channel,
@@ -128,6 +130,7 @@ export interface RouteDeps {
   agentCoreFallbackProvider?: ToolRuntimeProvider;
   sessionId?: string;
   imageInput?: LambdaAgentImageInput;
+  requestStartedAtMs?: number;
 }
 
 export type RouteResult =
@@ -190,6 +193,48 @@ function parseBooleanFlag(value: string | undefined, fallback: boolean): boolean
   if (["1", "true", "yes", "on"].includes(normalized)) return true;
   if (["0", "false", "no", "off"].includes(normalized)) return false;
   return fallback;
+}
+
+function resolveGatewayLambdaMemoryMb(): number {
+  return parsePositiveInteger(process.env.AWS_LAMBDA_FUNCTION_MEMORY_SIZE, 256);
+}
+
+function resolveGatewayLambdaArchitecture(): "arm64" | "x86_64" {
+  return process.env.LAMBDA_ARCHITECTURE === "x86_64" ? "x86_64" : "arm64";
+}
+
+function resolveGatewayElapsedMs(deps: RouteDeps): number {
+  const startedAt = deps.requestStartedAtMs;
+  if (typeof startedAt === "number" && Number.isFinite(startedAt) && startedAt > 0) {
+    return Math.max(Date.now() - startedAt, 1);
+  }
+
+  return parsePositiveInteger(process.env.GATEWAY_FRONTDOOR_COST_ESTIMATE_MS, 1);
+}
+
+function buildGatewayCostSnapshot(
+  deps: RouteDeps,
+  runtimeClass: RuntimeClass,
+): AssistantRuntimeCostSnapshot {
+  const estimate = estimateCost({
+    traceId: deps.traceId,
+    userId: deps.userId,
+    channel: deps.channel,
+    runtimeClass,
+    provider: "lambda",
+    durationMs: resolveGatewayElapsedMs(deps),
+    memoryMb: resolveGatewayLambdaMemoryMb(),
+    architecture: resolveGatewayLambdaArchitecture(),
+  });
+
+  return {
+    name: "gateway-frontdoor",
+    provider: "lambda",
+    estimatedUsd: estimate.estimatedUsd,
+    durationMs: estimate.durationMs,
+    confidence: estimate.confidence,
+    breakdown: estimate.breakdown,
+  };
 }
 
 function resolveEmailTokenBudgetPolicy(): EmailTokenBudgetPolicy {
@@ -364,6 +409,7 @@ function buildAssistantRuntimeContext(
   const sessionId = runtimeClass === "chat-only"
     ? resolveLambdaSessionId(deps, runtimeClass)
     : deps.sessionId ?? `session-${deps.userId}`;
+  const gatewayCost = buildGatewayCostSnapshot(deps, runtimeClass);
   const context: AssistantRuntimeContext = {
     version: 1,
     userId: deps.userId,
@@ -400,6 +446,9 @@ function buildAssistantRuntimeContext(
       ...(providerLocked ? { providerLockReason: "agentcore_fallback" } : {}),
     },
     ...(emailTokenBudget ? { emailTokenBudget } : {}),
+    cost: {
+      upstream: [gatewayCost],
+    },
     guidance: {
       selfAwareness: "The assistant should know that this system has a delegated tool runtime for Gmail, payment, and private-data lookup tasks.",
       lambda: "Lambda is the fast chat path. If a request needs Gmail or another tool, do not claim the whole assistant cannot access it; explain that the tool runtime must handle or verify that lookup.",
@@ -416,6 +465,8 @@ function buildAssistantRuntimeContext(
     fallbackProvider,
     hasActiveToolAffinity: context.toolAffinity?.active ?? false,
     gmailCapability: context.capabilities.gmail.status,
+    gatewayEstimatedUsd: gatewayCost.estimatedUsd,
+    gatewayDurationMs: gatewayCost.durationMs,
   });
 
   return context;

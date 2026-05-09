@@ -67,4 +67,34 @@ describe("cost-estimator", () => {
     expect(estimate.breakdown.agentCoreUsd).toBe(0.000036133);
     expect(estimate.confidence).toBe("partial");
   });
+
+  it("should include upstream gateway cost in a runtime estimate", () => {
+    const estimate = estimateCost({
+      traceId: "trace-tool",
+      userId: "user-1",
+      channel: "telegram",
+      runtimeClass: "tool-enabled",
+      provider: "agentcore",
+      durationMs: 1200,
+      memoryMb: 2048,
+      agentCoreVcpu: 1,
+      upstreamCosts: [{
+        name: "gateway-frontdoor",
+        provider: "lambda",
+        estimatedUsd: 0.000001234,
+        confidence: "partial",
+      }],
+    });
+
+    expect(estimate.estimatedUsd).toBe(0.000037367);
+    expect(estimate.breakdown.agentCoreUsd).toBe(0.000036133);
+    expect(estimate.breakdown.upstreamUsd).toBe(0.000001234);
+    expect(estimate.upstreamCosts?.[0]).toEqual(
+      expect.objectContaining({
+        name: "gateway-frontdoor",
+        provider: "lambda",
+      }),
+    );
+    expect(estimate.confidence).toBe("partial");
+  });
 });

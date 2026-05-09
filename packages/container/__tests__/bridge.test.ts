@@ -296,6 +296,45 @@ describe("Bridge HTTP Server", () => {
           runtimeClass: "tool-enabled",
           traceId: "trace-123",
           routeDecision: "fargate-new",
+          assistantContext: {
+            version: 1,
+            userId: "user-1",
+            channel: "web",
+            sessionId: "session-user-1",
+            generatedAt: "2026-05-10T00:00:00.000Z",
+            runtime: {
+              runtimeClass: "tool-enabled",
+              routeDecision: "fargate-new",
+              lambdaRole: "chat-only-fast-path",
+              toolRuntimeProvider: "fargate",
+              fallbackProvider: "fargate",
+            },
+            capabilities: {
+              tools: {
+                available: true,
+                executionRuntime: "fargate",
+                note: "Tool tasks are delegated.",
+              },
+              gmail: {
+                status: "available_via_tool_runtime",
+                executionRuntime: "fargate",
+                safetyMode: "headers-first",
+              },
+            },
+            cost: {
+              upstream: [{
+                name: "gateway-frontdoor",
+                provider: "lambda",
+                estimatedUsd: 0.000001234,
+                confidence: "partial",
+              }],
+            },
+            guidance: {
+              selfAwareness: "Shared state.",
+              lambda: "Chat only.",
+              toolRuntime: "Tools.",
+            },
+          },
         });
 
       expect(res.status).toBe(202);
@@ -318,6 +357,15 @@ describe("Bridge HTTP Server", () => {
       expect(deps.openclawClient.sendMessage).not.toHaveBeenCalled();
       expect(infoSpy).toHaveBeenCalledWith(
         expect.stringContaining("\"event\":\"bridge.delivery.success\""),
+      );
+      expect(recentCostSaveMock).toHaveBeenCalledWith(
+        "user-1",
+        "session-user-1",
+        expect.objectContaining({
+          breakdown: expect.objectContaining({
+            upstreamUsd: 0.000001234,
+          }),
+        }),
       );
       expect(publishCountMetricMock).toHaveBeenCalledWith("DeliverySuccess", {
         channel: "web",

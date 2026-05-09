@@ -48,6 +48,7 @@ export async function handler(event: {
   requestContext: { connectionId?: string; requestId?: string };
   body?: string;
 }): Promise<APIGatewayProxyResultV2> {
+  const requestStartedAtMs = Date.now();
   const connectionId = event.requestContext.connectionId!;
   const traceId = event.requestContext.requestId ?? `ws-${connectionId}`;
 
@@ -122,6 +123,7 @@ export async function handler(event: {
       agentCoreRuntimeArn: process.env.AGENTCORE_RUNTIME_ARN ?? "",
       agentCoreRuntimeQualifier: process.env.AGENTCORE_RUNTIME_QUALIFIER,
       agentCoreFallbackProvider: (process.env.AGENTCORE_FALLBACK_PROVIDER as "fargate" | undefined) ?? "fargate",
+      requestStartedAtMs,
     });
 
     if (result === "lambda") {

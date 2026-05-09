@@ -188,6 +188,15 @@ describe("message service", () => {
                 status: "available_via_tool_runtime",
               }),
             }),
+            cost: expect.objectContaining({
+              upstream: [
+                expect.objectContaining({
+                  name: "gateway-frontdoor",
+                  provider: "lambda",
+                  estimatedUsd: expect.any(Number),
+                }),
+              ],
+            }),
           }),
         }),
       );

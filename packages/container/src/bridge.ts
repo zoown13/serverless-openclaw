@@ -18,6 +18,7 @@ import type {
   Channel,
   EmailTokenBudgetPolicy,
   AssistantRuntimeContext,
+  UpstreamCostEstimate,
 } from "@serverless-openclaw/shared";
 import { estimateCost, type CostEstimate } from "@serverless-openclaw/shared";
 
@@ -325,6 +326,7 @@ function buildToolCostEstimate(
     durationMs,
     memoryMb: resolveToolMemoryMb(),
     agentCoreVcpu: runtimeLabel === "agentcore" ? resolveAgentCoreVcpu() : undefined,
+    upstreamCosts: resolveUpstreamCosts(body),
     bedrockInputUsdPerMillionOverride: parseOptionalPositiveFloat(
       process.env.BEDROCK_INPUT_USD_PER_MILLION_TOKENS,
     ),
@@ -347,6 +349,7 @@ async function saveToolCostEstimate(
     estimatedUsd: estimate.estimatedUsd,
     costConfidence: estimate.confidence,
     costBreakdown: estimate.breakdown,
+    upstreamCosts: estimate.upstreamCosts,
     pricing: estimate.pricing,
   });
 
@@ -377,6 +380,31 @@ function parseOptionalPositiveFloat(value: string | undefined): number | undefin
   if (!value) return undefined;
   const parsed = Number.parseFloat(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+function resolveUpstreamCosts(
+  body: Partial<BridgeMessageRequest>,
+): UpstreamCostEstimate[] | undefined {
+  const upstream = body.assistantContext?.cost?.upstream;
+  if (!upstream?.length) return undefined;
+
+  const safe = upstream
+    .filter((item) =>
+      item.name.trim().length > 0 &&
+      Number.isFinite(item.estimatedUsd) &&
+      item.estimatedUsd >= 0)
+    .map((item) => ({
+      name: item.name,
+      provider: item.provider,
+      estimatedUsd: item.estimatedUsd,
+      ...(typeof item.durationMs === "number" && Number.isFinite(item.durationMs)
+        ? { durationMs: item.durationMs }
+        : {}),
+      ...(item.confidence ? { confidence: item.confidence } : {}),
+      ...(item.breakdown ? { breakdown: item.breakdown } : {}),
+    }));
+
+  return safe.length > 0 ? safe : undefined;
 }
 
 function parseOptionalPositiveInt(value: string | undefined): number | undefined {
@@ -441,6 +469,9 @@ function buildRecentCostMessage(context: RecentCostContext | undefined): string 
   }
   if (estimate.breakdown.bedrockUsd !== undefined) {
     parts.push(`- Bedrock: ${formatUsd(estimate.breakdown.bedrockUsd)}`);
+  }
+  if (estimate.breakdown.upstreamUsd !== undefined) {
+    parts.push(`- Gateway/frontdoor: ${formatUsd(estimate.breakdown.upstreamUsd)}`);
   }
 
   parts.push(

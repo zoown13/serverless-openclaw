@@ -73,7 +73,7 @@ describe("Bridge HTTP Server", () => {
     recentCostSaveMock.mockResolvedValue({
       expiresAt: "2099-01-01T00:00:00.000Z",
     });
-    process.env.SESSION_BUCKET = "test-session-bucket";
+    process.env.DATA_BUCKET = "test-session-bucket";
     deps = createMockDeps();
     app = createApp(deps);
     infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
@@ -85,6 +85,7 @@ describe("Bridge HTTP Server", () => {
     delete process.env.AGENTCORE_ASYNC_CALLBACK_DELIVERY;
     delete process.env.BRIDGE_DEFER_CALLBACK_PERSISTENCE;
     delete process.env.SESSION_BUCKET;
+    delete process.env.DATA_BUCKET;
     infoSpy.mockRestore();
     errorSpy.mockRestore();
   });

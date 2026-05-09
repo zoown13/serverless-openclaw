@@ -318,6 +318,7 @@ $environmentVariables = @{
   AGENTCORE_HTTP_ENABLED = "true"
   USER_ID = $UserId
   DATA_BUCKET = $dataBucketName
+  SESSION_BUCKET = $dataBucketName
   BRIDGE_PORT = "8080"
   METRICS_ENABLED = "true"
   AI_PROVIDER = $AiProvider

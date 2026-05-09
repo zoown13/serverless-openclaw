@@ -457,8 +457,9 @@ export function createApp(deps: BridgeDeps): express.Express {
   const app = express();
   let firstResponseSent = false;
   const runtimeLabel = deps.runtimeLabel ?? "fargate";
-  const costStore = process.env.SESSION_BUCKET
-    ? new RecentCostContextStore(process.env.SESSION_BUCKET)
+  const recentCostBucket = process.env.SESSION_BUCKET ?? process.env.DATA_BUCKET;
+  const costStore = recentCostBucket
+    ? new RecentCostContextStore(recentCostBucket)
     : undefined;
   const shouldDeferCallbackPersistence =
     process.env.BRIDGE_DEFER_CALLBACK_PERSISTENCE !== "false";

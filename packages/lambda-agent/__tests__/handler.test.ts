@@ -767,6 +767,7 @@ describe("handler", () => {
       expect.objectContaining({
         message: "저녁 메뉴 추천해줘",
         model: "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+        maxTokens: 180,
       }),
     );
     expect(mockRunAgent).not.toHaveBeenCalled();

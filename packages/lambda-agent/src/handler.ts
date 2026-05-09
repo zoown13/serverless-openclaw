@@ -353,6 +353,19 @@ function parseDirectChatMaxTokens(): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 320;
 }
 
+function parseEverydayDirectChatMaxTokens(): number {
+  const parsed = Number.parseInt(process.env.LAMBDA_DIRECT_CHAT_EVERYDAY_MAX_TOKENS ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 180;
+}
+
+function isEverydayStatelessChatQuestion(message: string): boolean {
+  return [
+    /(?:메뉴|음식|저녁|점심|아침|간식|야식|레시피|recipe|menu|dinner|lunch|breakfast|snack).*(?:추천|골라|뭐\s*먹|어때|정해|알려줘|suggest|recommend|pick)/i,
+    /(?:추천|골라|뭐\s*먹|어때|정해|알려줘|suggest|recommend|pick).*(?:메뉴|음식|저녁|점심|아침|간식|야식|레시피|recipe|menu|dinner|lunch|breakfast|snack)/i,
+    /(?:날씨|weather|농담|joke).*(?:알려줘|어때|해줘|말해줘|tell|what)/i,
+  ].some((pattern) => pattern.test(message));
+}
+
 function isStatelessChatQuestion(message: string): boolean {
   const normalized = message.trim();
   if (!normalized || normalized.length > 500 || isToolRequest(normalized)) {
@@ -362,11 +375,14 @@ function isStatelessChatQuestion(message: string): boolean {
   return [
     /(?:리눅스|linux|파이썬|python|자바스크립트|javascript|타입스크립트|typescript|git|깃|docker|도커|kubernetes|쿠버네티스|aws|lambda|람다|명령어|코드|개념|뜻|의미|차이|예시|방법|문법|영어).*(?:알려줘|설명해|가르쳐|어떻게|뭐야|무엇|작성해|번역해)/i,
     /(?:알려줘|설명해|가르쳐|어떻게|뭐야|무엇|작성해|번역해).*(?:리눅스|linux|파이썬|python|자바스크립트|javascript|타입스크립트|typescript|git|깃|docker|도커|kubernetes|쿠버네티스|aws|lambda|람다|명령어|코드|개념|뜻|의미|차이|예시|방법|문법|영어)/i,
-    /(?:메뉴|음식|저녁|점심|아침|간식|야식|레시피|recipe|menu|dinner|lunch|breakfast|snack).*(?:추천|골라|뭐\s*먹|어때|정해|알려줘|suggest|recommend|pick)/i,
-    /(?:추천|골라|뭐\s*먹|어때|정해|알려줘|suggest|recommend|pick).*(?:메뉴|음식|저녁|점심|아침|간식|야식|레시피|recipe|menu|dinner|lunch|breakfast|snack)/i,
-    /(?:날씨|weather|농담|joke).*(?:알려줘|어때|해줘|말해줘|tell|what)/i,
     /^(?:what|how|why|explain|translate)\b/i,
-  ].some((pattern) => pattern.test(normalized));
+  ].some((pattern) => pattern.test(normalized)) || isEverydayStatelessChatQuestion(normalized);
+}
+
+function resolveDirectChatMaxTokens(message: string): number {
+  return isEverydayStatelessChatQuestion(message)
+    ? parseEverydayDirectChatMaxTokens()
+    : parseDirectChatMaxTokens();
 }
 
 function shouldUseDirectBedrockChat(
@@ -677,16 +693,17 @@ export async function handler(
 
   if (shouldUseDirectBedrockChat(event, runtimeConfig)) {
     const directStartedAt = Date.now();
+    const directChatMaxTokens = resolveDirectChatMaxTokens(event.message);
     logLambdaEvent("lambda.direct_chat.started", {
       ...requestLogPayload,
-      maxTokens: parseDirectChatMaxTokens(),
+      maxTokens: directChatMaxTokens,
     });
     try {
       const directResult = await runDirectBedrockChat({
         message: event.message,
         model: event.model ?? runtimeConfig.defaultModel,
         systemPrompt: buildDirectChatSystemPrompt(event, runtimeConfig),
-        maxTokens: parseDirectChatMaxTokens(),
+        maxTokens: directChatMaxTokens,
         temperature: 0.2,
       });
       const payloads = [{ text: directResult.text }];

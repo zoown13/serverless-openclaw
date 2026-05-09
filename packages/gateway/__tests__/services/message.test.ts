@@ -1033,6 +1033,7 @@ describe("message service", () => {
           runtimeArn: "arn:aws:bedrock-agentcore:us-east-1:123:runtime/test",
           runtimeClass: "tool-enabled",
           message: "please read my latest gmail messages",
+          callbackUrl: "https://cb",
         }),
       );
       expect(deps.sendClarification).toHaveBeenCalledWith("AgentCore response");
@@ -1099,6 +1100,7 @@ describe("message service", () => {
         expect.objectContaining({
           message: "이건 일반 답변으로 처리해",
           runtimeClass: "tool-enabled",
+          callbackUrl: "",
         }),
       );
       expect(deps.deleteRoutingContext).toHaveBeenCalledWith("user-123", "web");

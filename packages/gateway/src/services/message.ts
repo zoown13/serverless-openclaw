@@ -670,7 +670,7 @@ async function routeAgentCore(
     message: bridgeMessage.message,
     channel: bridgeMessage.channel,
     connectionId: bridgeMessage.connectionId,
-    callbackUrl: bridgeMessage.callbackUrl,
+    callbackUrl: options.activeToolAffinity ? "" : bridgeMessage.callbackUrl,
     runtimeClass: "tool-enabled",
     emailTokenBudget: bridgeMessage.emailTokenBudget,
     assistantContext: bridgeMessage.assistantContext,

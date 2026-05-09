@@ -402,6 +402,43 @@ describe("message service", () => {
       );
     });
 
+    it("should clear active tool affinity for an everyday standalone chat request", async () => {
+      const mockInvokeLambda = vi.fn().mockResolvedValue({ accepted: true });
+      const mockInvokeAgentCore = vi.fn();
+      const deps = makeDeps({
+        message: "저녁 메뉴 추천해줘",
+        agentRuntime: "both",
+        toolRuntimeProvider: "agentcore",
+        invokeLambdaAgent: mockInvokeLambda,
+        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+        invokeAgentCoreRuntime: mockInvokeAgentCore,
+        agentCoreRuntimeArn: "arn:aws:bedrock-agentcore:us-east-1:123:runtime/test",
+        getRoutingContext: vi.fn().mockResolvedValue({
+          status: "active",
+          channel: "web",
+          connectionId: "conn-1",
+          callbackUrl: "https://cb",
+          runtimeClass: "tool-enabled",
+          provider: "agentcore",
+          createdAt: "2026-04-04T00:00:00Z",
+          lastActivityAt: "2026-04-04T00:00:00Z",
+          expiresAt: "2099-04-04T00:05:00Z",
+        }),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("lambda");
+      expect(deps.deleteRoutingContext).toHaveBeenCalledWith("user-123", "web");
+      expect(mockInvokeAgentCore).not.toHaveBeenCalled();
+      expect(mockInvokeLambda).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: "저녁 메뉴 추천해줘",
+          sessionId: "session-user-123:chat",
+        }),
+      );
+    });
+
     it("should clear active tool affinity when the user explicitly switches to a different chat topic", async () => {
       const mockInvokeLambda = vi.fn().mockResolvedValue({ accepted: true });
       const mockInvokeAgentCore = vi.fn();
@@ -997,7 +1034,7 @@ describe("message service", () => {
         accepted: true,
         source: "chat-handoff",
         handoffRuntimeClass: "chat-only",
-        handoffMessage: "이건 일반 답변으로 알려줘",
+        handoffMessage: "이건 일반 답변으로 처리해",
         clearToolAffinity: true,
       });
       const deps = makeDeps({
@@ -1007,7 +1044,7 @@ describe("message service", () => {
         lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
         invokeAgentCoreRuntime: mockInvokeAgentCore,
         agentCoreRuntimeArn: "arn:aws:bedrock-agentcore:us-east-1:123:runtime/test",
-        message: "이건 일반 답변으로 알려줘",
+        message: "이건 일반 답변으로 처리해",
         getTaskState: vi.fn().mockResolvedValue(null),
         getRoutingContext: vi.fn().mockResolvedValue({
           status: "active",
@@ -1027,14 +1064,14 @@ describe("message service", () => {
       expect(result).toBe("lambda");
       expect(mockInvokeAgentCore).toHaveBeenCalledWith(
         expect.objectContaining({
-          message: "이건 일반 답변으로 알려줘",
+          message: "이건 일반 답변으로 처리해",
           runtimeClass: "tool-enabled",
         }),
       );
       expect(deps.deleteRoutingContext).toHaveBeenCalledWith("user-123", "web");
       expect(mockInvokeLambda).toHaveBeenCalledWith(
         expect.objectContaining({
-          message: "이건 일반 답변으로 알려줘",
+          message: "이건 일반 답변으로 처리해",
           channel: "web",
           sessionId: "session-user-123:chat",
         }),

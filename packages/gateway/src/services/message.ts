@@ -146,6 +146,8 @@ const TOOL_AFFINITY_CONTEXTUAL_FOLLOW_UP_PATTERN =
   /(?:그거|이거|저거|그\s*내역|이\s*내역|앞(?:에서|서)|방금|아까|위(?:에|의)|다시|더\s*있|더\s*찾|관련(?:된)?\s*것만|것만|합계|총액|카드사별|결제처별|상세|본문|메일|지메일|gmail|결제|지출|카드|영수증|명세서|일본|여행|표(?:로)?|정리|보여|가져와|찾아)/i;
 const TOOL_AFFINITY_INDEPENDENT_CHAT_SWITCH_PATTERN =
   /(?:리눅스|linux|파이썬|python|자바스크립트|javascript|타입스크립트|typescript|git|깃|docker|도커|kubernetes|쿠버네티스|aws|lambda|람다|수학|역사|영어|문법|코드|명령어|방법|개념|뜻|의미|차이|예시|추천|설명|작성).*(?:알려줘|설명해|가르쳐|어떻게|뭐야|무엇|추천해|작성해|번역해)|(?:알려줘|설명해|가르쳐|어떻게|뭐야|무엇|추천해|작성해|번역해).*(?:리눅스|linux|파이썬|python|자바스크립트|javascript|타입스크립트|typescript|git|깃|docker|도커|kubernetes|쿠버네티스|aws|lambda|람다|수학|역사|영어|문법|코드|명령어|방법|개념|뜻|의미|차이|예시|추천|설명|작성)/i;
+const TOOL_AFFINITY_STANDALONE_CHAT_REQUEST_PATTERN =
+  /(?:알려줘|설명해|가르쳐|추천해|추천해줘|작성해|작성해줘|번역해|번역해줘|만들어줘|짜줘|고쳐줘|뭐야|무엇|왜|어떻게|어때|할까|해야\s*할까|뭐\s*먹|메뉴|날씨|농담|recipe|menu|weather|joke|recommend|explain|write|translate|how\s+to|what\s+is)/i;
 const TOOL_AFFINITY_END_MESSAGE = "알겠습니다. 현재 도구 작업 문맥을 종료할게요.";
 const DEFAULT_AGENTCORE_FOLLOW_UP_TIMEOUT_MS = 8_000;
 
@@ -462,12 +464,15 @@ function shouldKeepToolAffinity(message: string): boolean {
     return false;
   }
 
-  if (
-    classifyRouteRuntimeClass(normalized) === "chat-only" &&
-    !TOOL_AFFINITY_CONTEXTUAL_FOLLOW_UP_PATTERN.test(normalized) &&
-    TOOL_AFFINITY_INDEPENDENT_CHAT_SWITCH_PATTERN.test(normalized)
-  ) {
-    return false;
+  if (classifyRouteRuntimeClass(normalized) === "chat-only") {
+    const isContextualToolFollowUp = TOOL_AFFINITY_CONTEXTUAL_FOLLOW_UP_PATTERN.test(normalized);
+    const isIndependentGeneralChat =
+      TOOL_AFFINITY_INDEPENDENT_CHAT_SWITCH_PATTERN.test(normalized) ||
+      TOOL_AFFINITY_STANDALONE_CHAT_REQUEST_PATTERN.test(normalized);
+
+    if (!isContextualToolFollowUp && isIndependentGeneralChat) {
+      return false;
+    }
   }
 
   return true;

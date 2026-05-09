@@ -10,9 +10,11 @@ param(
   [ValidateSet("ddb", "dynamodb", "memory")]
   [string]$ToolContextStore = $(if ($env:TOOL_CONTEXT_STORE) { $env:TOOL_CONTEXT_STORE } else { "ddb" }),
   [string]$AgentCoreRuntimeArn = $(if ($env:AGENTCORE_RUNTIME_ARN) { $env:AGENTCORE_RUNTIME_ARN } else { "" }),
+  [string]$AgentCoreRuntimeName = $(if ($env:AGENTCORE_RUNTIME_NAME) { $env:AGENTCORE_RUNTIME_NAME } else { "ServerlessOpenClawToolRuntime" }),
   [string]$AgentCoreRuntimeQualifier = $(if ($env:AGENTCORE_RUNTIME_QUALIFIER) { $env:AGENTCORE_RUNTIME_QUALIFIER } else { "" }),
   [string]$AgentCoreSessionNamespace = $(if ($env:AGENTCORE_SESSION_NAMESPACE) { $env:AGENTCORE_SESSION_NAMESPACE } else { "" }),
   [string]$LambdaAgentImageTag = $(if ($env:LAMBDA_AGENT_IMAGE_TAG) { $env:LAMBDA_AGENT_IMAGE_TAG } else { "" }),
+  [switch]$ApiOnly,
   [switch]$SkipEnvFile
 )
 
@@ -45,6 +47,47 @@ function Import-DotEnv {
   }
 }
 
+function Resolve-AgentCoreRuntimeArn {
+  param(
+    [Parameter(Mandatory = $true)][string]$RuntimeName,
+    [Parameter(Mandatory = $true)][string]$AwsRegion,
+    [Parameter(Mandatory = $true)][string]$AwsProfile
+  )
+
+  if ([string]::IsNullOrWhiteSpace($RuntimeName)) {
+    return ""
+  }
+
+  Write-Host "Resolving AgentCore runtime ARN by name: $RuntimeName"
+  $args = @(
+    "bedrock-agentcore-control",
+    "list-agent-runtimes",
+    "--region",
+    $AwsRegion,
+    "--output",
+    "json"
+  )
+  if (-not [string]::IsNullOrWhiteSpace($AwsProfile)) {
+    $args += @("--profile", $AwsProfile)
+  }
+
+  $raw = aws @args
+  if ($LASTEXITCODE -ne 0) {
+    throw "Failed to list AgentCore runtimes while resolving $RuntimeName."
+  }
+
+  $runtimeList = $raw | ConvertFrom-Json
+  $runtime = $runtimeList.agentRuntimes |
+    Where-Object { $_.agentRuntimeName -eq $RuntimeName } |
+    Select-Object -First 1
+
+  if (-not $runtime) {
+    return ""
+  }
+
+  return [string]$runtime.agentRuntimeArn
+}
+
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $cdkDir = Join-Path $repoRoot "packages/cdk"
 
@@ -66,6 +109,16 @@ if ([string]::IsNullOrWhiteSpace($AgentCoreSessionNamespace) -and $env:AGENTCORE
 }
 if ([string]::IsNullOrWhiteSpace($LambdaAgentImageTag) -and $env:LAMBDA_AGENT_IMAGE_TAG) {
   $LambdaAgentImageTag = $env:LAMBDA_AGENT_IMAGE_TAG
+}
+
+if (
+  $ToolRuntimeProvider -eq "agentcore" -and
+  [string]::IsNullOrWhiteSpace($AgentCoreRuntimeArn)
+) {
+  $AgentCoreRuntimeArn = Resolve-AgentCoreRuntimeArn `
+    -RuntimeName $AgentCoreRuntimeName `
+    -AwsRegion $Region `
+    -AwsProfile $Profile
 }
 
 $env:AWS_PROFILE = $Profile
@@ -121,6 +174,7 @@ if ($env:LAMBDA_AGENT_IMAGE_TAG) {
 }
 if ($ToolRuntimeProvider -eq "agentcore") {
   Write-Host "  AGENTCORE_RUNTIME_ARN : $env:AGENTCORE_RUNTIME_ARN"
+  Write-Host "  AGENTCORE_RUNTIME_NAME: $AgentCoreRuntimeName"
   if ($env:AGENTCORE_RUNTIME_QUALIFIER) {
     Write-Host "  AGENTCORE_QUALIFIER   : $env:AGENTCORE_RUNTIME_QUALIFIER"
   }
@@ -133,12 +187,17 @@ Write-Host "Safety checks"
 Write-Host "  - Gateway remains coarse-only; semantic routing stays inside the tool runtime."
 Write-Host "  - Lambda remains the default chat path through AGENT_RUNTIME=both."
 Write-Host "  - DynamoDB-backed tool context remains enabled unless explicitly overridden."
+if ($ApiOnly) {
+  Write-Host "  - ApiOnly mode updates Gateway wiring only; ComputeStack and LambdaAgentStack are left untouched."
+}
 Write-Host ""
 
 Push-Location $cdkDir
 try {
-  npx cdk deploy ComputeStack --exclusively --require-approval never
-  npx cdk deploy LambdaAgentStack --exclusively --require-approval never
+  if (-not $ApiOnly) {
+    npx cdk deploy ComputeStack --exclusively --require-approval never
+    npx cdk deploy LambdaAgentStack --exclusively --require-approval never
+  }
   npx cdk deploy ApiStack --exclusively --require-approval never
 } finally {
   Pop-Location

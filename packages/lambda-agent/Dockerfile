@@ -42,7 +42,6 @@ COPY --from=builder /build/packages/shared/package.json ${LAMBDA_TASK_ROOT}/node
 # but we need @aws-sdk/lib-dynamodb which wraps the base client)
 COPY --from=builder /build/node_modules/@aws-sdk/lib-dynamodb/ ${LAMBDA_TASK_ROOT}/node_modules/@aws-sdk/lib-dynamodb/
 COPY --from=builder /build/node_modules/@aws-sdk/client-bedrock-runtime/ ${LAMBDA_TASK_ROOT}/node_modules/@aws-sdk/client-bedrock-runtime/
-COPY --from=builder /build/node_modules/@aws-sdk/client-s3/ ${LAMBDA_TASK_ROOT}/node_modules/@aws-sdk/client-s3/
 
 # Set HOME to /tmp so OpenClaw config/sessions go to writable directory
 ENV HOME=/tmp

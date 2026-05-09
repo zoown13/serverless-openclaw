@@ -123,6 +123,8 @@ export class ComputeStack extends cdk.Stack {
         ...(resolvedAiModel ? { AI_MODEL: resolvedAiModel } : {}),
         ...(props.toolSlmBackend ? { TOOL_SLM_BACKEND: props.toolSlmBackend } : {}),
         TOOL_CONTEXT_STORE: process.env.TOOL_CONTEXT_STORE ?? "ddb",
+        GMAIL_SUMMARY_FETCH_CONCURRENCY:
+          process.env.GMAIL_SUMMARY_FETCH_CONCURRENCY ?? "10",
         AWS_REGION: this.region,
         // Pending queue retry tuning stays in env vars so operations can adjust
         // backoff/dead-letter behaviour without rebuilding the Fargate image.

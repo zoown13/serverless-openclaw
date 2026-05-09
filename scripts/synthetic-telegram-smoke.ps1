@@ -7,7 +7,7 @@ param(
   [long]$ChatId,
   [long]$TelegramId,
   [string]$UserId,
-  [ValidateSet("PaymentFollowUp", "PaymentCoverageFollowUp", "PaymentCoverageThenIssuerBreakdown", "PaymentExpandedFirstTurn", "PaymentDeepScanFirstTurn", "PaymentHistoryCapability", "PaymentCapabilityThenChatHandoff", "PaymentThenEverydayChatHandoff", "RepeatedPaymentCacheHit", "PaymentDateRange", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff", "PlannerSemanticHandoff", "GenericPaymentThenTravelRefinement")]
+  [ValidateSet("PaymentFollowUp", "PaymentCoverageFollowUp", "PaymentCoverageThenIssuerBreakdown", "PaymentExpandedFirstTurn", "PaymentDeepScanFirstTurn", "PaymentHistoryCapability", "PaymentCapabilityThenChatHandoff", "PaymentThenEverydayChatHandoff", "PaymentThenCostLookup", "RepeatedPaymentCacheHit", "PaymentDateRange", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff", "PlannerSemanticHandoff", "GenericPaymentThenTravelRefinement")]
   [string]$Scenario = "PaymentFollowUp",
   [int]$PauseSeconds = 10,
   [int]$BridgeSignalTimeoutSeconds = 180,
@@ -245,6 +245,12 @@ function Get-ScenarioMessages {
       return @(
         "최근 결제한 내역 알려줘",
         "저녁 메뉴 추천해줘"
+      )
+    }
+    "PaymentThenCostLookup" {
+      return @(
+        "이번주 결제한 금액 얼마야",
+        "/cost"
       )
     }
     "RepeatedPaymentCacheHit" {

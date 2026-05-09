@@ -7,7 +7,7 @@ param(
   [long]$ChatId,
   [long]$TelegramId,
   [string]$UserId,
-  [ValidateSet("PaymentFollowUp", "PaymentCoverageFollowUp", "PaymentCoverageThenIssuerBreakdown", "PaymentExpandedFirstTurn", "PaymentDeepScanFirstTurn", "PaymentHistoryCapability", "PaymentCapabilityThenChatHandoff", "PaymentDateRange", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff", "GenericPaymentThenTravelRefinement")]
+  [ValidateSet("PaymentFollowUp", "PaymentCoverageFollowUp", "PaymentCoverageThenIssuerBreakdown", "PaymentExpandedFirstTurn", "PaymentDeepScanFirstTurn", "PaymentHistoryCapability", "PaymentCapabilityThenChatHandoff", "PaymentThenEverydayChatHandoff", "PaymentDateRange", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff", "GenericPaymentThenTravelRefinement")]
   [string]$Scenario = "PaymentFollowUp",
   [int]$PauseSeconds = 10,
   [int]$BridgeSignalTimeoutSeconds = 180,
@@ -222,6 +222,12 @@ function Get-ScenarioMessages {
       return @(
         "결제 이력 확인할 수 있어?",
         "그거 말고 일반 질문으로 리눅스에서 파일 찾는 명령어 알려줘"
+      )
+    }
+    "PaymentThenEverydayChatHandoff" {
+      return @(
+        "최근 결제한 내역 알려줘",
+        "저녁 메뉴 추천해줘"
       )
     }
     "PaymentDateRange" {
@@ -460,7 +466,8 @@ function Wait-BridgeSignals {
   $requiresDeepScanSignals = $SelectedScenario -eq "PaymentDeepScanFirstTurn"
   $requiresPaymentResponseQuality = $SelectedScenario -in @("PaymentCoverageFollowUp", "PaymentCoverageThenIssuerBreakdown", "PaymentExpandedFirstTurn", "PaymentDeepScanFirstTurn", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff", "GenericPaymentThenTravelRefinement")
   $requiresTravelResponseQuality = $requiresTravelSignals
-  $requiresChatHandoff = $SelectedScenario -in @("TravelPaymentThenChatHandoff", "PaymentCapabilityThenChatHandoff")
+  $requiresChatHandoff = $SelectedScenario -in @("TravelPaymentThenChatHandoff", "PaymentCapabilityThenChatHandoff", "PaymentThenEverydayChatHandoff")
+  $requiresFindCommandHandoff = $SelectedScenario -in @("TravelPaymentThenChatHandoff", "PaymentCapabilityThenChatHandoff")
 
   if ($requiresPaymentCapabilitySignals) {
     $requiredSignalGroups = @()
@@ -531,9 +538,13 @@ function Wait-BridgeSignals {
     $requiredLambdaSignals = @(
       "lambda.delivery.telegram.success",
       "lambda.delivery.content_quality",
-      '"hasGeneralChatAnswer":true',
-      '"hasFindCommandAnswer":true'
+      '"hasGeneralChatAnswer":true'
     )
+    if ($requiresFindCommandHandoff) {
+      $requiredLambdaSignals += @(
+        '"hasFindCommandAnswer":true'
+      )
+    }
   }
 
   $forbiddenSignals = @(

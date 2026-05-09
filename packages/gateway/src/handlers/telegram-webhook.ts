@@ -233,6 +233,15 @@ export async function handler(event: {
         return { statusCode: 200, body: "OK" };
       }
       imageInput = result.imageInput;
+      if (imageInput) {
+        console.log("[telegram] photo downloaded for image analysis", {
+          chatId,
+          telegramId,
+          mediaType: imageInput.mediaType,
+          fileSize: imageInput.fileSize,
+          hasCaption: Boolean(imageInput.caption),
+        });
+      }
     } catch (err) {
       console.warn("[telegram] photo download failed", {
         chatId,

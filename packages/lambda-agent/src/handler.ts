@@ -376,7 +376,6 @@ function resolveDirectVisionModel(
 ): string {
   return event.model ??
     process.env.LAMBDA_DIRECT_VISION_MODEL ??
-    process.env.LAMBDA_DIRECT_CHAT_MODEL ??
     runtimeConfig.defaultModel;
 }
 
@@ -638,6 +637,22 @@ export async function handler(
         deliveryType: "websocket",
         deliveryTarget: { type: "websocket", connectionId: event.connectionId! },
       });
+    } else if (isTelegram && telegramBotTokenPath) {
+      const secrets = await resolveSecrets([telegramBotTokenPath]);
+      const busyTelegramBotToken = secrets.get(telegramBotTokenPath);
+      if (busyTelegramBotToken && telegramChatId) {
+        await pushToTelegram(
+          busyTelegramBotToken,
+          telegramChatId,
+          "앞선 요청을 아직 처리 중이에요. 사진 분석은 조금만 기다렸다가 이어서 요청해 주세요.",
+          {
+            traceId,
+            channel: event.channel,
+            deliveryType: "telegram",
+            deliveryTarget: { type: "telegram", chatId: telegramChatId },
+          },
+        );
+      }
     }
     return {
       success: false,
@@ -661,6 +676,7 @@ export async function handler(
     deliveryTarget,
     sessionId,
     messageLength: event.message.length,
+    hasImageInput: Boolean(event.imageInput),
   };
   logLambdaEvent("lambda.request.accepted", requestLogPayload);
   logLambdaEvent("lambda.runtime.summary", requestLogPayload);

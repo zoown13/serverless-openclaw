@@ -41,7 +41,6 @@ export async function runDirectBedrockChat(
 ): Promise<DirectBedrockChatResult> {
   const content = params.imageInput
     ? [
-        { text: params.message },
         {
           image: {
             format: resolveBedrockImageFormat(params.imageInput.mediaType),
@@ -50,6 +49,7 @@ export async function runDirectBedrockChat(
             },
           },
         },
+        { text: params.message },
       ]
     : [{ text: params.message }];
 

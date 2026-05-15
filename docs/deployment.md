@@ -294,8 +294,26 @@ Set in `.env` or exported before running CDK commands.
 | `PENDING_MESSAGE_MAX_RETRIES` | `3` | positive integer | Retry budget before soft dead-lettering a pending message |
 | `PENDING_MESSAGE_BASE_RETRY_DELAY_MS` | `30000` | positive integer (ms) | Base delay used for exponential retry backoff in Fargate |
 | `PENDING_MESSAGE_MAX_RETRY_DELAY_MS` | `600000` | positive integer (ms) | Upper bound for pending-message retry delay in Fargate |
+| `TOOL_RUNTIME_PROVIDER` | `fargate` | `fargate` \| `agentcore` | Selects the primary tool runtime provider |
+| `AGENTCORE_FALLBACK_PROVIDER` | `fargate` | `fargate` | Fallback provider when AgentCore is unavailable |
+| `AGENTCORE_INVOKE_DEADLINE_MS` | `12000` | positive integer (ms) | Gateway-side AgentCore deadline before fallback |
+| `AWS_COST_LOOKUP_ENABLED` | `false` | `true` \| `false` | Enables AWS Cost Explorer lookup capability |
 
 These pending-queue settings are consumed by the Fargate container only. They do not affect the Lambda chat runtime. The defaults preserve the current behavior, while letting operations tune retry aggressiveness without rebuilding the image.
+
+### Local Option B / AgentCore-first deployment shortcut
+
+During active development, use the local deploy script instead of waiting for GitHub Actions. This keeps the architecture in `Lambda default chat + AgentCore primary tool runtime + Fargate fallback` mode and updates only the API/Gateway wiring when `-ApiOnly` is used.
+
+```powershell
+$env:AWS_COST_LOOKUP_ENABLED = "true"
+powershell -File .\scripts\deploy-option-b-tool-runtime.ps1 `
+  -ToolRuntimeProvider agentcore `
+  -AgentCoreSessionNamespace <CURRENT_AGENTCORE_SESSION_NAMESPACE> `
+  -ApiOnly
+```
+
+Use this path after Gateway routing, affinity, or `AssistantRuntimeContext` changes. Rebuild and push the container image only when changing `packages/container` or the AgentCore runtime adapter image.
 
 ---
 
@@ -321,6 +339,46 @@ wscat -c "<WebSocketApiEndpoint>?token=<ID_TOKEN>"
 1. Send a message to the bot in Telegram
 2. Verify "Waking up..." response (cold start)
 3. Verify agent response
+
+### Final regression smoke
+
+After a deployment that changes routing, AgentCore fallback, Gmail/payment behavior, AWS cost lookup, or Telegram delivery, run the final regression smoke.
+
+Critical suite:
+
+```powershell
+powershell -File .\scripts\final-regression-smoke.ps1 `
+  -ChatId <TELEGRAM_CHAT_ID> `
+  -TelegramId <TELEGRAM_USER_ID> `
+  -Suite Critical `
+  -BridgeSignalTimeoutSeconds 240
+```
+
+Full suite:
+
+```powershell
+powershell -File .\scripts\final-regression-smoke.ps1 `
+  -ChatId <TELEGRAM_CHAT_ID> `
+  -TelegramId <TELEGRAM_USER_ID> `
+  -Suite Full `
+  -BridgeSignalTimeoutSeconds 240
+```
+
+`Critical` verifies the minimum operational paths:
+
+- Lambda chat-only route and `/cost` recent query-cost recall
+- AWS Cost Explorer lookup
+- Gmail/payment capability awareness followed by Lambda chat handoff
+- Travel payment refinement, issuer breakdown, and chat handoff
+
+`Full` adds longer behavior checks:
+
+- Payment coverage correction
+- User-requested payment scan expansion
+- Payment date-range follow-ups
+- Planner/advisor continuity and explicit topic switch handoff
+
+The release gate for the v1.0 operational assistant baseline is `Suite Full` with zero failures.
 
 ### Telegram-Web Identity Linking Test
 

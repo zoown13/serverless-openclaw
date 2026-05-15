@@ -518,12 +518,18 @@ function Wait-BridgeSignals {
   $requiresChatHandoff = $SelectedScenario -in @("TravelPaymentThenChatHandoff", "PlannerSemanticHandoff", "PaymentCapabilityThenChatHandoff", "PaymentThenEverydayChatHandoff")
   $requiresFindCommandHandoff = $SelectedScenario -in @("TravelPaymentThenChatHandoff", "PaymentCapabilityThenChatHandoff")
   $requiresAwsCostLookupSignals = $SelectedScenario -eq "AwsCostLookup"
+  $requiresLambdaCostLookupSignals = $SelectedScenario -eq "ChatThenCostLookup"
 
   if ($requiresAwsCostLookupSignals) {
     $requiredSignals = @(
       "bridge.aws_cost.lookup_completed",
       "telegram.delivery.content_quality"
     )
+    $requiredSignalGroups = @()
+  }
+
+  if ($requiresLambdaCostLookupSignals) {
+    $requiredSignals = @()
     $requiredSignalGroups = @()
   }
 
@@ -594,8 +600,26 @@ function Wait-BridgeSignals {
 
   $requiredGatewaySignals = @()
   $requiredLambdaSignals = @()
+  $requiresGatewayLambdaSignals = $requiresChatHandoff -or $requiresLambdaCostLookupSignals
 
-  if ($requiresChatHandoff) {
+  if ($requiresLambdaCostLookupSignals) {
+    $requiredGatewaySignals = @(
+      '"runtimeClass":"chat-only"',
+      '"routeDecision":"lambda"',
+      '"hasPrivateDataTarget":false',
+      '"hasCloudBillingTarget":false',
+      "route.lambda.invoked"
+    )
+    $requiredLambdaSignals = @(
+      "lambda.delivery.telegram.success",
+      "lambda.delivery.content_quality",
+      '"hasGeneralChatAnswer":true',
+      '"hasFindCommandAnswer":true',
+      "lambda.cost.saved",
+      "lambda.cost.loaded",
+      '"hasRecentCost":true'
+    )
+  } elseif ($requiresChatHandoff) {
     $requiredGatewaySignals = @(
       "route.affinity.cleared",
       '"runtimeClass":"chat-only"',
@@ -630,40 +654,49 @@ function Wait-BridgeSignals {
 
   $deadline = [DateTimeOffset]::UtcNow.AddSeconds($TimeoutSeconds)
   $lastMissing = @($requiredSignals + ($requiredSignalGroups | ForEach-Object { $_.Label }))
-  $bridgeLogGroups = @("/ecs/serverless-openclaw")
-  $bridgeLogGroups += Get-AgentCoreLogGroups `
-    -SelectedProfile $SelectedProfile `
-    -SelectedRegion $SelectedRegion
-  $bridgeLogGroups = @($bridgeLogGroups | Where-Object { $_ } | Select-Object -Unique)
+  $requiresBridgeSignals = $requiredSignals.Count -gt 0 -or $requiredSignalGroups.Count -gt 0
+  $bridgeLogGroups = @()
+  if ($requiresBridgeSignals) {
+    $bridgeLogGroups = @("/ecs/serverless-openclaw")
+    $bridgeLogGroups += Get-AgentCoreLogGroups `
+      -SelectedProfile $SelectedProfile `
+      -SelectedRegion $SelectedRegion
+    $bridgeLogGroups = @($bridgeLogGroups | Where-Object { $_ } | Select-Object -Unique)
+  }
   $gatewayLogGroups = @()
   $lambdaLogGroups = @()
 
-  if ($requiresChatHandoff) {
+  if ($requiresGatewayLambdaSignals) {
     $gatewayLogGroups = @("/aws/lambda/serverless-openclaw-telegram-webhook")
     $lambdaLogGroups = @("/aws/lambda/serverless-openclaw-agent")
   }
 
   Write-Host ""
-  Write-Host "Waiting for Bridge processing signals in:"
-  $bridgeLogGroups | ForEach-Object { Write-Host "  - $_" }
-  if ($requiresChatHandoff) {
-    Write-Host "Waiting for Gateway handoff signals in:"
+  if ($requiresBridgeSignals) {
+    Write-Host "Waiting for Bridge processing signals in:"
+    $bridgeLogGroups | ForEach-Object { Write-Host "  - $_" }
+  }
+  if ($requiresGatewayLambdaSignals) {
+    Write-Host "Waiting for Gateway routing signals in:"
     $gatewayLogGroups | ForEach-Object { Write-Host "  - $_" }
     Write-Host "Waiting for Lambda chat delivery signals in:"
     $lambdaLogGroups | ForEach-Object { Write-Host "  - $_" }
   }
 
   while ([DateTimeOffset]::UtcNow -lt $deadline) {
-    $text = Read-BridgeSignalMessages `
-      -SelectedProfile $SelectedProfile `
-      -SelectedRegion $SelectedRegion `
-      -StartTimeMs $StartTimeMs `
-      -LogGroups $bridgeLogGroups
+    $text = ""
+    if ($requiresBridgeSignals) {
+      $text = Read-BridgeSignalMessages `
+        -SelectedProfile $SelectedProfile `
+        -SelectedRegion $SelectedRegion `
+        -StartTimeMs $StartTimeMs `
+        -LogGroups $bridgeLogGroups
+    }
 
     $gatewayText = ""
     $lambdaText = ""
 
-    if ($requiresChatHandoff) {
+    if ($requiresGatewayLambdaSignals) {
       $gatewayText = Read-BridgeSignalMessages `
         -SelectedProfile $SelectedProfile `
         -SelectedRegion $SelectedRegion `
@@ -682,8 +715,11 @@ function Wait-BridgeSignals {
       throw "Bridge signal check failed: found forbidden signal '$forbiddenHit'."
     }
 
-    $missingSignals = @($requiredSignals | Where-Object { -not $text.Contains($_) })
-    if ($requiresChatHandoff) {
+    $missingSignals = @()
+    if ($requiresBridgeSignals) {
+      $missingSignals = @($requiredSignals | Where-Object { -not $text.Contains($_) })
+    }
+    if ($requiresGatewayLambdaSignals) {
       $missingSignals += @(
         $requiredGatewaySignals |
           Where-Object { -not $gatewayText.Contains($_) } |

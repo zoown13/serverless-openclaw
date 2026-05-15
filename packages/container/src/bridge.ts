@@ -170,15 +170,23 @@ export function buildAssistantContextPrefix(
 ): string | undefined {
   if (!context) return undefined;
 
+  const capabilitySummary = context.capabilities.tools.registry
+    ?.map((capability) =>
+      `${capability.id}:${capability.status}:${capability.readOnly ? "read-only" : "write"}:${capability.dataSensitivity}`
+    )
+    .join(", ");
+
   return [
     `[System: AssistantRuntimeContext v${context.version}.`,
     `Current route is ${context.runtime.runtimeClass}/${context.runtime.routeDecision ?? "unknown"}.`,
     `Tool runtime provider is ${context.runtime.toolRuntimeProvider ?? "unknown"} with fallback ${context.runtime.fallbackProvider ?? "unknown"}.`,
     `Active tool affinity is ${context.toolAffinity?.active === true ? "true" : "false"}.`,
     `Gmail capability is ${context.capabilities.gmail.status} via ${context.capabilities.gmail.executionRuntime} in ${context.capabilities.gmail.safetyMode} mode.`,
+    capabilitySummary ? `Tool capability registry: ${capabilitySummary}.` : "",
+    "Only capabilities marked available may be executed. Capabilities marked planned must not be claimed as currently executable.",
     "Do not claim the assistant cannot access Gmail or payment data when this context says the delegated tool runtime can verify it.",
     `${context.guidance.toolRuntime}]`,
-  ].join(" ");
+  ].filter(Boolean).join(" ");
 }
 
 function defaultEmailTokenBudget(): EmailTokenBudgetPolicy {

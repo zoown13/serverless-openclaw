@@ -23,6 +23,14 @@ export type Channel = "web" | "telegram";
 export type RuntimeClass = "chat-only" | "tool-enabled";
 export type AgentRuntimeMode = "lambda" | "fargate" | "both";
 export type ToolRuntimeProvider = "fargate" | "agentcore";
+export type ToolCapabilityId =
+  | "gmail_payment"
+  | "gmail_search"
+  | "gmail_body_selection"
+  | "aws_cost_lookup";
+export type ToolCapabilityFamily = "gmail" | "cloud_billing" | "generic_tool";
+export type ToolCapabilityStatus = "available" | "planned" | "disabled";
+export type ToolCapabilityDataSensitivity = "user_private" | "account_private";
 export type RouteDecision =
   | "lambda"
   | "fargate-reuse"
@@ -64,6 +72,31 @@ export interface ToolRuntimeAffinityState {
   expiresAt: string;
 }
 
+export interface ToolCapabilitySafetyPolicy {
+  headersFirst: boolean;
+  maxDisplayedItems?: number;
+  cacheTtlSeconds?: number;
+  noAttachments: boolean;
+  mutationAllowed: boolean;
+}
+
+export interface ToolCapabilityDefinition {
+  id: ToolCapabilityId;
+  family: ToolCapabilityFamily;
+  displayName: string;
+  description: string;
+  dataSensitivity: ToolCapabilityDataSensitivity;
+  readOnly: boolean;
+  examples: string[];
+  safety: ToolCapabilitySafetyPolicy;
+}
+
+export interface AssistantToolCapability extends ToolCapabilityDefinition {
+  status: ToolCapabilityStatus;
+  executionRuntime: ToolRuntimeProvider;
+  unavailableReason?: string;
+}
+
 export interface AssistantRuntimeContext {
   version: 1;
   userId: string;
@@ -86,6 +119,7 @@ export interface AssistantRuntimeContext {
       available: boolean;
       executionRuntime: ToolRuntimeProvider;
       note: string;
+      registry?: AssistantToolCapability[];
     };
     gmail: {
       status: "available_via_tool_runtime" | "runtime_check_required" | "unavailable";

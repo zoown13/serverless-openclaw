@@ -6,6 +6,7 @@ import {
   BRIDGE_HTTP_TIMEOUT_MS,
   PENDING_MESSAGE_TTL_SEC,
   PREWARM_USER_ID,
+  buildAssistantToolCapabilities,
   estimateCost,
 } from "@serverless-openclaw/shared";
 import type {
@@ -429,6 +430,11 @@ function buildAssistantRuntimeContext(
     ? resolveLambdaSessionId(deps, runtimeClass)
     : deps.sessionId ?? `session-${deps.userId}`;
   const gatewayCost = buildGatewayCostSnapshot(deps, runtimeClass, routeDecision);
+  const toolCapabilities = buildAssistantToolCapabilities({
+    toolRuntimeProvider: provider,
+    gmailAvailable: true,
+    awsCostLookupAvailable: process.env.AWS_COST_LOOKUP_ENABLED === "true",
+  });
   const context: AssistantRuntimeContext = {
     version: 1,
     userId: deps.userId,
@@ -451,6 +457,7 @@ function buildAssistantRuntimeContext(
         available: true,
         executionRuntime: provider,
         note: "Tool and private-data tasks are owned by the tool runtime, not by Gateway semantic routing.",
+        registry: toolCapabilities,
       },
       gmail: {
         status: "available_via_tool_runtime",
@@ -469,7 +476,7 @@ function buildAssistantRuntimeContext(
       upstream: [gatewayCost],
     },
     guidance: {
-      selfAwareness: "The assistant should know that this system has a delegated tool runtime for Gmail, payment, and private-data lookup tasks.",
+      selfAwareness: "The assistant should know that this system has a delegated tool runtime and a closed tool capability registry. Available capabilities may be executed by the tool runtime; planned capabilities are roadmap/self-awareness only.",
       lambda: "Lambda is the fast chat path. If a request needs Gmail or another tool, do not claim the whole assistant cannot access it; explain that the tool runtime must handle or verify that lookup.",
       toolRuntime: "AgentCore/Fargate owns semantic interpretation, Gmail/payment context, follow-up handling, and controlled tool execution.",
     },
@@ -484,6 +491,7 @@ function buildAssistantRuntimeContext(
     fallbackProvider,
     hasActiveToolAffinity: context.toolAffinity?.active ?? false,
     gmailCapability: context.capabilities.gmail.status,
+    toolCapabilities: toolCapabilities.map((capability) => `${capability.id}:${capability.status}`),
     gatewayEstimatedUsd: gatewayCost.estimatedUsd,
     gatewayDurationMs: gatewayCost.durationMs,
     gatewayCostName: gatewayCost.name,

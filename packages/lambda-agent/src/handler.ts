@@ -644,25 +644,34 @@ function hasDelegatedToolRuntime(event: LambdaAgentEvent): boolean {
 
 function buildDelegatedToolRuntimeMessage(event: LambdaAgentEvent): string {
   const provider = event.assistantContext?.runtime.toolRuntimeProvider ?? "tool runtime";
+  const availableCapabilities = event.assistantContext?.capabilities.tools.registry
+    ?.filter((capability) => capability.status === "available")
+    .map((capability) => capability.displayName)
+    .join(", ");
   if (event.channel === "telegram") {
-    return `결제 이력은 지메일(Gmail) 기반 도구 런타임에서 확인할 수 있어요. 다만 현재 턴은 빠른 Lambda 채팅 경로로 들어와 실제 조회를 바로 실행하지 않았습니다. 실제 조회는 ${provider} 도구 런타임에서 처리해야 하며, 이 misroute는 관측 로그에 남겨 라우팅 개선 대상으로 추적합니다.`;
+    return `이 요청은 ${provider} 도구 런타임에서 처리해야 합니다. 현재 사용 가능한 도구는 ${availableCapabilities || "delegated tool runtime capabilities"}입니다. 다만 현재 턴은 빠른 Lambda 채팅 경로로 들어와 실제 조회를 바로 실행하지 않았습니다. 이 misroute는 관측 로그에 남겨 라우팅 개선 대상으로 추적합니다.`;
   }
 
-  return `Payment history can be checked through the Gmail-backed delegated tool runtime. The current Lambda path is the fast chat runtime, while ${provider} owns actual Gmail/tool execution. This should be handled by the tool runtime path rather than answered as unavailable.`;
+  return `This request should be handled by the ${provider} delegated tool runtime. Currently available tools: ${availableCapabilities || "delegated tool runtime capabilities"}. The current Lambda path is the fast chat runtime, so it should not answer the request as globally unavailable.`;
 }
 
 function buildAssistantContextPrompt(event: LambdaAgentEvent): string | undefined {
   const context = event.assistantContext;
   if (!context) return undefined;
 
+  const capabilitySummary = context.capabilities.tools.registry
+    ?.map((capability) => `${capability.id}:${capability.status}`)
+    .join(", ");
+
   return [
     `AssistantRuntimeContext v${context.version}: current route=${context.runtime.runtimeClass}/${context.runtime.routeDecision ?? "unknown"}.`,
     `Tool runtime provider=${context.runtime.toolRuntimeProvider ?? "unknown"}, fallback=${context.runtime.fallbackProvider ?? "unknown"}, activeToolAffinity=${context.toolAffinity?.active === true}.`,
     `Gmail capability=${context.capabilities.gmail.status}, executionRuntime=${context.capabilities.gmail.executionRuntime}, safety=${context.capabilities.gmail.safetyMode}.`,
+    capabilitySummary ? `Tool capability registry=${capabilitySummary}. Execute only capabilities marked available; treat planned capabilities as not yet enabled.` : undefined,
     "Payment history, card spending, receipts, statements, and transaction history are Gmail-backed tool-capable tasks when Gmail capability is available via the delegated tool runtime.",
     context.guidance.selfAwareness,
     context.guidance.lambda,
-  ].join(" ");
+  ].filter((line): line is string => Boolean(line)).join(" ");
 }
 
 function buildEmailTokenBudgetPrompt(runtimeConfig: ResolvedRuntimeConfig): string | undefined {

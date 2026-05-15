@@ -8,7 +8,8 @@ param(
   [string]$AiModel = "global.anthropic.claude-haiku-4-5-20251001-v1:0",
   [ValidateSet("remote-api", "mock-local")]
   [string]$ToolSlmBackend = "remote-api",
-  [string]$ResponseFormatVersion = "ko-payment-v1"
+  [string]$ResponseFormatVersion = "ko-payment-v1",
+  [string]$AwsCostLookupEnabled = $(if ($env:AWS_COST_LOOKUP_ENABLED) { $env:AWS_COST_LOOKUP_ENABLED } else { "false" })
 )
 
 $ErrorActionPreference = "Stop"
@@ -245,6 +246,12 @@ function Ensure-AgentCoreRuntimeRole {
         Resource = "*"
       },
       @{
+        Sid = "ReadCostExplorer"
+        Effect = "Allow"
+        Action = "ce:GetCostAndUsage"
+        Resource = "*"
+      },
+      @{
         Sid = "PublishRuntimeLogs"
         Effect = "Allow"
         Action = @(
@@ -330,6 +337,8 @@ $environmentVariables = @{
   TOOL_CONTEXT_STORE = "ddb"
   GMAIL_SUMMARY_FETCH_CONCURRENCY = "10"
   TOOL_DETERMINISTIC_PAYMENT_FAST_PATH = "true"
+  AWS_COST_LOOKUP_ENABLED = $AwsCostLookupEnabled
+  AWS_COST_EXPLORER_REGION = "us-east-1"
   AWS_REGION = $Region
   SSM_BRIDGE_AUTH_TOKEN = "/serverless-openclaw/secrets/bridge-auth-token"
   SSM_OPENCLAW_GATEWAY_TOKEN = "/serverless-openclaw/secrets/openclaw-gateway-token"

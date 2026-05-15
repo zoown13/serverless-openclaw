@@ -101,6 +101,12 @@ describe("classifyRouteRuntimeClass", () => {
     );
   });
 
+  it("classifies AWS cost lookups as tool-enabled cloud billing requests", () => {
+    expect(classifyRouteRuntimeClass("이번달 AWS 비용 서비스별로 알려줘")).toBe(
+      "tool-enabled",
+    );
+  });
+
   it("classifies /heavy hint as tool-enabled", () => {
     expect(classifyRouteRuntimeClass("/heavy analyze this")).toBe("tool-enabled");
   });
@@ -171,6 +177,24 @@ describe("classifyRouteRuntimeClass", () => {
 });
 
 describe("getRouteClassificationSignals", () => {
+  it("does not mark general file command how-to questions as private data targets", () => {
+    expect(getRouteClassificationSignals("리눅스에서 파일 찾는 명령어 알려줘")).toMatchObject({
+      hasPrivateDataTarget: false,
+      hasCloudBillingTarget: false,
+      hasHangul: true,
+    });
+  });
+
+  it("captures AWS cost lookup as a cloud billing target", () => {
+    expect(getRouteClassificationSignals("이번달 AWS 비용 서비스별로 알려줘")).toMatchObject({
+      hasCloudBillingTarget: true,
+      hasSensitiveDataCue: true,
+      hasDataLookupAction: true,
+      hasAmbiguousPersonalLookup: true,
+      hasHangul: true,
+    });
+  });
+
   it("captures coarse private-data signals for travel payment lookup questions", () => {
     expect(
       getRouteClassificationSignals("일본 여행가는데 결제한 내역들 알려줘"),

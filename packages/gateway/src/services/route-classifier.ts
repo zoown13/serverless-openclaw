@@ -13,6 +13,7 @@ export interface RouteClassificationSignals {
   hasFargateHint: boolean;
   hasPrivateDataTarget: boolean;
   hasPrivateDataAction: boolean;
+  hasCloudBillingTarget: boolean;
   hasSensitiveDataCue: boolean;
   hasTemporalContext: boolean;
   hasAmbiguousPersonalLookup: boolean;
@@ -24,8 +25,12 @@ export interface RouteClassificationSignals {
 const FARGATE_HINTS = ["/heavy", "/fargate"];
 const PRIVATE_DATA_TARGET_PATTERN =
   /(?:\bgmail\b|\bemails?\b|\be-mails?\b|\bmailbox\b|\binbox\b|\bunread\b|\battachments?\b|\bmessages?\b|\bbrowser\b|\bweb(?:site)?\b|\bsite\b|\bpage\b|\burl\b|\blink\b|\btool\b|\bfiles?\b|\bprivate data\b|지메일|이메일|메일(?:함)?|수신함|받은편지함|편지함|안 읽은|읽지 않은|첨부파일|메시지|브라우저|웹|사이트|페이지|주소|링크|도구|파일|개인\s*데이터)/i;
+const EXPLICIT_PRIVATE_RUNTIME_TARGET_PATTERN =
+  /(?:\bgmail\b|\bemails?\b|\be-mails?\b|\bmailbox\b|\binbox\b|\bunread\b|\battachments?\b|\bbrowser\b|\bweb(?:site)?\b|\burl\b|\blink\b|\btool\b|\bprivate data\b|지메일|이메일|메일(?:함)?|수신함|받은편지함|편지함|안 읽은|읽지 않은|첨부파일|브라우저|웹|사이트|페이지|주소|링크|도구|개인\s*데이터)/i;
 const PRIVATE_DATA_ACTION_PATTERN =
   /(?:\baccess\b|\bconnect\b|\bintegrat(?:e|ion)?\b|\bfetch\b|\bload\b|\bget\b|\bcheck\b|\bread\b|\bopen\b|\bsearch\b|\bsend\b|\bsummar(?:ize|ise)\b|\banaly[sz]e\b|\breview\b|\btriage\b|\bbody\b|\bcontent\b|\bdetails?\b|\bbrowse\b|\bvisit\b|\bnavigate\b|\blook up\b|접근|연동|연결|가져오|불러오|조회|확인|읽|열|검색|보내|요약|분석|정리|분류|찾|살펴|보여|봐|본문|내용|자세히|상세|둘러|탐색|접속)/i;
+const CLOUD_BILLING_TARGET_PATTERN =
+  /(?:\baws\b|amazon web services|aws\s*계정|aws\s*청구|aws\s*비용|aws\s*요금|클라우드\s*(?:비용|요금|청구)|cloud\s*(?:cost|billing|usage))/i;
 const SENSITIVE_DATA_CUE_PATTERN =
   /(?:결제|결제\s*(?:이력|기록)|지출|지출액|사용금액|사용 금액|사용\s*(?:이력|기록)|사용한\s*돈|쓴\s*돈|썼던\s*돈|소비|소비내역|비용|승인내역|카드값|카드\s*(?:사용|결제|이력|기록)|여행\s*경비|출장\s*경비|청구서|영수증|명세서|거래내역|거래\s*(?:이력|기록)|\bpayment(?:s)?\b|\bpayment\s+histor(?:y|ies)\b|\bcharge(?:s|d)?\b|\btransaction(?:s)?\b|\btransaction\s+(?:history|records?)\b|\bspent\b|\bspend(?:ing)?\b|\bexpense(?:s)?\b|\bcosts?\b|\bbilling\b|\binvoice\b|\breceipt\b|\bstatement\b)/i;
 const TEMPORAL_CONTEXT_PATTERN =
@@ -53,6 +58,21 @@ function hasFargateHint(message: string): boolean {
   return false;
 }
 
+function hasPrivateDataTarget(message: string): boolean {
+  if (!PRIVATE_DATA_TARGET_PATTERN.test(message)) {
+    return false;
+  }
+
+  if (
+    GENERAL_HOW_TO_PATTERN.test(message) &&
+    !EXPLICIT_PRIVATE_RUNTIME_TARGET_PATTERN.test(message)
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
 export function getRouteClassificationSignals(
   message: string,
 ): RouteClassificationSignals {
@@ -60,15 +80,18 @@ export function getRouteClassificationSignals(
   const hasSensitiveDataCue = SENSITIVE_DATA_CUE_PATTERN.test(normalized);
   const hasTemporalContext = TEMPORAL_CONTEXT_PATTERN.test(normalized);
   const hasDataLookupAction = DATA_LOOKUP_ACTION_PATTERN.test(normalized);
+  const hasCloudBillingTarget = CLOUD_BILLING_TARGET_PATTERN.test(normalized);
   return {
     hasFargateHint: hasFargateHint(normalized),
-    hasPrivateDataTarget: PRIVATE_DATA_TARGET_PATTERN.test(normalized),
+    hasPrivateDataTarget: hasPrivateDataTarget(normalized),
     hasPrivateDataAction: PRIVATE_DATA_ACTION_PATTERN.test(normalized),
+    hasCloudBillingTarget,
     hasSensitiveDataCue,
     hasTemporalContext,
     hasAmbiguousPersonalLookup:
       hasDataLookupAction &&
       (hasSensitiveDataCue ||
+        hasCloudBillingTarget ||
         hasTemporalContext ||
         PERSONAL_REFERENCE_PATTERN.test(normalized)),
     hasDataLookupAction,
@@ -90,6 +113,10 @@ export function classifyRouteRuntimeClass(message: string): RuntimeClass {
   }
 
   if (signals.hasPrivateDataTarget && signals.hasPrivateDataAction) {
+    return "tool-enabled";
+  }
+
+  if (signals.hasCloudBillingTarget && signals.hasSensitiveDataCue) {
     return "tool-enabled";
   }
 

@@ -105,6 +105,8 @@ export class ApiStack extends cdk.Stack {
       TOOL_RUNTIME_PROVIDER: toolRuntimeProvider,
       AGENTCORE_FALLBACK_PROVIDER: process.env.AGENTCORE_FALLBACK_PROVIDER ?? "fargate",
       AGENTCORE_INVOKE_DEADLINE_MS: process.env.AGENTCORE_INVOKE_DEADLINE_MS ?? "12000",
+      AWS_COST_LOOKUP_ENABLED: process.env.AWS_COST_LOOKUP_ENABLED ?? "false",
+      AWS_COST_EXPLORER_REGION: process.env.AWS_COST_EXPLORER_REGION ?? "us-east-1",
       ...(process.env.AGENTCORE_SESSION_NAMESPACE
         ? { AGENTCORE_SESSION_NAMESPACE: process.env.AGENTCORE_SESSION_NAMESPACE }
         : {}),

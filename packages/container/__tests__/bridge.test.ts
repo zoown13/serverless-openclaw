@@ -3,7 +3,14 @@ import request from "supertest";
 import { createApp } from "../src/bridge.js";
 import type { BridgeDeps } from "../src/bridge.js";
 
-const { gmailToolMock, publishCountMetricMock, isGmailReadyMock, recentCostLoadMock, recentCostSaveMock } = vi.hoisted(() => ({
+const {
+  gmailToolMock,
+  publishCountMetricMock,
+  isGmailReadyMock,
+  recentCostLoadMock,
+  recentCostSaveMock,
+  awsCostLookupMock,
+} = vi.hoisted(() => ({
   gmailToolMock: vi.fn(),
   publishCountMetricMock: vi.fn().mockResolvedValue(undefined),
   isGmailReadyMock: vi.fn().mockResolvedValue(true),
@@ -11,6 +18,7 @@ const { gmailToolMock, publishCountMetricMock, isGmailReadyMock, recentCostLoadM
   recentCostSaveMock: vi.fn().mockResolvedValue({
     expiresAt: "2099-01-01T00:00:00.000Z",
   }),
+  awsCostLookupMock: vi.fn(),
 }));
 
 vi.mock("../src/metrics.js", () => ({
@@ -29,6 +37,10 @@ vi.mock("../src/recent-cost-context.js", () => ({
     load: recentCostLoadMock,
     save: recentCostSaveMock,
   })),
+}));
+
+vi.mock("../src/aws-cost-explorer.js", () => ({
+  lookupAwsCostExplorer: (...args: unknown[]) => awsCostLookupMock(...args),
 }));
 
 function createMockDeps(): BridgeDeps {
@@ -73,6 +85,7 @@ describe("Bridge HTTP Server", () => {
     recentCostSaveMock.mockResolvedValue({
       expiresAt: "2099-01-01T00:00:00.000Z",
     });
+    awsCostLookupMock.mockReset();
     process.env.DATA_BUCKET = "test-session-bucket";
     deps = createMockDeps();
     app = createApp(deps);
@@ -84,6 +97,7 @@ describe("Bridge HTTP Server", () => {
     delete process.env.AGENTCORE_HTTP_DELIVERY_MODE;
     delete process.env.AGENTCORE_ASYNC_CALLBACK_DELIVERY;
     delete process.env.BRIDGE_DEFER_CALLBACK_PERSISTENCE;
+    delete process.env.AWS_COST_LOOKUP_ENABLED;
     delete process.env.SESSION_BUCKET;
     delete process.env.DATA_BUCKET;
     infoSpy.mockRestore();
@@ -699,6 +713,57 @@ describe("Bridge HTTP Server", () => {
       expect(deps.openclawClient.sendMessage).not.toHaveBeenCalled();
       expect(recentCostLoadMock).toHaveBeenCalledWith("user-1", "web:conn-agentcore");
       expect(recentCostSaveMock).not.toHaveBeenCalled();
+    });
+
+    it("should answer AgentCore AWS Cost Explorer lookup when enabled", async () => {
+      process.env.AWS_COST_LOOKUP_ENABLED = "true";
+      awsCostLookupMock.mockResolvedValueOnce({
+        request: { period: "month_to_date", groupByService: true, maxServices: 8 },
+        dateRange: {
+          start: "2026-05-01",
+          end: "2026-05-15",
+          label: "이번 달 현재까지",
+          freshnessNote: "오늘 진행 중인 비용은 Cost Explorer에 아직 완전히 반영되지 않을 수 있습니다.",
+        },
+        totalUsd: 1.23,
+        unit: "USD",
+        services: [
+          { service: "AWS Lambda", amountUsd: 0.5, unit: "USD" },
+        ],
+        generatedAt: "2026-05-15T12:00:00.000Z",
+        source: "aws-cost-explorer",
+      });
+      app = createApp({
+        ...deps,
+        agentCoreHttpEnabled: true,
+        runtimeLabel: "agentcore",
+      });
+
+      const res = await request(app)
+        .post("/invocations")
+        .send({
+          userId: "user-1",
+          message: "이번달 AWS 비용 서비스별로 알려줘",
+          channel: "web",
+          connectionId: "conn-agentcore",
+          runtimeClass: "tool-enabled",
+          traceId: "trace-agentcore-aws-cost",
+          routeDecision: "agentcore",
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({
+        content: expect.stringContaining("AWS Cost Explorer 기준"),
+        source: "aws-cost-explorer",
+      });
+      expect(res.body.content).toContain("AWS Lambda");
+      expect(awsCostLookupMock).toHaveBeenCalledWith(expect.objectContaining({
+        period: "month_to_date",
+        groupByService: true,
+      }));
+      expect(gmailToolMock).not.toHaveBeenCalled();
+      expect(recentCostLoadMock).not.toHaveBeenCalled();
+      expect(deps.openclawClient.sendMessage).not.toHaveBeenCalled();
     });
 
     it("should emit direct Telegram content-quality signals for AgentCore responses", async () => {

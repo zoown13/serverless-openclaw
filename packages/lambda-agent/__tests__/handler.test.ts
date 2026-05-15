@@ -13,6 +13,7 @@ const {
   mockSaveRecentImage,
   mockLoadRecentCost,
   mockSaveRecentCost,
+  mockLookupAwsCost,
   mockAcquire,
   mockRelease,
   mockPublishLambdaDeliveryMetric,
@@ -68,6 +69,7 @@ const {
   mockSaveRecentCost: vi.fn().mockResolvedValue({
     expiresAt: "2099-01-01T00:00:00.000Z",
   }),
+  mockLookupAwsCost: vi.fn(),
   mockAcquire: vi.fn().mockResolvedValue(true),
   mockRelease: vi.fn().mockResolvedValue(undefined),
   mockPublishLambdaDeliveryMetric: vi.fn().mockResolvedValue(undefined),
@@ -114,6 +116,10 @@ vi.mock("../src/recent-cost-context.js", () => ({
   })),
 }));
 
+vi.mock("../src/aws-cost-explorer.js", () => ({
+  lookupAwsCostExplorer: (...args: unknown[]) => mockLookupAwsCost(...args),
+}));
+
 vi.mock("../src/session-lock.js", () => ({
   SessionLock: vi.fn().mockImplementation(() => ({
     acquire: mockAcquire,
@@ -132,6 +138,7 @@ describe("handler", () => {
   let originalTelegramTokenPath: string | undefined;
   let originalDirectBedrockChat: string | undefined;
   let originalDirectChatModel: string | undefined;
+  let originalAwsCostLookupEnabled: string | undefined;
   let infoSpy: ReturnType<typeof vi.spyOn>;
   let errorSpy: ReturnType<typeof vi.spyOn>;
 
@@ -155,6 +162,7 @@ describe("handler", () => {
     mockSaveRecentCost.mockResolvedValue({
       expiresAt: "2099-01-01T00:00:00.000Z",
     });
+    mockLookupAwsCost.mockReset();
     mockAcquire.mockClear();
     mockRelease.mockClear();
     mockPublishLambdaDeliveryMetric.mockClear();
@@ -174,12 +182,14 @@ describe("handler", () => {
     originalTelegramTokenPath = process.env.SSM_TELEGRAM_BOT_TOKEN;
     originalDirectBedrockChat = process.env.LAMBDA_DIRECT_BEDROCK_CHAT;
     originalDirectChatModel = process.env.LAMBDA_DIRECT_CHAT_MODEL;
+    originalAwsCostLookupEnabled = process.env.AWS_COST_LOOKUP_ENABLED;
     process.env.SESSION_BUCKET = "test-session-bucket";
     process.env.AI_PROVIDER = "anthropic";
     delete process.env.SSM_ANTHROPIC_API_KEY;
     delete process.env.SSM_TELEGRAM_BOT_TOKEN;
     delete process.env.LAMBDA_DIRECT_BEDROCK_CHAT;
     delete process.env.LAMBDA_DIRECT_CHAT_MODEL;
+    delete process.env.AWS_COST_LOOKUP_ENABLED;
 
     mockRunAgent.mockResolvedValue({
       payloads: [{ text: "Hello from agent!" }],
@@ -229,6 +239,12 @@ describe("handler", () => {
       process.env.LAMBDA_DIRECT_CHAT_MODEL = originalDirectChatModel;
     } else {
       delete process.env.LAMBDA_DIRECT_CHAT_MODEL;
+    }
+
+    if (originalAwsCostLookupEnabled !== undefined) {
+      process.env.AWS_COST_LOOKUP_ENABLED = originalAwsCostLookupEnabled;
+    } else {
+      delete process.env.AWS_COST_LOOKUP_ENABLED;
     }
   });
 
@@ -1052,6 +1068,45 @@ describe("handler", () => {
     expect(mockSaveRecentCost).not.toHaveBeenCalled();
     expect(infoSpy).toHaveBeenCalledWith(
       expect.stringContaining("\"event\":\"lambda.cost.loaded\""),
+    );
+  });
+
+  it("should answer an AWS Cost Explorer lookup when the capability is enabled", async () => {
+    process.env.AWS_COST_LOOKUP_ENABLED = "true";
+    mockLookupAwsCost.mockResolvedValueOnce({
+      request: { period: "month_to_date", groupByService: true, maxServices: 8 },
+      dateRange: {
+        start: "2026-05-01",
+        end: "2026-05-15",
+        label: "이번 달 현재까지",
+        freshnessNote: "오늘 진행 중인 비용은 Cost Explorer에 아직 완전히 반영되지 않을 수 있습니다.",
+      },
+      totalUsd: 1.23,
+      unit: "USD",
+      services: [
+        { service: "AWS Lambda", amountUsd: 0.5, unit: "USD" },
+      ],
+      generatedAt: "2026-05-15T12:00:00.000Z",
+      source: "aws-cost-explorer",
+    });
+
+    const handler = await loadHandler();
+    const result = await handler(createEvent({
+      message: "이번달 AWS 비용 서비스별로 알려줘",
+    })) as LambdaAgentResponse;
+
+    expect(result.success).toBe(true);
+    expect(result.payloads?.[0]?.text).toContain("AWS Cost Explorer 기준");
+    expect(result.payloads?.[0]?.text).toContain("AWS Lambda");
+    expect(mockLookupAwsCost).toHaveBeenCalledWith(expect.objectContaining({
+      period: "month_to_date",
+      groupByService: true,
+    }));
+    expect(mockLoadRecentCost).not.toHaveBeenCalled();
+    expect(mockRunDirectBedrockChat).not.toHaveBeenCalled();
+    expect(mockRunAgent).not.toHaveBeenCalled();
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"event\":\"lambda.aws_cost.lookup_completed\""),
     );
   });
 

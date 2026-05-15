@@ -127,6 +127,8 @@ export class ComputeStack extends cdk.Stack {
           process.env.GMAIL_SUMMARY_FETCH_CONCURRENCY ?? "10",
         TOOL_DETERMINISTIC_PAYMENT_FAST_PATH:
           process.env.TOOL_DETERMINISTIC_PAYMENT_FAST_PATH ?? "false",
+        AWS_COST_LOOKUP_ENABLED: process.env.AWS_COST_LOOKUP_ENABLED ?? "false",
+        AWS_COST_EXPLORER_REGION: process.env.AWS_COST_EXPLORER_REGION ?? "us-east-1",
         AWS_REGION: this.region,
         // Pending queue retry tuning stays in env vars so operations can adjust
         // backoff/dead-letter behaviour without rebuilding the Fargate image.
@@ -176,6 +178,14 @@ export class ComputeStack extends cdk.Stack {
     this.taskRole.addToPrincipalPolicy(
       new iam.PolicyStatement({
         actions: ["cloudwatch:PutMetricData"],
+        resources: ["*"],
+      }),
+    );
+
+    // IAM — AWS Cost Explorer read-only lookup. IAM policies cost nothing.
+    this.taskRole.addToPrincipalPolicy(
+      new iam.PolicyStatement({
+        actions: ["ce:GetCostAndUsage"],
         resources: ["*"],
       }),
     );

@@ -71,6 +71,8 @@ export class LambdaAgentStack extends cdk.Stack {
           : {}),
         LAMBDA_DIRECT_CHAT_MAX_TOKENS: "320",
         LAMBDA_DIRECT_CHAT_EVERYDAY_MAX_TOKENS: "180",
+        AWS_COST_LOOKUP_ENABLED: process.env.AWS_COST_LOOKUP_ENABLED ?? "false",
+        AWS_COST_EXPLORER_REGION: process.env.AWS_COST_EXPLORER_REGION ?? "us-east-1",
         ...(resolvedAiModel ? { AI_MODEL: resolvedAiModel } : {}),
       },
     });
@@ -102,6 +104,14 @@ export class LambdaAgentStack extends cdk.Stack {
     this.agentFunction.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ["cloudwatch:PutMetricData"],
+        resources: ["*"],
+      }),
+    );
+
+    // IAM — AWS Cost Explorer read-only lookup. IAM policies cost nothing.
+    this.agentFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["ce:GetCostAndUsage"],
         resources: ["*"],
       }),
     );

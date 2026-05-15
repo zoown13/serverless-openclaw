@@ -20,7 +20,15 @@ import type {
   AssistantRuntimeContext,
   UpstreamCostEstimate,
 } from "@serverless-openclaw/shared";
-import { estimateCost, type CostEstimate } from "@serverless-openclaw/shared";
+import {
+  buildAwsCostLookupDisabledMessage,
+  buildAwsCostLookupFailureMessage,
+  buildAwsCostLookupMessage,
+  estimateCost,
+  parseAwsCostLookupRequest,
+  type CostEstimate,
+} from "@serverless-openclaw/shared";
+import { lookupAwsCostExplorer } from "./aws-cost-explorer.js";
 
 export interface BridgeDeps {
   authToken: string;
@@ -500,6 +508,19 @@ function buildRecentCostMessage(context: RecentCostContext | undefined): string 
   return parts.join("\n");
 }
 
+function isAwsCostLookupEnabled(
+  context: AssistantRuntimeContext | undefined,
+): boolean {
+  if (process.env.AWS_COST_LOOKUP_ENABLED === "true") {
+    return true;
+  }
+
+  return context?.capabilities.tools.registry
+    ?.some((capability) =>
+      capability.id === "aws_cost_lookup" &&
+      capability.status === "available") === true;
+}
+
 export function createApp(deps: BridgeDeps): express.Express {
   const app = express();
   let firstResponseSent = false;
@@ -556,6 +577,54 @@ export function createApp(deps: BridgeDeps): express.Express {
         hasActiveToolAffinity: body.assistantContext.toolAffinity?.active === true,
         gmailCapability: body.assistantContext.capabilities.gmail.status,
       });
+    }
+
+    const awsCostRequest = parseAwsCostLookupRequest(body.message ?? "");
+    if (awsCostRequest) {
+      let message: string;
+      if (!isAwsCostLookupEnabled(body.assistantContext)) {
+        message = buildAwsCostLookupDisabledMessage();
+        logBridgeEvent("bridge.aws_cost.lookup_disabled", logContext);
+      } else {
+        try {
+          logBridgeEvent("bridge.aws_cost.lookup_started", {
+            ...logContext,
+            period: awsCostRequest.period,
+            groupByService: awsCostRequest.groupByService,
+          });
+          const result = await lookupAwsCostExplorer(awsCostRequest);
+          message = buildAwsCostLookupMessage(result);
+          logBridgeEvent("bridge.aws_cost.lookup_completed", {
+            ...logContext,
+            period: result.request.period,
+            groupByService: result.request.groupByService,
+            totalUsd: result.totalUsd,
+            serviceCount: result.services.length,
+          });
+        } catch (err: unknown) {
+          message = buildAwsCostLookupFailureMessage(err);
+          logBridgeEvent("bridge.aws_cost.lookup_failed", {
+            ...logContext,
+            error: err instanceof Error ? err.message : String(err),
+          }, "error");
+        }
+      }
+
+      if (deliveryMode === "callback") {
+        await deps.callbackSender.send(body.connectionId!, {
+          type: "stream_chunk",
+          content: message,
+          conversationId: undefined,
+        });
+        await deps.callbackSender.send(body.connectionId!, {
+          type: "stream_end",
+        });
+      }
+
+      return {
+        message,
+        source: "aws-cost-explorer",
+      };
     }
 
     if (isCostLookupRequest(body.message)) {

@@ -4,8 +4,12 @@ import type {
   ServerMessage,
 } from "./types.js";
 import {
+  buildAwsCostLookupDisabledMessage,
+  buildAwsCostLookupFailureMessage,
+  buildAwsCostLookupMessage,
   buildRuntimeSessionId,
   estimateCost,
+  parseAwsCostLookupRequest,
   resolveProviderConfig,
   type CostEstimate,
   type ResolvedRuntimeConfig,
@@ -21,6 +25,7 @@ import { runDirectBedrockChat } from "./direct-bedrock-chat.js";
 import { publishLambdaDeliveryMetric } from "./metrics.js";
 import { RecentImageContextStore } from "./recent-image-context.js";
 import { RecentCostContextStore, type RecentCostContext } from "./recent-cost-context.js";
+import { lookupAwsCostExplorer } from "./aws-cost-explorer.js";
 import {
   ApiGatewayManagementApiClient,
   PostToConnectionCommand,
@@ -534,6 +539,17 @@ function buildRecentCostMessage(context: RecentCostContext | undefined): string 
   return parts.join("\n");
 }
 
+function isAwsCostLookupEnabled(event: LambdaAgentEvent): boolean {
+  if (process.env.AWS_COST_LOOKUP_ENABLED === "true") {
+    return true;
+  }
+
+  return event.assistantContext?.capabilities.tools.registry
+    ?.some((capability) =>
+      capability.id === "aws_cost_lookup" &&
+      capability.status === "available") === true;
+}
+
 function resolveDirectChatModel(
   event: LambdaAgentEvent,
   runtimeConfig: ResolvedRuntimeConfig,
@@ -644,10 +660,14 @@ function hasDelegatedToolRuntime(event: LambdaAgentEvent): boolean {
 
 function buildDelegatedToolRuntimeMessage(event: LambdaAgentEvent): string {
   const provider = event.assistantContext?.runtime.toolRuntimeProvider ?? "tool runtime";
-  const availableCapabilities = event.assistantContext?.capabilities.tools.registry
+  let availableCapabilities = event.assistantContext?.capabilities.tools.registry
     ?.filter((capability) => capability.status === "available")
     .map((capability) => capability.displayName)
     .join(", ");
+  if (!availableCapabilities &&
+    event.assistantContext?.capabilities.gmail.status === "available_via_tool_runtime") {
+    availableCapabilities = "지메일 결제 이력, Gmail search/payment tools";
+  }
   if (event.channel === "telegram") {
     return `이 요청은 ${provider} 도구 런타임에서 처리해야 합니다. 현재 사용 가능한 도구는 ${availableCapabilities || "delegated tool runtime capabilities"}입니다. 다만 현재 턴은 빠른 Lambda 채팅 경로로 들어와 실제 조회를 바로 실행하지 않았습니다. 이 misroute는 관측 로그에 남겨 라우팅 개선 대상으로 추적합니다.`;
   }
@@ -902,6 +922,59 @@ export async function handler(
   } else if (isTelegram && telegramBotTokenPath) {
     const secrets = await resolveSecrets([telegramBotTokenPath]);
     telegramBotToken = secrets.get(telegramBotTokenPath);
+  }
+
+  const awsCostRequest = parseAwsCostLookupRequest(event.message);
+  if (awsCostRequest) {
+    let message: string;
+    if (!isAwsCostLookupEnabled(event)) {
+      message = buildAwsCostLookupDisabledMessage();
+      logLambdaEvent("lambda.aws_cost.lookup_disabled", requestLogPayload);
+    } else {
+      try {
+        logLambdaEvent("lambda.aws_cost.lookup_started", {
+          ...requestLogPayload,
+          period: awsCostRequest.period,
+          groupByService: awsCostRequest.groupByService,
+        });
+        const result = await lookupAwsCostExplorer(awsCostRequest);
+        message = buildAwsCostLookupMessage(result);
+        logLambdaEvent("lambda.aws_cost.lookup_completed", {
+          ...requestLogPayload,
+          period: result.request.period,
+          groupByService: result.request.groupByService,
+          totalUsd: result.totalUsd,
+          serviceCount: result.services.length,
+        });
+      } catch (err: unknown) {
+        message = buildAwsCostLookupFailureMessage(err);
+        logLambdaEvent("lambda.aws_cost.lookup_failed", {
+          ...requestLogPayload,
+          error: err instanceof Error ? err.message : String(err),
+        }, "error");
+      }
+    }
+
+    const payloads = [{ text: message }];
+    await pushPayloads(payloads, {
+      canPush,
+      callbackUrl: event.callbackUrl,
+      connectionId: event.connectionId,
+      isTelegram,
+      telegramBotToken,
+      telegramChatId,
+      traceId,
+      channel: event.channel,
+    });
+    await pushIdleStatus(canPush, traceId, event.callbackUrl, event.connectionId);
+    await lock.release();
+
+    return {
+      success: true,
+      payloads,
+      durationMs: Date.now() - startTime,
+      provider: runtimeConfig.openclawProvider,
+    };
   }
 
   if (isCostLookupRequest(event.message)) {

@@ -7,7 +7,7 @@ param(
   [long]$ChatId,
   [long]$TelegramId,
   [string]$UserId,
-  [ValidateSet("PaymentFollowUp", "PaymentCoverageFollowUp", "PaymentCoverageThenIssuerBreakdown", "PaymentExpandedFirstTurn", "PaymentDeepScanFirstTurn", "PaymentHistoryCapability", "PaymentCapabilityThenChatHandoff", "PaymentThenEverydayChatHandoff", "PaymentThenCostLookup", "ChatThenCostLookup", "RepeatedPaymentCacheHit", "PaymentDateRange", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff", "PlannerSemanticHandoff", "GenericPaymentThenTravelRefinement")]
+  [ValidateSet("PaymentFollowUp", "PaymentCoverageFollowUp", "PaymentCoverageThenIssuerBreakdown", "PaymentExpandedFirstTurn", "PaymentDeepScanFirstTurn", "PaymentHistoryCapability", "PaymentCapabilityThenChatHandoff", "PaymentThenEverydayChatHandoff", "PaymentThenCostLookup", "ChatThenCostLookup", "AwsCostLookup", "RepeatedPaymentCacheHit", "PaymentDateRange", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff", "PlannerSemanticHandoff", "GenericPaymentThenTravelRefinement")]
   [string]$Scenario = "PaymentFollowUp",
   [int]$PauseSeconds = 10,
   [int]$BridgeSignalTimeoutSeconds = 180,
@@ -257,6 +257,11 @@ function Get-ScenarioMessages {
       return @(
         "리눅스에서 파일 찾는 명령어 알려줘",
         "/cost"
+      )
+    }
+    "AwsCostLookup" {
+      return @(
+        "이번달 AWS 비용 서비스별로 알려줘"
       )
     }
     "RepeatedPaymentCacheHit" {
@@ -512,6 +517,15 @@ function Wait-BridgeSignals {
   $requiresTravelResponseQuality = $requiresTravelSignals
   $requiresChatHandoff = $SelectedScenario -in @("TravelPaymentThenChatHandoff", "PlannerSemanticHandoff", "PaymentCapabilityThenChatHandoff", "PaymentThenEverydayChatHandoff")
   $requiresFindCommandHandoff = $SelectedScenario -in @("TravelPaymentThenChatHandoff", "PaymentCapabilityThenChatHandoff")
+  $requiresAwsCostLookupSignals = $SelectedScenario -eq "AwsCostLookup"
+
+  if ($requiresAwsCostLookupSignals) {
+    $requiredSignals = @(
+      "bridge.aws_cost.lookup_completed",
+      "telegram.delivery.content_quality"
+    )
+    $requiredSignalGroups = @()
+  }
 
   if ($requiresPaymentCapabilitySignals) {
     $requiredSignalGroups = @()

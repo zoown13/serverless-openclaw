@@ -17,6 +17,7 @@ COPY packages/lambda-agent/src/ packages/lambda-agent/src/
 RUN npm pkg delete scripts.prepare && \
     npm ci
 RUN npm run build --workspace=packages/shared --workspace=packages/lambda-agent
+RUN npm prune --omit=dev
 
 # Stage 2: Lambda runtime
 FROM --platform=linux/arm64 public.ecr.aws/lambda/nodejs:22
@@ -31,17 +32,18 @@ RUN cd ${LAMBDA_TASK_ROOT} && \
     npm install openclaw@${OPENCLAW_VERSION} && \
     npm cache clean --force
 
+# Copy production dependency set from the builder. This keeps AWS SDK and
+# transitive @smithy dependencies version-consistent in the Lambda image.
+COPY --from=builder /build/node_modules/ ${LAMBDA_TASK_ROOT}/node_modules/
+
 # Copy lambda-agent compiled output
 COPY --from=builder /build/packages/lambda-agent/dist/ ${LAMBDA_TASK_ROOT}/dist/
 
-# Copy shared package into node_modules (lambda-agent depends on it)
+# Copy shared package into node_modules (lambda-agent depends on it). This
+# intentionally runs after copying node_modules so workspace symlinks are
+# replaced by the compiled package files.
 COPY --from=builder /build/packages/shared/dist/ ${LAMBDA_TASK_ROOT}/node_modules/@serverless-openclaw/shared/dist/
 COPY --from=builder /build/packages/shared/package.json ${LAMBDA_TASK_ROOT}/node_modules/@serverless-openclaw/shared/
-
-# Copy AWS SDK dependencies from builder (Lambda runtime provides @aws-sdk/*,
-# but we need @aws-sdk/lib-dynamodb which wraps the base client)
-COPY --from=builder /build/node_modules/@aws-sdk/lib-dynamodb/ ${LAMBDA_TASK_ROOT}/node_modules/@aws-sdk/lib-dynamodb/
-COPY --from=builder /build/node_modules/@aws-sdk/client-bedrock-runtime/ ${LAMBDA_TASK_ROOT}/node_modules/@aws-sdk/client-bedrock-runtime/
 
 # Set HOME to /tmp so OpenClaw config/sessions go to writable directory
 ENV HOME=/tmp

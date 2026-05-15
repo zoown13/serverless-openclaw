@@ -145,7 +145,7 @@ export type RouteResult =
 const TOOL_AFFINITY_TTL_MS = 30 * 60 * 1000;
 const TOOL_AFFINITY_CANCEL_PATTERN = /^(?:취소|그만|끝|됐어|done|cancel|stop)$/i;
 const TOOL_AFFINITY_EXPLICIT_CHAT_HANDOFF_PATTERN =
-  /^(?:다른\s*질문(?:인데|으로)?|별개로|그건\s*(?:됐고|그만|괜찮고|말고)|그거\s*말고|이제\s*(?:일반|다른)\s*(?:질문|대화|답변)?|일반\s*(?:질문|대화|답변)(?:으로)?|툴\s*말고|도구\s*말고|지메일\s*말고|gmail\s*말고|메일\s*말고|결제\s*말고)/i;
+  /^(?:다른\s*질문(?:인데|으로)?|별개로|그건\s*(?:됐고|그만|괜찮고|말고)|그거\s*말고|이건\s*일반\s*(?:질문|대화|답변)(?:으로)?|이제\s*(?:일반|다른)\s*(?:질문|대화|답변)?|일반\s*(?:질문|대화|답변)(?:으로)?|툴\s*말고|도구\s*말고|지메일\s*말고|gmail\s*말고|메일\s*말고|결제\s*말고)/i;
 const TOOL_AFFINITY_OBVIOUS_TOPIC_SWITCH_PATTERN =
   /^(?:안녕|안녕하세요|hello|hi|hey|고마워|감사|thanks?|thank you|잘가|bye|다른\s*질문|별개로|그건\s*(?:됐고|그만|말고)|그거\s*말고|일반\s*(?:질문|대화|답변)|날씨|weather|번역|translate|농담|joke)(?:$|[!?.,\s])/i;
 const TOOL_AFFINITY_CONTEXTUAL_FOLLOW_UP_PATTERN =
@@ -1025,53 +1025,51 @@ async function maybeHandleToolRuntimeAffinity(
   const affinityProvider = affinity.fallbackProvider ??
     affinity.provider ??
     resolveToolRuntimeProvider(deps);
-  if (
-    shouldDelegateToolAffinityDecisionToRuntime(deps, affinity) ||
-    shouldKeepToolAffinity(deps.message)
-  ) {
-    await deps.putRoutingContext(
-      deps.userId,
-      buildToolRuntimeAffinityState(
-        deps,
-        affinity.createdAt,
-        affinityProvider,
-        affinity.fallbackProvider,
-        affinity.providerLockedAt,
-        affinity.providerLockReason,
-      ),
-    );
-    logRouteEvent("route.affinity.reused", {
+  if (!shouldKeepToolAffinity(deps.message)) {
+    await deps.deleteRoutingContext(deps.userId, deps.channel);
+    logRouteEvent("route.affinity.cleared", {
       traceId: deps.traceId,
       channel: deps.channel,
       runtimeClass: affinity.runtimeClass,
-      provider: affinityProvider,
-      delegatedSemanticDecision: shouldDelegateToolAffinityDecisionToRuntime(
-        deps,
-        affinity,
-      ),
+      reason: "topic_switched",
     });
-    logRouteEvent("gateway.harness.session.reused", {
-      traceId: deps.traceId,
-      channel: deps.channel,
-      runtimeClass: affinity.runtimeClass,
-      provider: affinityProvider,
-    });
-    return {
-      handled: false,
-      replayMessage: deps.message,
-      replayRuntimeClass: affinity.runtimeClass,
-      replayProvider: affinityProvider,
-    };
+    return { handled: false };
   }
 
-  await deps.deleteRoutingContext(deps.userId, deps.channel);
-  logRouteEvent("route.affinity.cleared", {
+  const delegatedSemanticDecision = shouldDelegateToolAffinityDecisionToRuntime(
+    deps,
+    affinity,
+  );
+  await deps.putRoutingContext(
+    deps.userId,
+    buildToolRuntimeAffinityState(
+      deps,
+      affinity.createdAt,
+      affinityProvider,
+      affinity.fallbackProvider,
+      affinity.providerLockedAt,
+      affinity.providerLockReason,
+    ),
+  );
+  logRouteEvent("route.affinity.reused", {
     traceId: deps.traceId,
     channel: deps.channel,
     runtimeClass: affinity.runtimeClass,
-    reason: "topic_switched",
+    provider: affinityProvider,
+    delegatedSemanticDecision,
   });
-  return { handled: false };
+  logRouteEvent("gateway.harness.session.reused", {
+    traceId: deps.traceId,
+    channel: deps.channel,
+    runtimeClass: affinity.runtimeClass,
+    provider: affinityProvider,
+  });
+  return {
+    handled: false,
+    replayMessage: deps.message,
+    replayRuntimeClass: affinity.runtimeClass,
+    replayProvider: affinityProvider,
+  };
 }
 
 export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {

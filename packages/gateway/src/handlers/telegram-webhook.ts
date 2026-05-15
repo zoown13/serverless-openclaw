@@ -19,7 +19,9 @@ import { resolveSecrets } from "../services/secrets.js";
 import { invokeLambdaAgent } from "../services/lambda-agent.js";
 import { invokeAgentCoreRuntime } from "../services/agentcore.js";
 
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
+  marshallOptions: { removeUndefinedValues: true },
+});
 const ecs = new ECSClient({});
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const dynamoSend = ddb.send.bind(ddb) as (cmd: any) => Promise<any>;

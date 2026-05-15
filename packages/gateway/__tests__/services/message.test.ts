@@ -381,15 +381,9 @@ describe("message service", () => {
       );
     });
 
-    it("should delegate independent general how-to handoff to active AgentCore context", async () => {
+    it("should clear independent general how-to handoff without asking AgentCore", async () => {
       const mockInvokeLambda = vi.fn().mockResolvedValue({ accepted: true });
-      const mockInvokeAgentCore = vi.fn().mockResolvedValue({
-        accepted: true,
-        source: "chat-handoff",
-        handoffRuntimeClass: "chat-only",
-        handoffMessage: "리눅스에서 파일 찾는 명령어 알려줘",
-        clearToolAffinity: true,
-      });
+      const mockInvokeAgentCore = vi.fn();
       const deps = makeDeps({
         message: "리눅스에서 파일 찾는 명령어 알려줘",
         agentRuntime: "both",
@@ -414,12 +408,7 @@ describe("message service", () => {
       const result = await routeMessage(deps);
 
       expect(result).toBe("lambda");
-      expect(mockInvokeAgentCore).toHaveBeenCalledWith(
-        expect.objectContaining({
-          message: "리눅스에서 파일 찾는 명령어 알려줘",
-          runtimeClass: "tool-enabled",
-        }),
-      );
+      expect(mockInvokeAgentCore).not.toHaveBeenCalled();
       expect(deps.deleteRoutingContext).toHaveBeenCalledWith("user-123", "web");
       expect(mockInvokeLambda).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -429,15 +418,9 @@ describe("message service", () => {
       );
     });
 
-    it("should delegate everyday standalone chat handoff to active AgentCore context", async () => {
+    it("should clear everyday standalone chat handoff without asking AgentCore", async () => {
       const mockInvokeLambda = vi.fn().mockResolvedValue({ accepted: true });
-      const mockInvokeAgentCore = vi.fn().mockResolvedValue({
-        accepted: true,
-        source: "chat-handoff",
-        handoffRuntimeClass: "chat-only",
-        handoffMessage: "저녁 메뉴 추천해줘",
-        clearToolAffinity: true,
-      });
+      const mockInvokeAgentCore = vi.fn();
       const deps = makeDeps({
         message: "저녁 메뉴 추천해줘",
         agentRuntime: "both",
@@ -462,12 +445,7 @@ describe("message service", () => {
       const result = await routeMessage(deps);
 
       expect(result).toBe("lambda");
-      expect(mockInvokeAgentCore).toHaveBeenCalledWith(
-        expect.objectContaining({
-          message: "저녁 메뉴 추천해줘",
-          runtimeClass: "tool-enabled",
-        }),
-      );
+      expect(mockInvokeAgentCore).not.toHaveBeenCalled();
       expect(deps.deleteRoutingContext).toHaveBeenCalledWith("user-123", "web");
       expect(mockInvokeLambda).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -477,15 +455,9 @@ describe("message service", () => {
       );
     });
 
-    it("should delegate explicit chat-topic switches to active AgentCore context", async () => {
+    it("should clear explicit chat-topic switches without asking AgentCore", async () => {
       const mockInvokeLambda = vi.fn().mockResolvedValue({ accepted: true });
-      const mockInvokeAgentCore = vi.fn().mockResolvedValue({
-        accepted: true,
-        source: "chat-handoff",
-        handoffRuntimeClass: "chat-only",
-        handoffMessage: "그거 말고 일반 질문으로 커피 원두 추천해줘",
-        clearToolAffinity: true,
-      });
+      const mockInvokeAgentCore = vi.fn();
       const deps = makeDeps({
         message: "그거 말고 일반 질문으로 커피 원두 추천해줘",
         agentRuntime: "both",
@@ -510,12 +482,7 @@ describe("message service", () => {
       const result = await routeMessage(deps);
 
       expect(result).toBe("lambda");
-      expect(mockInvokeAgentCore).toHaveBeenCalledWith(
-        expect.objectContaining({
-          message: "그거 말고 일반 질문으로 커피 원두 추천해줘",
-          runtimeClass: "tool-enabled",
-        }),
-      );
+      expect(mockInvokeAgentCore).not.toHaveBeenCalled();
       expect(deps.deleteRoutingContext).toHaveBeenCalledWith("user-123", "web");
       expect(mockInvokeLambda).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1087,15 +1054,9 @@ describe("message service", () => {
       expect(mockInvokeAgentCore).not.toHaveBeenCalled();
     });
 
-    it("should clear tool affinity and hand active AgentCore sessions back to Lambda chat", async () => {
+    it("should clear standalone chat requests and hand active AgentCore sessions back to Lambda chat", async () => {
       const mockInvokeLambda = vi.fn().mockResolvedValue({ accepted: true });
-      const mockInvokeAgentCore = vi.fn().mockResolvedValue({
-        accepted: true,
-        source: "chat-handoff",
-        handoffRuntimeClass: "chat-only",
-        handoffMessage: "이건 일반 답변으로 처리해",
-        clearToolAffinity: true,
-      });
+      const mockInvokeAgentCore = vi.fn();
       const deps = makeDeps({
         agentRuntime: "both",
         toolRuntimeProvider: "agentcore",
@@ -1121,13 +1082,7 @@ describe("message service", () => {
       const result = await routeMessage(deps);
 
       expect(result).toBe("lambda");
-      expect(mockInvokeAgentCore).toHaveBeenCalledWith(
-        expect.objectContaining({
-          message: "이건 일반 답변으로 처리해",
-          runtimeClass: "tool-enabled",
-          callbackUrl: "",
-        }),
-      );
+      expect(mockInvokeAgentCore).not.toHaveBeenCalled();
       expect(deps.deleteRoutingContext).toHaveBeenCalledWith("user-123", "web");
       expect(mockInvokeLambda).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1138,7 +1093,7 @@ describe("message service", () => {
       );
       expect(deps.sendClarification).not.toHaveBeenCalled();
       expect(infoSpy).toHaveBeenCalledWith(
-        expect.stringContaining("\"event\":\"agentcore.invoke.handoff\""),
+        expect.stringContaining("\"event\":\"route.affinity.cleared\""),
       );
     });
 

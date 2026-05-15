@@ -3,7 +3,9 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { deleteConnection } from "../services/connections.js";
 
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
+  marshallOptions: { removeUndefinedValues: true },
+});
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const dynamoSend = ddb.send.bind(ddb) as (cmd: any) => Promise<any>;
 

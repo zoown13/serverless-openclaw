@@ -19,7 +19,9 @@ import {
 } from "@serverless-openclaw/shared";
 import type { TaskStateItem } from "@serverless-openclaw/shared";
 
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
+  marshallOptions: { removeUndefinedValues: true },
+});
 const ecs = new ECSClient({});
 const cloudwatch = new CloudWatchClient({});
 

@@ -5,7 +5,9 @@ import { getConversations } from "../services/conversations.js";
 import { getTaskState } from "../services/task-state.js";
 import { generateOtp, getLinkStatus, unlinkTelegram } from "../services/identity.js";
 
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
+  marshallOptions: { removeUndefinedValues: true },
+});
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const dynamoSend = ddb.send.bind(ddb) as (cmd: any) => Promise<any>;
 

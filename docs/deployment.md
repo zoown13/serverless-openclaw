@@ -287,7 +287,7 @@ Set in `.env` or exported before running CDK commands.
 
 | Variable | Default | Values | Purpose |
 |----------|---------|--------|---------|
-| `AGENT_RUNTIME` | `fargate` | `fargate` \| `lambda` \| `both` | Compute path selection |
+| `AGENT_RUNTIME` | `both` | `fargate` \| `lambda` \| `both` | Compute path selection |
 | `AI_PROVIDER` | `anthropic` | `anthropic` \| `bedrock` | AI provider selection |
 | `AI_MODEL` | _(provider default)_ | any model ID | Override default model |
 | `DEPLOY_WEB` | `true` | `true` \| `false` | Include WebStack deployment |

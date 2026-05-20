@@ -43,6 +43,11 @@ interface TelegramUpdate {
   };
 }
 
+interface TelegramDeliveryRequest {
+  connectionId?: string;
+  text?: string;
+}
+
 type TelegramPhotoSize = NonNullable<NonNullable<TelegramUpdate["message"]>["photo"]>[number];
 
 const TELEGRAM_UNSUPPORTED_MEDIA_MESSAGE =
@@ -119,6 +124,25 @@ function resolveTelegramImageMediaType(filePath: string): LambdaAgentImageInput[
   return "image/jpeg";
 }
 
+function timingSafeTokenEqual(actual: string | undefined, expected: string): boolean {
+  return Boolean(
+    actual &&
+    expected &&
+    actual.length === expected.length &&
+    timingSafeEqual(Buffer.from(actual), Buffer.from(expected)),
+  );
+}
+
+function getBearerToken(headers: Record<string, string | undefined>): string | undefined {
+  const authorization = headers.authorization ?? headers.Authorization;
+  const match = authorization?.match(/^Bearer\s+(.+)$/i);
+  return match?.[1] ?? headers["x-bridge-auth-token"] ?? headers["X-Bridge-Auth-Token"];
+}
+
+function isTelegramDeliveryRoute(event: { rawPath?: string; routeKey?: string }): boolean {
+  return event.rawPath === "/telegram/deliver" || event.routeKey === "POST /telegram/deliver";
+}
+
 async function buildTelegramImageInput(
   botToken: string,
   message: NonNullable<TelegramUpdate["message"]>,
@@ -177,6 +201,8 @@ async function buildTelegramImageInput(
 export async function handler(event: {
   headers: Record<string, string | undefined>;
   body?: string;
+  rawPath?: string;
+  routeKey?: string;
 }, context?: Pick<Context, "awsRequestId">): Promise<APIGatewayProxyResultV2> {
   const requestStartedAtMs = Date.now();
   const secrets = await resolveSecrets([
@@ -185,15 +211,45 @@ export async function handler(event: {
     process.env.SSM_TELEGRAM_SECRET_TOKEN!,
   ]);
 
+  if (isTelegramDeliveryRoute(event)) {
+    const bridgeAuthToken = secrets.get(process.env.SSM_BRIDGE_AUTH_TOKEN!) ?? "";
+    if (!timingSafeTokenEqual(getBearerToken(event.headers), bridgeAuthToken)) {
+      console.warn("[telegram] delivery relay auth failed");
+      return { statusCode: 403, body: JSON.stringify({ error: "Forbidden" }) };
+    }
+
+    if (!event.body) {
+      return { statusCode: 400, body: JSON.stringify({ error: "Missing body" }) };
+    }
+
+    let delivery: TelegramDeliveryRequest;
+    try {
+      delivery = JSON.parse(event.body) as TelegramDeliveryRequest;
+    } catch {
+      return { statusCode: 400, body: JSON.stringify({ error: "Invalid JSON" }) };
+    }
+
+    if (!delivery.connectionId?.startsWith("telegram:") || !delivery.text) {
+      return { statusCode: 400, body: JSON.stringify({ error: "Invalid delivery request" }) };
+    }
+
+    const botToken = secrets.get(process.env.SSM_TELEGRAM_BOT_TOKEN!) ?? "";
+    if (!botToken) {
+      return { statusCode: 503, body: JSON.stringify({ error: "Telegram bot token unavailable" }) };
+    }
+
+    await sendTelegramMessage(fetch as never, botToken, delivery.connectionId, delivery.text);
+    console.log("[telegram] delivery relay sent", {
+      connectionId: delivery.connectionId,
+      textLength: delivery.text.length,
+    });
+    return { statusCode: 200, body: JSON.stringify({ ok: true }) };
+  }
+
   const secretToken = event.headers["x-telegram-bot-api-secret-token"];
   const expectedToken = secrets.get(process.env.SSM_TELEGRAM_SECRET_TOKEN!) ?? "";
 
-  const tokenMatch =
-    secretToken &&
-    expectedToken &&
-    secretToken.length === expectedToken.length &&
-    timingSafeEqual(Buffer.from(secretToken), Buffer.from(expectedToken));
-  if (!tokenMatch) {
+  if (!timingSafeTokenEqual(secretToken, expectedToken)) {
     console.warn("[telegram] auth failed: secret token mismatch");
     return { statusCode: 403, body: JSON.stringify({ error: "Forbidden" }) };
   }
@@ -362,6 +418,9 @@ export async function handler(event: {
     { name: "USER_ID", value: userId },
     { name: "CALLBACK_URL", value: process.env.WEBSOCKET_CALLBACK_URL ?? "" },
   ];
+  if (process.env.TELEGRAM_DELIVERY_URL) {
+    taskEnv.push({ name: "TELEGRAM_DELIVERY_URL", value: process.env.TELEGRAM_DELIVERY_URL });
+  }
   if (userId !== rawUserId) {
     // Linked user: container needs to know the telegram chat ID for notifications
     taskEnv.push({ name: "TELEGRAM_CHAT_ID", value: String(chatId) });

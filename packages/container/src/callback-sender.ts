@@ -3,8 +3,13 @@ import {
   PostToConnectionCommand,
 } from "@aws-sdk/client-apigatewaymanagementapi";
 import type { ServerMessage } from "@serverless-openclaw/shared";
+import { setDefaultResultOrder } from "node:dns";
 
 const TELEGRAM_MAX_LENGTH = 4096;
+const TELEGRAM_SEND_ATTEMPTS = 3;
+const TELEGRAM_SEND_TIMEOUT_MS = 15_000;
+
+setDefaultResultOrder("ipv4first");
 
 interface TelegramContentQuality {
   textLength: number;
@@ -82,14 +87,27 @@ export function logTelegramContentQuality(text: string): void {
   );
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export class CallbackSender {
   private client: ApiGatewayManagementApiClient;
   private telegramBotToken?: string;
+  private bridgeAuthToken?: string;
+  private telegramDeliveryUrl?: string;
   private telegramBuffers = new Map<string, string[]>();
 
-  constructor(endpoint: string, telegramBotToken?: string) {
+  constructor(
+    endpoint: string,
+    telegramBotToken?: string,
+    bridgeAuthToken?: string,
+    telegramDeliveryUrl?: string,
+  ) {
     this.client = new ApiGatewayManagementApiClient({ endpoint });
     this.telegramBotToken = telegramBotToken;
+    this.bridgeAuthToken = bridgeAuthToken;
+    this.telegramDeliveryUrl = telegramDeliveryUrl;
   }
 
   async send(connectionId: string, data: ServerMessage): Promise<void> {
@@ -117,7 +135,7 @@ export class CallbackSender {
     connectionId: string,
     data: ServerMessage,
   ): Promise<void> {
-    if (!this.telegramBotToken) return;
+    if (!this.telegramBotToken && !this.canUseTelegramRelay()) return;
 
     if (data.type === "stream_chunk" && data.content) {
       const buffer = this.telegramBuffers.get(connectionId) ?? [];
@@ -152,35 +170,95 @@ export class CallbackSender {
     logTelegramContentQuality(plain);
     for (let i = 0; i < plain.length; i += TELEGRAM_MAX_LENGTH) {
       const chunk = plain.slice(i, i + TELEGRAM_MAX_LENGTH);
-      try {
-        const resp = await fetch(
-          `https://api.telegram.org/bot${this.telegramBotToken}/sendMessage`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ chat_id: chatId, text: chunk }),
-          },
-        );
-        if (!resp.ok) {
-          const body = await resp.text().catch(() => "");
-          console.error(
-            `[callback] Telegram API error ${resp.status} for ${connectionId}`,
-          );
-          throw new Error(
-            body
-              ? `Telegram delivery failed (${resp.status}): ${body}`
-              : `Telegram delivery failed with status ${resp.status}`,
-          );
-        }
-      } catch (error) {
-        if (!(error instanceof Error) || !error.message.startsWith("Telegram delivery failed")) {
-          console.error(
-            `[callback] Failed to send Telegram message for ${connectionId}`,
-            error,
-          );
-        }
-        throw error;
+      if (this.canUseTelegramRelay()) {
+        await this.sendTelegramMessageViaRelay(connectionId, chunk);
+        continue;
       }
+
+      if (!this.telegramBotToken) {
+        console.warn("[callback] Telegram delivery unavailable; no relay or bot token configured");
+        return;
+      }
+
+      let lastError: Error | undefined;
+      for (let attempt = 1; attempt <= TELEGRAM_SEND_ATTEMPTS; attempt += 1) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), TELEGRAM_SEND_TIMEOUT_MS);
+        try {
+          const resp = await fetch(
+            `https://api.telegram.org/bot${this.telegramBotToken}/sendMessage`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ chat_id: chatId, text: chunk }),
+              signal: controller.signal,
+            },
+          );
+          if (!resp.ok) {
+            const body = await resp.text().catch(() => "");
+            console.error(
+              `[callback] Telegram API error ${resp.status} for ${connectionId}`,
+            );
+            throw new Error(
+              body
+                ? `Telegram delivery failed (${resp.status}): ${body}`
+                : `Telegram delivery failed with status ${resp.status}`,
+            );
+          }
+          lastError = undefined;
+          break;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          lastError = new Error(
+            `Telegram delivery network failed after ${attempt}/${TELEGRAM_SEND_ATTEMPTS} attempt(s): ${message}`,
+          );
+          if (message.startsWith("Telegram delivery failed")) {
+            throw lastError;
+          }
+          if (attempt < TELEGRAM_SEND_ATTEMPTS) {
+            console.warn(
+              `[callback] Telegram delivery attempt ${attempt}/${TELEGRAM_SEND_ATTEMPTS} failed for ${connectionId}: ${message}`,
+            );
+            await sleep(750 * attempt);
+            continue;
+          }
+        } finally {
+          clearTimeout(timeout);
+        }
+      }
+      if (lastError) {
+        console.error(
+          `[callback] Failed to send Telegram message for ${connectionId}: ${lastError.message}`,
+        );
+        throw lastError;
+      }
+    }
+  }
+
+  private canUseTelegramRelay(): boolean {
+    return Boolean(this.telegramDeliveryUrl && this.bridgeAuthToken);
+  }
+
+  private async sendTelegramMessageViaRelay(
+    connectionId: string,
+    text: string,
+  ): Promise<void> {
+    const response = await fetch(this.telegramDeliveryUrl!, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${this.bridgeAuthToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ connectionId, text }),
+    });
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      throw new Error(
+        body
+          ? `Telegram delivery relay failed (${response.status}): ${body.slice(0, 200)}`
+          : `Telegram delivery relay failed with status ${response.status}`,
+      );
     }
   }
 }

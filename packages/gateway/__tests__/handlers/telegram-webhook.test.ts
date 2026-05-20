@@ -83,6 +83,18 @@ function makeEvent(body: Record<string, unknown>, secretToken?: string): APIGate
   } as unknown as APIGatewayProxyEventV2;
 }
 
+function makeDeliveryEvent(
+  body: Record<string, unknown>,
+  token = "bridge-token",
+): APIGatewayProxyEventV2 {
+  return {
+    rawPath: "/telegram/deliver",
+    routeKey: "POST /telegram/deliver",
+    headers: { authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  } as unknown as APIGatewayProxyEventV2;
+}
+
 describe("telegram-webhook handler", () => {
   let logSpy: ReturnType<typeof vi.spyOn>;
 
@@ -127,6 +139,37 @@ describe("telegram-webhook handler", () => {
     const result = await handler(event);
 
     expect(result.statusCode).toBe(403);
+  });
+
+  it("should deliver Telegram relay messages with bridge auth", async () => {
+    const event = makeDeliveryEvent({
+      connectionId: "telegram:12345",
+      text: "relay hello",
+    });
+
+    const result = await handler(event);
+
+    expect(result.statusCode).toBe(200);
+    expect(mockSendTelegramMessage).toHaveBeenCalledWith(
+      expect.anything(),
+      "123456:ABC-DEF",
+      "telegram:12345",
+      "relay hello",
+    );
+    expect(mockRouteMessage).not.toHaveBeenCalled();
+  });
+
+  it("should reject Telegram relay messages without bridge auth", async () => {
+    const event = makeDeliveryEvent({
+      connectionId: "telegram:12345",
+      text: "relay hello",
+    }, "wrong-token");
+
+    const result = await handler(event);
+
+    expect(result.statusCode).toBe(403);
+    expect(mockSendTelegramMessage).not.toHaveBeenCalled();
+    expect(mockRouteMessage).not.toHaveBeenCalled();
   });
 
   it("should route message with valid secret token", async () => {

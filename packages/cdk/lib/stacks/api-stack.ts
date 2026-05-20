@@ -395,11 +395,25 @@ export class ApiStack extends cdk.Stack {
       },
     });
 
+    telegramWebhookFn.addEnvironment(
+      "TELEGRAM_DELIVERY_URL",
+      `${this.httpApi.apiEndpoint}/telegram/deliver`,
+    );
+
     // POST /telegram — no authorizer (Telegram secret token verified in Lambda)
     this.httpApi.addRoutes({
       path: "/telegram",
       methods: [HttpMethod.POST],
       integration: new HttpLambdaIntegration("TelegramInteg", telegramWebhookFn),
+    });
+
+    // POST /telegram/deliver — no authorizer; Bridge auth token verified in Lambda.
+    // Used by Fargate fallback workers so they do not need NAT/ALB/PrivateLink
+    // just to deliver Telegram responses.
+    this.httpApi.addRoutes({
+      path: "/telegram/deliver",
+      methods: [HttpMethod.POST],
+      integration: new HttpLambdaIntegration("TelegramDeliverInteg", telegramWebhookFn),
     });
 
     // GET /conversations — Cognito JWT

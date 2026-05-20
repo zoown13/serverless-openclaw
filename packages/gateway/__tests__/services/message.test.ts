@@ -1,17 +1,36 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { routeMessage, savePendingMessage, sendToBridge } from "../../src/services/message.js";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import {
+  routeMessage,
+  savePendingMessage,
+  sendToBridge,
+} from "../../src/services/message.js";
+
+const publishGatewayCountMetricMock = vi.fn().mockResolvedValue(undefined);
 
 vi.mock("@aws-sdk/lib-dynamodb", () => ({
   PutCommand: vi.fn((params: unknown) => ({ input: params, _tag: "PutCommand" })),
 }));
 
+vi.mock("../../src/services/metrics.js", () => ({
+  publishGatewayCountMetric: (...args: unknown[]) => publishGatewayCountMetricMock(...args),
+}));
+
 describe("message service", () => {
   const mockDynamoSend = vi.fn();
   const mockFetch = vi.fn();
+  let infoSpy: ReturnType<typeof vi.spyOn>;
+  let warnSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     vi.clearAllMocks();
     mockFetch.mockResolvedValue({ ok: true, status: 202 });
+    infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    infoSpy.mockRestore();
+    warnSpy.mockRestore();
   });
 
   describe("sendToBridge", () => {
@@ -106,6 +125,7 @@ describe("message service", () => {
     const baseDeps = {
       userId: "user-123",
       message: "hello",
+      traceId: "trace-123",
       channel: "web" as const,
       connectionId: "conn-1",
       callbackUrl: "https://cb",
@@ -129,9 +149,378 @@ describe("message service", () => {
         putTaskState: vi.fn(),
         savePendingMessage: vi.fn(),
         deleteTaskState: vi.fn(),
+        getRoutingContext: vi.fn().mockResolvedValue(null),
+        putRoutingContext: vi.fn(),
+        deleteRoutingContext: vi.fn(),
+        sendClarification: vi.fn().mockResolvedValue(undefined),
         ...overrides,
       };
     }
+
+    it("should route ambiguous payment questions directly to tool-enabled compute", async () => {
+      const deps = makeDeps({
+        message: "이번주 결제한 금액이 어느정도 되려나?",
+      });
+
+      const result = await routeMessage(deps);
+      const affinityState = (deps.putRoutingContext as ReturnType<typeof vi.fn>).mock
+        .calls[0][1];
+
+      expect(result).toBe("started");
+      expect(deps.putRoutingContext).toHaveBeenCalledWith(
+        "user-123",
+        expect.objectContaining({
+          status: "active",
+          runtimeClass: "tool-enabled",
+          channel: "web",
+        }),
+      );
+      expect(
+        Object.prototype.hasOwnProperty.call(
+          affinityState as Record<string, unknown>,
+          "canonicalGoal",
+        ),
+      ).toBe(false);
+      expect(deps.sendClarification).not.toHaveBeenCalled();
+      expect(deps.startTask).toHaveBeenCalled();
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(deps.savePendingMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          assistantContext: expect.objectContaining({
+            runtime: expect.objectContaining({
+              runtimeClass: "tool-enabled",
+            }),
+            capabilities: expect.objectContaining({
+              gmail: expect.objectContaining({
+                status: "available_via_tool_runtime",
+              }),
+            }),
+            cost: expect.objectContaining({
+              upstream: [
+                expect.objectContaining({
+                  name: "gateway-frontdoor-estimated-to-route-completion",
+                  provider: "lambda",
+                  estimatedUsd: expect.any(Number),
+                }),
+              ],
+            }),
+          }),
+        }),
+      );
+      expect(deps.savePendingMessage).toHaveBeenCalledWith(
+        expect.not.objectContaining({ routingContext: expect.anything() }),
+      );
+    });
+
+    it("should reuse an active tool affinity for a short payment follow-up", async () => {
+      const deps = makeDeps({
+        message: "얼마 썼는지 정리해줄래?",
+        getTaskState: vi.fn().mockResolvedValue({
+          PK: "USER#user-123",
+          status: "Running",
+          publicIp: "1.2.3.4",
+          taskArn: "arn:task",
+          startedAt: "2024-01-01T00:00:00Z",
+          lastActivity: "2024-01-01T00:00:00Z",
+        }),
+        getRoutingContext: vi.fn().mockResolvedValue({
+          status: "active",
+          channel: "web",
+          connectionId: "conn-1",
+          callbackUrl: "https://cb",
+          createdAt: "2026-04-04T00:00:00Z",
+          lastActivityAt: "2026-04-04T00:00:00Z",
+          expiresAt: "2099-04-04T00:05:00Z",
+          runtimeClass: "tool-enabled",
+        }),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("sent");
+      expect(deps.putRoutingContext).toHaveBeenCalledWith(
+        "user-123",
+        expect.objectContaining({
+          status: "active",
+          runtimeClass: "tool-enabled",
+        }),
+      );
+      expect(mockFetch).toHaveBeenCalled();
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(body.message).toBe("얼마 썼는지 정리해줄래?");
+      expect(body.runtimeClass).toBe("tool-enabled");
+      expect(body.routingContext).toBeUndefined();
+      expect(body.assistantContext).toEqual(
+        expect.objectContaining({
+          runtime: expect.objectContaining({
+            runtimeClass: "tool-enabled",
+          }),
+          toolAffinity: expect.objectContaining({
+            active: true,
+          }),
+        }),
+      );
+    });
+
+    it("should reuse an active tool affinity for a short contextual follow-up without explicit Gmail terms", async () => {
+      const deps = makeDeps({
+        message: "그거 표로 보여줘",
+        getTaskState: vi.fn().mockResolvedValue({
+          PK: "USER#user-123",
+          status: "Running",
+          publicIp: "1.2.3.4",
+          taskArn: "arn:task",
+          startedAt: "2024-01-01T00:00:00Z",
+          lastActivity: "2024-01-01T00:00:00Z",
+        }),
+        getRoutingContext: vi.fn().mockResolvedValue({
+          status: "active",
+          channel: "web",
+          connectionId: "conn-1",
+          callbackUrl: "https://cb",
+          createdAt: "2026-04-04T00:00:00Z",
+          lastActivityAt: "2026-04-04T00:00:00Z",
+          expiresAt: "2099-04-04T00:05:00Z",
+          runtimeClass: "tool-enabled",
+        }),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("sent");
+      expect(mockFetch).toHaveBeenCalled();
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(body.message).toBe("그거 표로 보여줘");
+      expect(body.runtimeClass).toBe("tool-enabled");
+    });
+
+    it("should keep an active tool affinity for travel-refinement follow-ups", async () => {
+      const deps = makeDeps({
+        message: "일본관련된 것만 가져와야지",
+        getTaskState: vi.fn().mockResolvedValue({
+          PK: "USER#user-123",
+          status: "Running",
+          publicIp: "1.2.3.4",
+          taskArn: "arn:task",
+          startedAt: "2024-01-01T00:00:00Z",
+          lastActivity: "2024-01-01T00:00:00Z",
+        }),
+        getRoutingContext: vi.fn().mockResolvedValue({
+          status: "active",
+          channel: "web",
+          connectionId: "conn-1",
+          callbackUrl: "https://cb",
+          createdAt: "2026-04-04T00:00:00Z",
+          lastActivityAt: "2026-04-04T00:00:00Z",
+          expiresAt: "2099-04-04T00:05:00Z",
+          runtimeClass: "tool-enabled",
+        }),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("sent");
+      expect(deps.deleteRoutingContext).not.toHaveBeenCalled();
+      expect(mockFetch).toHaveBeenCalled();
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(body.message).toBe("일본관련된 것만 가져와야지");
+      expect(body.runtimeClass).toBe("tool-enabled");
+    });
+
+    it("should clear an active tool affinity on explicit cancel", async () => {
+      const deps = makeDeps({
+        message: "취소",
+        getRoutingContext: vi.fn().mockResolvedValue({
+          status: "active",
+          channel: "web",
+          connectionId: "conn-1",
+          callbackUrl: "https://cb",
+          runtimeClass: "tool-enabled",
+          createdAt: "2026-04-04T00:00:00Z",
+          lastActivityAt: "2026-04-04T00:00:00Z",
+          expiresAt: "2099-04-04T00:05:00Z",
+        }),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("clarify");
+      expect(deps.deleteRoutingContext).toHaveBeenCalledWith("user-123", "web");
+      expect(deps.sendClarification).toHaveBeenCalledWith(
+        "알겠습니다. 현재 도구 작업 문맥을 종료할게요.",
+      );
+    });
+
+    it("should clear an unrelated active task context and route the new message normally", async () => {
+      const mockInvokeLambda = vi.fn().mockResolvedValue({ accepted: true });
+      const deps = makeDeps({
+        message: "안녕",
+        agentRuntime: "both",
+        invokeLambdaAgent: mockInvokeLambda,
+        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+        getRoutingContext: vi.fn().mockResolvedValue({
+          status: "active",
+          channel: "web",
+          connectionId: "conn-1",
+          callbackUrl: "https://cb",
+          runtimeClass: "tool-enabled",
+          createdAt: "2026-04-04T00:00:00Z",
+          lastActivityAt: "2026-04-04T00:00:00Z",
+          expiresAt: "2099-04-04T00:05:00Z",
+        }),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("lambda");
+      expect(deps.deleteRoutingContext).toHaveBeenCalledWith("user-123", "web");
+      expect(mockInvokeLambda).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: "안녕",
+        }),
+      );
+    });
+
+    it("should clear independent general how-to handoff without asking AgentCore", async () => {
+      const mockInvokeLambda = vi.fn().mockResolvedValue({ accepted: true });
+      const mockInvokeAgentCore = vi.fn();
+      const deps = makeDeps({
+        message: "리눅스에서 파일 찾는 명령어 알려줘",
+        agentRuntime: "both",
+        toolRuntimeProvider: "agentcore",
+        invokeLambdaAgent: mockInvokeLambda,
+        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+        invokeAgentCoreRuntime: mockInvokeAgentCore,
+        agentCoreRuntimeArn: "arn:aws:bedrock-agentcore:us-east-1:123:runtime/test",
+        getRoutingContext: vi.fn().mockResolvedValue({
+          status: "active",
+          channel: "web",
+          connectionId: "conn-1",
+          callbackUrl: "https://cb",
+          runtimeClass: "tool-enabled",
+          provider: "agentcore",
+          createdAt: "2026-04-04T00:00:00Z",
+          lastActivityAt: "2026-04-04T00:00:00Z",
+          expiresAt: "2099-04-04T00:05:00Z",
+        }),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("lambda");
+      expect(mockInvokeAgentCore).not.toHaveBeenCalled();
+      expect(deps.deleteRoutingContext).toHaveBeenCalledWith("user-123", "web");
+      expect(mockInvokeLambda).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: "리눅스에서 파일 찾는 명령어 알려줘",
+          sessionId: "session-user-123:chat",
+        }),
+      );
+    });
+
+    it("should clear everyday standalone chat handoff without asking AgentCore", async () => {
+      const mockInvokeLambda = vi.fn().mockResolvedValue({ accepted: true });
+      const mockInvokeAgentCore = vi.fn();
+      const deps = makeDeps({
+        message: "저녁 메뉴 추천해줘",
+        agentRuntime: "both",
+        toolRuntimeProvider: "agentcore",
+        invokeLambdaAgent: mockInvokeLambda,
+        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+        invokeAgentCoreRuntime: mockInvokeAgentCore,
+        agentCoreRuntimeArn: "arn:aws:bedrock-agentcore:us-east-1:123:runtime/test",
+        getRoutingContext: vi.fn().mockResolvedValue({
+          status: "active",
+          channel: "web",
+          connectionId: "conn-1",
+          callbackUrl: "https://cb",
+          runtimeClass: "tool-enabled",
+          provider: "agentcore",
+          createdAt: "2026-04-04T00:00:00Z",
+          lastActivityAt: "2026-04-04T00:00:00Z",
+          expiresAt: "2099-04-04T00:05:00Z",
+        }),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("lambda");
+      expect(mockInvokeAgentCore).not.toHaveBeenCalled();
+      expect(deps.deleteRoutingContext).toHaveBeenCalledWith("user-123", "web");
+      expect(mockInvokeLambda).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: "저녁 메뉴 추천해줘",
+          sessionId: "session-user-123:chat",
+        }),
+      );
+    });
+
+    it("should clear explicit chat-topic switches without asking AgentCore", async () => {
+      const mockInvokeLambda = vi.fn().mockResolvedValue({ accepted: true });
+      const mockInvokeAgentCore = vi.fn();
+      const deps = makeDeps({
+        message: "그거 말고 일반 질문으로 커피 원두 추천해줘",
+        agentRuntime: "both",
+        toolRuntimeProvider: "agentcore",
+        invokeLambdaAgent: mockInvokeLambda,
+        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+        invokeAgentCoreRuntime: mockInvokeAgentCore,
+        agentCoreRuntimeArn: "arn:aws:bedrock-agentcore:us-east-1:123:runtime/test",
+        getRoutingContext: vi.fn().mockResolvedValue({
+          status: "active",
+          channel: "web",
+          connectionId: "conn-1",
+          callbackUrl: "https://cb",
+          runtimeClass: "tool-enabled",
+          provider: "agentcore",
+          createdAt: "2026-04-04T00:00:00Z",
+          lastActivityAt: "2026-04-04T00:00:00Z",
+          expiresAt: "2099-04-04T00:05:00Z",
+        }),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("lambda");
+      expect(mockInvokeAgentCore).not.toHaveBeenCalled();
+      expect(deps.deleteRoutingContext).toHaveBeenCalledWith("user-123", "web");
+      expect(mockInvokeLambda).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: "그거 말고 일반 질문으로 커피 원두 추천해줘",
+          sessionId: "session-user-123:chat",
+        }),
+      );
+    });
+
+    it("should ignore an expired routing context and route the message fresh", async () => {
+      const mockInvokeLambda = vi.fn().mockResolvedValue({ accepted: true });
+      const deps = makeDeps({
+        message: "hello",
+        agentRuntime: "both",
+        invokeLambdaAgent: mockInvokeLambda,
+        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+        getRoutingContext: vi.fn().mockResolvedValue({
+          status: "active",
+          channel: "web",
+          connectionId: "conn-1",
+          callbackUrl: "https://cb",
+          runtimeClass: "tool-enabled",
+          createdAt: "2026-04-04T00:00:00Z",
+          lastActivityAt: "2026-04-04T00:00:00Z",
+          expiresAt: "2026-04-04T00:01:00Z",
+        }),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("lambda");
+      expect(deps.deleteRoutingContext).toHaveBeenCalledWith("user-123", "web");
+      expect(mockInvokeLambda).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: "hello",
+        }),
+      );
+    });
 
     it("should send to bridge when task is Running with publicIp", async () => {
       const deps = makeDeps({
@@ -167,6 +556,26 @@ describe("message service", () => {
           PK: "USER#user-123",
           status: "Starting",
           taskArn: "arn:new-task",
+        }),
+      );
+    });
+
+    it("should preserve tool-enabled runtime metadata in pending messages", async () => {
+      const deps = makeDeps({
+        message: "Check my Gmail inbox and summarize unread emails",
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("started");
+      expect(deps.savePendingMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runtimeClass: "tool-enabled",
+          traceId: "trace-123",
+          routeDecision: "fargate-new",
+          emailTokenBudget: expect.objectContaining({
+            mode: "headers-first",
+          }),
         }),
       );
     });
@@ -389,7 +798,7 @@ describe("message service", () => {
         expect.objectContaining({
           functionArn: "arn:aws:lambda:us-east-1:123:function:agent",
           userId: "user-123",
-          sessionId: "session-456",
+          sessionId: "session-456:chat",
           message: "hello",
           channel: "web",
         }),
@@ -412,6 +821,38 @@ describe("message service", () => {
       });
 
       await expect(routeMessage(deps)).rejects.toThrow("Agent timeout");
+    });
+
+    it("should fail fast when web lambda delivery metadata is incomplete", async () => {
+      const mockInvokeLambda = vi.fn().mockResolvedValue({ accepted: true });
+      const deps = makeDeps({
+        agentRuntime: "lambda",
+        invokeLambdaAgent: mockInvokeLambda,
+        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+        callbackUrl: "",
+      });
+
+      await expect(routeMessage(deps)).rejects.toThrow(
+        "Web Lambda delivery requires both connectionId and callbackUrl",
+      );
+      expect(mockInvokeLambda).not.toHaveBeenCalled();
+    });
+
+    it("should fail fast when telegram lambda delivery metadata is incomplete", async () => {
+      const mockInvokeLambda = vi.fn().mockResolvedValue({ accepted: true });
+      const deps = makeDeps({
+        agentRuntime: "lambda",
+        invokeLambdaAgent: mockInvokeLambda,
+        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+        channel: "telegram",
+        connectionId: "",
+        callbackUrl: "",
+      });
+
+      await expect(routeMessage(deps)).rejects.toThrow(
+        "Telegram Lambda delivery requires telegramChatId or connectionId",
+      );
+      expect(mockInvokeLambda).not.toHaveBeenCalled();
     });
 
     it("should use Fargate path when agentRuntime is 'fargate'", async () => {
@@ -441,6 +882,7 @@ describe("message service", () => {
         agentRuntime: "both",
         invokeLambdaAgent: mockInvokeLambda,
         lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+        message: "check my gmail inbox",
         getTaskState: vi.fn().mockResolvedValue({
           PK: "USER#user-123",
           status: "Running",
@@ -456,12 +898,21 @@ describe("message service", () => {
       expect(result).toBe("sent");
       expect(mockFetch).toHaveBeenCalled();
       expect(mockInvokeLambda).not.toHaveBeenCalled();
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(body.runtimeClass).toBe("tool-enabled");
+      expect(body.emailTokenBudget).toEqual({
+        mode: "headers-first",
+        maxMessages: 5,
+        paymentScanMessages: 25,
+        maxSnippetChars: 240,
+        maxBodyChars: 1600,
+        requireExplicitBodyAccess: true,
+      });
     });
 
     it("should use Lambda when AGENT_RUNTIME=both and no Fargate running", async () => {
       const mockInvokeLambda = vi.fn().mockResolvedValue({
-        success: true,
-        payloads: [{ text: "Lambda response" }],
+        accepted: true,
       });
       const deps = makeDeps({
         agentRuntime: "both",
@@ -476,6 +927,32 @@ describe("message service", () => {
       expect(mockInvokeLambda).toHaveBeenCalled();
       expect(mockFetch).not.toHaveBeenCalled();
       expect(deps.startTask).not.toHaveBeenCalled();
+    });
+
+    it("should keep normal chat on Lambda when AGENT_RUNTIME=both and Fargate is already Running", async () => {
+      const mockInvokeLambda = vi.fn().mockResolvedValue({
+        accepted: true,
+      });
+      const deps = makeDeps({
+        agentRuntime: "both",
+        invokeLambdaAgent: mockInvokeLambda,
+        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+        message: "hello there",
+        getTaskState: vi.fn().mockResolvedValue({
+          PK: "USER#user-123",
+          status: "Running",
+          publicIp: "1.2.3.4",
+          taskArn: "arn:task",
+          startedAt: "2024-01-01T00:00:00Z",
+          lastActivity: "2024-01-01T00:00:00Z",
+        }),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("lambda");
+      expect(mockInvokeLambda).toHaveBeenCalled();
+      expect(mockFetch).not.toHaveBeenCalled();
     });
 
     it("should start Fargate when AGENT_RUNTIME=both and message has /heavy hint", async () => {
@@ -494,13 +971,303 @@ describe("message service", () => {
       expect(mockInvokeLambda).not.toHaveBeenCalled();
       expect(deps.startTask).toHaveBeenCalled();
       expect(deps.savePendingMessage).toHaveBeenCalled();
+      expect(deps.savePendingMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: "do something",
+        }),
+      );
     });
 
-    it("should invoke cold start preview when AGENT_RUNTIME=both and fargate-new cold starts", async () => {
-      const mockInvokeLambda = vi.fn().mockResolvedValue({
-        success: true,
-        payloads: [{ text: "Here's some context while you wait..." }],
+    it("should route Gmail requests to Fargate when AGENT_RUNTIME=both", async () => {
+      const mockInvokeLambda = vi.fn();
+      const deps = makeDeps({
+        agentRuntime: "both",
+        invokeLambdaAgent: mockInvokeLambda,
+        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+        message: "please read my latest gmail messages",
+        getTaskState: vi.fn().mockResolvedValue(null),
       });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("started");
+      expect(mockInvokeLambda).not.toHaveBeenCalled();
+      expect(deps.startTask).toHaveBeenCalled();
+      expect(deps.savePendingMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: "please read my latest gmail messages",
+          connectionId: "conn-1",
+        }),
+      );
+    });
+
+    it("should route tool-enabled requests to AgentCore by default when configured", async () => {
+      const mockInvokeLambda = vi.fn();
+      const mockInvokeAgentCore = vi.fn().mockResolvedValue({
+        accepted: true,
+        content: "AgentCore response",
+      });
+      const deps = makeDeps({
+        agentRuntime: "both",
+        invokeLambdaAgent: mockInvokeLambda,
+        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+        invokeAgentCoreRuntime: mockInvokeAgentCore,
+        agentCoreRuntimeArn: "arn:aws:bedrock-agentcore:us-east-1:123:runtime/test",
+        message: "please read my latest gmail messages",
+        getTaskState: vi.fn().mockResolvedValue(null),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("agentcore");
+      expect(mockInvokeAgentCore).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runtimeArn: "arn:aws:bedrock-agentcore:us-east-1:123:runtime/test",
+          runtimeClass: "tool-enabled",
+          message: "please read my latest gmail messages",
+          callbackUrl: "https://cb",
+        }),
+      );
+      expect(deps.sendClarification).toHaveBeenCalledWith("AgentCore response");
+      expect(mockInvokeLambda).not.toHaveBeenCalled();
+      expect(deps.startTask).not.toHaveBeenCalled();
+    });
+
+    it("should keep normal chat on Lambda when AgentCore is selected for tools", async () => {
+      const mockInvokeLambda = vi.fn().mockResolvedValue({ accepted: true });
+      const mockInvokeAgentCore = vi.fn();
+      const deps = makeDeps({
+        agentRuntime: "both",
+        toolRuntimeProvider: "agentcore",
+        invokeLambdaAgent: mockInvokeLambda,
+        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+        invokeAgentCoreRuntime: mockInvokeAgentCore,
+        agentCoreRuntimeArn: "arn:aws:bedrock-agentcore:us-east-1:123:runtime/test",
+        message: "hello there",
+        getTaskState: vi.fn().mockResolvedValue(null),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("lambda");
+      expect(mockInvokeLambda).toHaveBeenCalled();
+      expect(mockInvokeAgentCore).not.toHaveBeenCalled();
+    });
+
+    it("should clear standalone chat requests and hand active AgentCore sessions back to Lambda chat", async () => {
+      const mockInvokeLambda = vi.fn().mockResolvedValue({ accepted: true });
+      const mockInvokeAgentCore = vi.fn();
+      const deps = makeDeps({
+        agentRuntime: "both",
+        toolRuntimeProvider: "agentcore",
+        invokeLambdaAgent: mockInvokeLambda,
+        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+        invokeAgentCoreRuntime: mockInvokeAgentCore,
+        agentCoreRuntimeArn: "arn:aws:bedrock-agentcore:us-east-1:123:runtime/test",
+        message: "이건 일반 답변으로 처리해",
+        getTaskState: vi.fn().mockResolvedValue(null),
+        getRoutingContext: vi.fn().mockResolvedValue({
+          status: "active",
+          channel: "web",
+          connectionId: "conn-1",
+          callbackUrl: "https://cb",
+          createdAt: "2026-04-04T00:00:00Z",
+          lastActivityAt: "2026-04-04T00:00:00Z",
+          expiresAt: "2099-04-04T00:05:00Z",
+          runtimeClass: "tool-enabled",
+          provider: "agentcore",
+        }),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("lambda");
+      expect(mockInvokeAgentCore).not.toHaveBeenCalled();
+      expect(deps.deleteRoutingContext).toHaveBeenCalledWith("user-123", "web");
+      expect(mockInvokeLambda).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: "이건 일반 답변으로 처리해",
+          channel: "web",
+          sessionId: "session-user-123:chat",
+        }),
+      );
+      expect(deps.sendClarification).not.toHaveBeenCalled();
+      expect(infoSpy).toHaveBeenCalledWith(
+        expect.stringContaining("\"event\":\"route.affinity.cleared\""),
+      );
+    });
+
+    it("should fallback to Fargate when AgentCore invoke fails", async () => {
+      const mockInvokeAgentCore = vi.fn().mockRejectedValue(new Error("AgentCore timeout"));
+      const deps = makeDeps({
+        agentRuntime: "both",
+        toolRuntimeProvider: "agentcore",
+        invokeLambdaAgent: vi.fn(),
+        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+        invokeAgentCoreRuntime: mockInvokeAgentCore,
+        agentCoreRuntimeArn: "arn:aws:bedrock-agentcore:us-east-1:123:runtime/test",
+        message: "please read my latest gmail messages",
+        getTaskState: vi.fn().mockResolvedValue(null),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("started");
+      expect(deps.startTask).toHaveBeenCalled();
+      expect(deps.savePendingMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          routeDecision: "fargate-new",
+        }),
+      );
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("\"event\":\"agentcore.invoke.fallback\""),
+      );
+    });
+
+    it("should lock active AgentCore context to Fargate fallback on follow-up timeout", async () => {
+      const mockInvokeAgentCore = vi.fn().mockRejectedValue(new Error("AgentCore timeout"));
+      const deps = makeDeps({
+        agentRuntime: "both",
+        toolRuntimeProvider: "agentcore",
+        invokeLambdaAgent: vi.fn(),
+        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+        invokeAgentCoreRuntime: mockInvokeAgentCore,
+        agentCoreRuntimeArn: "arn:aws:bedrock-agentcore:us-east-1:123:runtime/test",
+        message: "일본관련된 것만 가져와야지",
+        getTaskState: vi.fn().mockResolvedValue(null),
+        getRoutingContext: vi.fn().mockResolvedValue({
+          status: "active",
+          channel: "web",
+          connectionId: "conn-1",
+          callbackUrl: "https://cb",
+          createdAt: "2026-04-04T00:00:00Z",
+          lastActivityAt: "2026-04-04T00:00:00Z",
+          expiresAt: "2099-04-04T00:05:00Z",
+          runtimeClass: "tool-enabled",
+          provider: "agentcore",
+        }),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("started");
+      expect(mockInvokeAgentCore).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: "일본관련된 것만 가져와야지",
+          timeoutMs: 8000,
+        }),
+      );
+      expect(deps.sendClarification).not.toHaveBeenCalled();
+      expect(deps.savePendingMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          routeDecision: "fargate-new",
+          runtimeClass: "tool-enabled",
+        }),
+      );
+      expect(deps.startTask).toHaveBeenCalled();
+      const lastAffinityState = (deps.putRoutingContext as ReturnType<typeof vi.fn>).mock
+        .calls.at(-1)?.[1];
+      expect(lastAffinityState).toEqual(
+        expect.objectContaining({
+          provider: "fargate",
+          fallbackProvider: "fargate",
+          providerLockReason: "agentcore_fallback",
+        }),
+      );
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("\"event\":\"agentcore.invoke.fallback\""),
+      );
+      expect(infoSpy).toHaveBeenCalledWith(
+        expect.stringContaining("\"event\":\"gateway.harness.session.provider_locked\""),
+      );
+    });
+
+    it("should keep AgentCore follow-ups on Fargate when a fallback task is already starting", async () => {
+      const mockInvokeAgentCore = vi.fn();
+      const deps = makeDeps({
+        agentRuntime: "both",
+        toolRuntimeProvider: "agentcore",
+        invokeLambdaAgent: vi.fn(),
+        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+        invokeAgentCoreRuntime: mockInvokeAgentCore,
+        agentCoreRuntimeArn: "arn:aws:bedrock-agentcore:us-east-1:123:runtime/test",
+        message: "일본관련된 것만 가져와야지",
+        getTaskState: vi.fn().mockResolvedValue({
+          PK: "USER#user-123",
+          status: "Starting",
+          taskArn: "arn:fargate-fallback",
+          startedAt: "2026-04-04T00:00:00Z",
+          lastActivity: "2026-04-04T00:00:00Z",
+        }),
+        getRoutingContext: vi.fn().mockResolvedValue({
+          status: "active",
+          channel: "web",
+          connectionId: "conn-1",
+          callbackUrl: "https://cb",
+          createdAt: "2026-04-04T00:00:00Z",
+          lastActivityAt: "2026-04-04T00:00:00Z",
+          expiresAt: "2099-04-04T00:05:00Z",
+          runtimeClass: "tool-enabled",
+          provider: "fargate",
+          fallbackProvider: "fargate",
+          providerLockReason: "agentcore_fallback",
+        }),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("queued");
+      expect(mockInvokeAgentCore).not.toHaveBeenCalled();
+      expect(deps.savePendingMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          routeDecision: "fargate-new",
+          runtimeClass: "tool-enabled",
+        }),
+      );
+      expect(deps.startTask).not.toHaveBeenCalled();
+    });
+
+    it("should keep locked Fargate fallback affinity off AgentCore even without task state", async () => {
+      const mockInvokeAgentCore = vi.fn();
+      const deps = makeDeps({
+        agentRuntime: "both",
+        toolRuntimeProvider: "agentcore",
+        invokeLambdaAgent: vi.fn(),
+        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+        invokeAgentCoreRuntime: mockInvokeAgentCore,
+        agentCoreRuntimeArn: "arn:aws:bedrock-agentcore:us-east-1:123:runtime/test",
+        message: "카드사별로 보여줘",
+        getTaskState: vi.fn().mockResolvedValue(null),
+        getRoutingContext: vi.fn().mockResolvedValue({
+          status: "active",
+          channel: "web",
+          connectionId: "conn-1",
+          callbackUrl: "https://cb",
+          createdAt: "2026-04-04T00:00:00Z",
+          lastActivityAt: "2026-04-04T00:00:00Z",
+          expiresAt: "2099-04-04T00:05:00Z",
+          runtimeClass: "tool-enabled",
+          provider: "fargate",
+          fallbackProvider: "fargate",
+          providerLockReason: "agentcore_fallback",
+        }),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("started");
+      expect(mockInvokeAgentCore).not.toHaveBeenCalled();
+      expect(deps.savePendingMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          routeDecision: "fargate-new",
+          runtimeClass: "tool-enabled",
+        }),
+      );
+      expect(deps.startTask).toHaveBeenCalled();
+    });
+
+    it("should start Fargate without legacy cold start preview when AGENT_RUNTIME=both", async () => {
+      const mockInvokeLambda = vi.fn();
       const mockPreviewCallback = vi.fn();
       const deps = makeDeps({
         agentRuntime: "both",
@@ -515,21 +1282,13 @@ describe("message service", () => {
 
       expect(result).toBe("started");
       expect(deps.startTask).toHaveBeenCalled();
-      // Preview is fire-and-forget, wait for it to settle
       await new Promise((r) => setTimeout(r, 10));
-      expect(mockInvokeLambda).toHaveBeenCalledWith(
-        expect.objectContaining({
-          disableTools: true,
-          message: "/heavy do something complex",
-        }),
-      );
-      expect(mockPreviewCallback).toHaveBeenCalledWith("Here's some context while you wait...");
+      expect(mockInvokeLambda).not.toHaveBeenCalled();
+      expect(mockPreviewCallback).not.toHaveBeenCalled();
     });
 
-    it("should not fail routing when cold start preview fails", async () => {
-      const mockInvokeLambda = vi
-        .fn()
-        .mockResolvedValueOnce({ success: false, error: "preview failed" }); // preview
+    it("should ignore legacy cold start preview callback when starting Fargate", async () => {
+      const mockInvokeLambda = vi.fn();
       const mockPreviewCallback = vi.fn();
       const deps = makeDeps({
         agentRuntime: "both",
@@ -583,6 +1342,80 @@ describe("message service", () => {
       expect(result).toBe("started");
       expect(mockInvokeLambda).toHaveBeenCalled();
       expect(deps.startTask).toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("\"event\":\"route.lambda.fallback_to_fargate\""),
+      );
+    });
+
+    it("should route image input to Lambda chat-only and clear active tool affinity", async () => {
+      const mockInvokeLambda = vi.fn().mockResolvedValue({ accepted: true });
+      const deps = makeDeps({
+        agentRuntime: "both",
+        invokeLambdaAgent: mockInvokeLambda,
+        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+        message: "이 사진 분석해줘",
+        imageInput: {
+          source: "telegram",
+          mediaType: "image/jpeg",
+          dataBase64: "AQID",
+          fileId: "photo-1",
+          fileSize: 3,
+        },
+        getTaskState: vi.fn().mockResolvedValue(null),
+        getRoutingContext: vi.fn().mockResolvedValue({
+          status: "active",
+          channel: "telegram",
+          connectionId: "telegram:12345",
+          callbackUrl: "https://cb",
+          createdAt: "2026-04-04T00:00:00Z",
+          lastActivityAt: "2026-04-04T00:00:00Z",
+          expiresAt: "2099-04-04T00:05:00Z",
+          runtimeClass: "tool-enabled",
+          provider: "agentcore",
+        }),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("lambda");
+      expect(deps.deleteRoutingContext).toHaveBeenCalledWith("user-123", "web");
+      expect(mockInvokeLambda).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: "이 사진 분석해줘",
+          imageInput: expect.objectContaining({
+            source: "telegram",
+            mediaType: "image/jpeg",
+            dataBase64: "AQID",
+          }),
+        }),
+      );
+      expect(deps.putRoutingContext).not.toHaveBeenCalled();
+    });
+
+    it("should emit structured route logs and route metrics for Lambda requests", async () => {
+      const mockInvokeLambda = vi.fn().mockResolvedValue({ accepted: true });
+      const deps = makeDeps({
+        agentRuntime: "lambda",
+        invokeLambdaAgent: mockInvokeLambda,
+        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("lambda");
+      expect(infoSpy).toHaveBeenCalledWith(
+        expect.stringContaining("\"event\":\"route.classified\""),
+      );
+      expect(infoSpy).toHaveBeenCalledWith(
+        expect.stringContaining("\"classifierSignals\""),
+      );
+      expect(infoSpy).toHaveBeenCalledWith(
+        expect.stringContaining("\"event\":\"route.lambda.invoked\""),
+      );
+      expect(publishGatewayCountMetricMock).toHaveBeenCalledWith("RouteToLambda", {
+        channel: "web",
+        runtime: "lambda",
+      });
     });
   });
 });

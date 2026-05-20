@@ -9,13 +9,21 @@ import {
 
 import type { ClientMessage, ServerMessage } from "@serverless-openclaw/shared";
 import { getConnection } from "../services/connections.js";
+import {
+  deleteRoutingContext,
+  getRoutingContext,
+  putRoutingContext,
+} from "../services/routing-context.js";
 import { getTaskState, putTaskState, deleteTaskState } from "../services/task-state.js";
 import { routeMessage, savePendingMessage } from "../services/message.js";
 import { startTask } from "../services/container.js";
 import { resolveSecrets } from "../services/secrets.js";
 import { invokeLambdaAgent } from "../services/lambda-agent.js";
+import { invokeAgentCoreRuntime } from "../services/agentcore.js";
 
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
+  marshallOptions: { removeUndefinedValues: true },
+});
 const ecs = new ECSClient({});
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const dynamoSend = ddb.send.bind(ddb) as (cmd: any) => Promise<any>;
@@ -39,10 +47,12 @@ async function pushToConnection(connectionId: string, msg: ServerMessage): Promi
 }
 
 export async function handler(event: {
-  requestContext: { connectionId?: string };
+  requestContext: { connectionId?: string; requestId?: string };
   body?: string;
 }): Promise<APIGatewayProxyResultV2> {
+  const requestStartedAtMs = Date.now();
   const connectionId = event.requestContext.connectionId!;
+  const traceId = event.requestContext.requestId ?? `ws-${connectionId}`;
 
   if (!event.body) {
     return { statusCode: 400, body: JSON.stringify({ error: "Missing body" }) };
@@ -81,6 +91,7 @@ export async function handler(event: {
     const result = await routeMessage({
       userId,
       message: msg.message ?? "",
+      traceId,
       channel: "web",
       connectionId,
       callbackUrl: process.env.WEBSOCKET_CALLBACK_URL ?? "",
@@ -91,6 +102,13 @@ export async function handler(event: {
       putTaskState: (item) => putTaskState(dynamoSend, item),
       savePendingMessage: (item) => savePendingMessage(dynamoSend, item),
       deleteTaskState: (uid) => deleteTaskState(dynamoSend, uid),
+      getRoutingContext: (uid, channel) => getRoutingContext(dynamoSend, uid, channel),
+      putRoutingContext: (uid, state) => putRoutingContext(dynamoSend, uid, state),
+      deleteRoutingContext: (uid, channel) => deleteRoutingContext(dynamoSend, uid, channel),
+      sendClarification: (clarification) => pushToConnection(connectionId, {
+        type: "message",
+        content: clarification,
+      }),
       startTaskParams: {
         cluster: process.env.ECS_CLUSTER_ARN ?? "",
         taskDefinition: process.env.TASK_DEFINITION_ARN ?? "",
@@ -103,24 +121,19 @@ export async function handler(event: {
         ],
       },
       agentRuntime,
+      toolRuntimeProvider: (process.env.TOOL_RUNTIME_PROVIDER as "fargate" | "agentcore" | undefined) ?? "agentcore",
       invokeLambdaAgent: lambdaAgentFunctionArn ? invokeLambdaAgent : undefined,
       lambdaAgentFunctionArn: lambdaAgentFunctionArn || undefined,
-      onLambdaResponse: async (payloads) => {
-        for (const payload of payloads ?? []) {
-          if (payload.text) {
-            await pushToConnection(connectionId, { type: "message", content: payload.text });
-          }
-        }
-        await pushToConnection(connectionId, { type: "status", status: "Idle" });
-      },
-      onColdStartPreview: async (previewText) => {
-        await pushToConnection(connectionId, {
-          type: "message",
-          content: previewText,
-        });
-      },
+      invokeAgentCoreRuntime,
+      agentCoreRuntimeArn: process.env.AGENTCORE_RUNTIME_ARN ?? "",
+      agentCoreRuntimeQualifier: process.env.AGENTCORE_RUNTIME_QUALIFIER,
+      agentCoreFallbackProvider: (process.env.AGENTCORE_FALLBACK_PROVIDER as "fargate" | undefined) ?? "fargate",
+      requestStartedAtMs,
     });
 
+    if (result === "lambda") {
+      await pushToConnection(connectionId, { type: "status", status: "running" });
+    }
     if (result === "started" || result === "queued") {
       await pushToConnection(connectionId, { type: "status", status: "Starting" });
     }

@@ -2,10 +2,57 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type { LambdaAgentEvent, LambdaAgentResponse } from "../src/types.js";
 
 // Use vi.hoisted to ensure mock references are stable across vi.resetModules()
-const { mockInitConfig, mockDownload, mockUpload, mockResolveSecrets, mockRunAgent, mockAcquire, mockRelease } = vi.hoisted(() => ({
+const {
+  mockInitConfig,
+  mockDownload,
+  mockUpload,
+  mockResolveSecrets,
+  mockRunAgent,
+  mockRunDirectBedrockChat,
+  mockLoadRecentImage,
+  mockSaveRecentImage,
+  mockLoadRecentCost,
+  mockSaveRecentCost,
+  mockLookupAwsCost,
+  mockAcquire,
+  mockRelease,
+  mockPublishLambdaDeliveryMetric,
+} = vi.hoisted(() => ({
   mockInitConfig: vi.fn().mockResolvedValue({
     configDir: "/tmp/.openclaw",
     sessionsDir: "/tmp/.openclaw/agents/default/sessions",
+    config: { gateway: { mode: "local" } },
+    runtimeConfig: {
+      provider: "anthropic",
+      openclawProvider: "anthropic",
+      openclawApi: "anthropic",
+      openclawAuth: "api-key",
+      defaultModel: "claude-sonnet-4-20250514",
+      capability: "tool-enabled",
+      sessionNamespace: "anthropic-tools",
+      readiness: {
+        chatReady: true,
+        toolRuntimeReady: true,
+        gmailReady: true,
+      },
+      emailTokenBudget: {
+        mode: "headers-first",
+        maxMessages: 5,
+        paymentScanMessages: 25,
+        maxSnippetChars: 240,
+        maxBodyChars: 1600,
+        requireExplicitBodyAccess: true,
+      },
+      secretContract: {
+        requiresAnthropicApiKey: true,
+        supportsOpenclawAuthProfiles: true,
+        supportsOpenclawOauth: true,
+        supportsGoogleOauthClient: true,
+      },
+    },
+    gmailReady: true,
+    toolRuntimeReady: true,
+    sessionNamespace: "anthropic-tools",
   }),
   mockDownload: vi.fn().mockResolvedValue("/tmp/.openclaw/agents/default/sessions/test.jsonl"),
   mockUpload: vi.fn().mockResolvedValue(undefined),
@@ -13,9 +60,23 @@ const { mockInitConfig, mockDownload, mockUpload, mockResolveSecrets, mockRunAge
     ["/serverless-openclaw/secrets/anthropic-api-key", "test-api-key"],
   ])),
   mockRunAgent: vi.fn(),
+  mockRunDirectBedrockChat: vi.fn(),
+  mockLoadRecentImage: vi.fn().mockResolvedValue(null),
+  mockSaveRecentImage: vi.fn().mockResolvedValue({
+    expiresAt: "2099-01-01T00:00:00.000Z",
+  }),
+  mockLoadRecentCost: vi.fn().mockResolvedValue(undefined),
+  mockSaveRecentCost: vi.fn().mockResolvedValue({
+    expiresAt: "2099-01-01T00:00:00.000Z",
+  }),
+  mockLookupAwsCost: vi.fn(),
   mockAcquire: vi.fn().mockResolvedValue(true),
   mockRelease: vi.fn().mockResolvedValue(undefined),
+  mockPublishLambdaDeliveryMetric: vi.fn().mockResolvedValue(undefined),
 }));
+
+const fetchMock = vi.fn();
+vi.stubGlobal("fetch", fetchMock);
 
 vi.mock("../src/config-init.js", () => ({
   initConfig: (...args: unknown[]) => mockInitConfig(...args),
@@ -37,6 +98,28 @@ vi.mock("../src/agent-runner.js", () => ({
   runAgent: (...args: unknown[]) => mockRunAgent(...args),
 }));
 
+vi.mock("../src/direct-bedrock-chat.js", () => ({
+  runDirectBedrockChat: (...args: unknown[]) => mockRunDirectBedrockChat(...args),
+}));
+
+vi.mock("../src/recent-image-context.js", () => ({
+  RecentImageContextStore: vi.fn().mockImplementation(() => ({
+    load: mockLoadRecentImage,
+    save: mockSaveRecentImage,
+  })),
+}));
+
+vi.mock("../src/recent-cost-context.js", () => ({
+  RecentCostContextStore: vi.fn().mockImplementation(() => ({
+    load: mockLoadRecentCost,
+    save: mockSaveRecentCost,
+  })),
+}));
+
+vi.mock("../src/aws-cost-explorer.js", () => ({
+  lookupAwsCostExplorer: (...args: unknown[]) => mockLookupAwsCost(...args),
+}));
+
 vi.mock("../src/session-lock.js", () => ({
   SessionLock: vi.fn().mockImplementation(() => ({
     acquire: mockAcquire,
@@ -44,8 +127,20 @@ vi.mock("../src/session-lock.js", () => ({
   })),
 }));
 
+vi.mock("../src/metrics.js", () => ({
+  publishLambdaDeliveryMetric: (...args: unknown[]) => mockPublishLambdaDeliveryMetric(...args),
+}));
+
 describe("handler", () => {
   let originalBucket: string | undefined;
+  let originalProvider: string | undefined;
+  let originalAnthropicPath: string | undefined;
+  let originalTelegramTokenPath: string | undefined;
+  let originalDirectBedrockChat: string | undefined;
+  let originalDirectChatModel: string | undefined;
+  let originalAwsCostLookupEnabled: string | undefined;
+  let infoSpy: ReturnType<typeof vi.spyOn>;
+  let errorSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     vi.resetModules();
@@ -54,24 +149,102 @@ describe("handler", () => {
     mockUpload.mockClear();
     mockResolveSecrets.mockClear();
     mockRunAgent.mockClear();
+    mockRunDirectBedrockChat.mockClear();
+    mockLoadRecentImage.mockClear();
+    mockLoadRecentImage.mockResolvedValue(null);
+    mockSaveRecentImage.mockClear();
+    mockSaveRecentImage.mockResolvedValue({
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+    mockLoadRecentCost.mockClear();
+    mockLoadRecentCost.mockResolvedValue(undefined);
+    mockSaveRecentCost.mockClear();
+    mockSaveRecentCost.mockResolvedValue({
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+    mockLookupAwsCost.mockReset();
     mockAcquire.mockClear();
     mockRelease.mockClear();
+    mockPublishLambdaDeliveryMetric.mockClear();
+    fetchMock.mockReset();
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: vi.fn().mockResolvedValue("ok"),
+    });
+    infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
     // Set required env var
     originalBucket = process.env.SESSION_BUCKET;
+    originalProvider = process.env.AI_PROVIDER;
+    originalAnthropicPath = process.env.SSM_ANTHROPIC_API_KEY;
+    originalTelegramTokenPath = process.env.SSM_TELEGRAM_BOT_TOKEN;
+    originalDirectBedrockChat = process.env.LAMBDA_DIRECT_BEDROCK_CHAT;
+    originalDirectChatModel = process.env.LAMBDA_DIRECT_CHAT_MODEL;
+    originalAwsCostLookupEnabled = process.env.AWS_COST_LOOKUP_ENABLED;
     process.env.SESSION_BUCKET = "test-session-bucket";
+    process.env.AI_PROVIDER = "anthropic";
+    delete process.env.SSM_ANTHROPIC_API_KEY;
+    delete process.env.SSM_TELEGRAM_BOT_TOKEN;
+    delete process.env.LAMBDA_DIRECT_BEDROCK_CHAT;
+    delete process.env.LAMBDA_DIRECT_CHAT_MODEL;
+    delete process.env.AWS_COST_LOOKUP_ENABLED;
 
     mockRunAgent.mockResolvedValue({
       payloads: [{ text: "Hello from agent!" }],
       meta: { durationMs: 1000, agentMeta: { provider: "anthropic", model: "claude-sonnet-4-20250514" } },
     });
+    mockRunDirectBedrockChat.mockResolvedValue({
+      text: "리눅스에서 파일을 찾을 때는 find 명령어를 쓰면 됩니다.",
+      usage: { inputTokens: 10, outputTokens: 20 },
+    });
   });
 
   afterEach(() => {
+    infoSpy.mockRestore();
+    errorSpy.mockRestore();
+
     if (originalBucket !== undefined) {
       process.env.SESSION_BUCKET = originalBucket;
     } else {
       delete process.env.SESSION_BUCKET;
+    }
+
+    if (originalProvider !== undefined) {
+      process.env.AI_PROVIDER = originalProvider;
+    } else {
+      delete process.env.AI_PROVIDER;
+    }
+
+    if (originalAnthropicPath !== undefined) {
+      process.env.SSM_ANTHROPIC_API_KEY = originalAnthropicPath;
+    } else {
+      delete process.env.SSM_ANTHROPIC_API_KEY;
+    }
+
+    if (originalTelegramTokenPath !== undefined) {
+      process.env.SSM_TELEGRAM_BOT_TOKEN = originalTelegramTokenPath;
+    } else {
+      delete process.env.SSM_TELEGRAM_BOT_TOKEN;
+    }
+
+    if (originalDirectBedrockChat !== undefined) {
+      process.env.LAMBDA_DIRECT_BEDROCK_CHAT = originalDirectBedrockChat;
+    } else {
+      delete process.env.LAMBDA_DIRECT_BEDROCK_CHAT;
+    }
+
+    if (originalDirectChatModel !== undefined) {
+      process.env.LAMBDA_DIRECT_CHAT_MODEL = originalDirectChatModel;
+    } else {
+      delete process.env.LAMBDA_DIRECT_CHAT_MODEL;
+    }
+
+    if (originalAwsCostLookupEnabled !== undefined) {
+      process.env.AWS_COST_LOOKUP_ENABLED = originalAwsCostLookupEnabled;
+    } else {
+      delete process.env.AWS_COST_LOOKUP_ENABLED;
     }
   });
 
@@ -84,8 +257,11 @@ describe("handler", () => {
     return {
       userId: "user-123",
       sessionId: "session-456",
+      traceId: "trace-456",
       message: "Hello",
       channel: "web",
+      connectionId: "conn-123",
+      callbackUrl: "https://cb.example.com",
       ...overrides,
     };
   }
@@ -113,6 +289,9 @@ describe("handler", () => {
     expect(mockInitConfig).toHaveBeenCalledWith(
       expect.objectContaining({
         anthropicApiKey: "test-api-key",
+        runtimeConfig: expect.objectContaining({
+          provider: "anthropic",
+        }),
       }),
     );
   });
@@ -121,7 +300,7 @@ describe("handler", () => {
     const handler = await loadHandler();
     await handler(createEvent());
 
-    expect(mockDownload).toHaveBeenCalledWith("user-123", "session-456");
+    expect(mockDownload).toHaveBeenCalledWith("user-123", "anthropic-tools:web:session-456");
   });
 
   it("should call agent runner with correct params", async () => {
@@ -130,7 +309,7 @@ describe("handler", () => {
 
     expect(mockRunAgent).toHaveBeenCalledWith(
       expect.objectContaining({
-        sessionId: "session-456",
+        sessionId: "anthropic-tools:web:session-456",
         message: "What is 2+2?",
         channel: "web",
       }),
@@ -141,7 +320,7 @@ describe("handler", () => {
     const handler = await loadHandler();
     await handler(createEvent());
 
-    expect(mockUpload).toHaveBeenCalledWith("user-123", "session-456");
+    expect(mockUpload).toHaveBeenCalledWith("user-123", "anthropic-tools:web:session-456");
   });
 
   it("should return agent response", async () => {
@@ -160,7 +339,7 @@ describe("handler", () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toBe("Agent failed");
-    expect(mockUpload).toHaveBeenCalledWith("user-123", "session-456");
+    expect(mockUpload).toHaveBeenCalledWith("user-123", "anthropic-tools:web:session-456");
   });
 
   it("should pass model override when provided", async () => {
@@ -182,6 +361,953 @@ describe("handler", () => {
       expect.objectContaining({
         disableTools: true,
       }),
+    );
+  });
+
+  it("should not request anthropic secret when AI_PROVIDER is bedrock", async () => {
+    process.env.AI_PROVIDER = "bedrock";
+    mockResolveSecrets.mockResolvedValueOnce(new Map());
+    mockInitConfig.mockResolvedValueOnce({
+      configDir: "/tmp/.openclaw",
+      sessionsDir: "/tmp/.openclaw/agents/default/sessions",
+      config: { gateway: { mode: "local" } },
+      runtimeConfig: {
+        provider: "bedrock",
+        openclawProvider: "amazon-bedrock",
+        openclawApi: "bedrock-converse-stream",
+        openclawAuth: "aws-sdk",
+        defaultModel: "apac.anthropic.claude-sonnet-4-20250514-v1:0",
+        capability: "chat-only",
+        sessionNamespace: "bedrock-chat",
+        readiness: {
+          chatReady: true,
+          toolRuntimeReady: false,
+          gmailReady: false,
+        },
+        emailTokenBudget: {
+          mode: "headers-first",
+          maxMessages: 5,
+          paymentScanMessages: 25,
+          maxSnippetChars: 240,
+          maxBodyChars: 1600,
+          requireExplicitBodyAccess: true,
+        },
+        secretContract: {
+          requiresAnthropicApiKey: false,
+          supportsOpenclawAuthProfiles: true,
+          supportsOpenclawOauth: true,
+          supportsGoogleOauthClient: true,
+        },
+      },
+      gmailReady: false,
+      toolRuntimeReady: false,
+      sessionNamespace: "bedrock-chat",
+    });
+
+    const handler = await loadHandler();
+    await handler(createEvent());
+
+    expect(mockResolveSecrets).not.toHaveBeenCalled();
+  });
+
+  it("should return a clear message for Gmail requests when runtime is chat-only", async () => {
+    process.env.AI_PROVIDER = "bedrock";
+    mockInitConfig.mockResolvedValueOnce({
+      configDir: "/tmp/.openclaw",
+      sessionsDir: "/tmp/.openclaw/agents/default/sessions",
+      config: { gateway: { mode: "local" } },
+      runtimeConfig: {
+        provider: "bedrock",
+        openclawProvider: "amazon-bedrock",
+        openclawApi: "bedrock-converse-stream",
+        openclawAuth: "aws-sdk",
+        defaultModel: "apac.anthropic.claude-sonnet-4-20250514-v1:0",
+        capability: "chat-only",
+        sessionNamespace: "bedrock-chat",
+        readiness: {
+          chatReady: true,
+          toolRuntimeReady: false,
+          gmailReady: false,
+        },
+        emailTokenBudget: {
+          mode: "headers-first",
+          maxMessages: 5,
+          paymentScanMessages: 25,
+          maxSnippetChars: 240,
+          maxBodyChars: 1600,
+          requireExplicitBodyAccess: true,
+        },
+        secretContract: {
+          requiresAnthropicApiKey: false,
+          supportsOpenclawAuthProfiles: true,
+          supportsOpenclawOauth: true,
+          supportsGoogleOauthClient: true,
+        },
+      },
+      gmailReady: false,
+      toolRuntimeReady: false,
+      sessionNamespace: "bedrock-chat",
+    });
+
+    const handler = await loadHandler();
+    const result = await handler(createEvent({ message: "Please check my Gmail inbox" }));
+
+    expect(result.success).toBe(true);
+    expect(result.payloads?.[0]?.text).toContain("Gmail is not connected");
+    expect(mockRunAgent).not.toHaveBeenCalled();
+    expect(mockDownload).not.toHaveBeenCalled();
+  });
+
+  it("should fail fast when web delivery metadata is incomplete", async () => {
+    const handler = await loadHandler();
+    const result = await handler(
+      createEvent({ callbackUrl: "https://cb", connectionId: undefined }),
+    ) as LambdaAgentResponse;
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("Web delivery requires both connectionId and callbackUrl");
+  });
+
+  it("should add Gmail token budget guidance when tool runtime is ready", async () => {
+    const handler = await loadHandler();
+    await handler(createEvent({ message: "Summarize my recent Gmail messages" }));
+
+    expect(mockRunAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        extraSystemPrompt: expect.stringContaining("Show at most 5 detailed Gmail messages"),
+      }),
+    );
+    expect(mockRunAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        extraSystemPrompt: expect.stringContaining("Do not read full message bodies"),
+      }),
+    );
+  });
+
+  it("should inject AssistantRuntimeContext into the Lambda system prompt", async () => {
+    const handler = await loadHandler();
+    await handler(createEvent({
+      message: "hello",
+      assistantContext: {
+        version: 1,
+        userId: "user-123",
+        channel: "telegram",
+        sessionId: "session-user-123:chat",
+        traceId: "trace-ctx",
+        generatedAt: "2026-05-04T00:00:00.000Z",
+        runtime: {
+          agentRuntime: "both",
+          runtimeClass: "chat-only",
+          routeDecision: "lambda",
+          lambdaRole: "chat-only-fast-path",
+          toolRuntimeProvider: "agentcore",
+          fallbackProvider: "fargate",
+        },
+        capabilities: {
+          tools: {
+            available: true,
+            executionRuntime: "agentcore",
+            note: "Tool tasks are delegated.",
+          },
+          gmail: {
+            status: "available_via_tool_runtime",
+            executionRuntime: "agentcore",
+            safetyMode: "headers-first",
+          },
+        },
+        toolAffinity: {
+          active: false,
+          provider: "agentcore",
+          fallbackProvider: "fargate",
+        },
+        guidance: {
+          selfAwareness: "The assistant has delegated Gmail capability.",
+          lambda: "Do not claim Gmail is impossible.",
+          toolRuntime: "Tool runtime owns Gmail tasks.",
+        },
+      },
+    }));
+
+    expect(mockRunAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        extraSystemPrompt: expect.stringContaining("AssistantRuntimeContext v1"),
+      }),
+    );
+    expect(mockRunAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        extraSystemPrompt: expect.stringContaining("available_via_tool_runtime"),
+      }),
+    );
+    expect(mockRunAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        extraSystemPrompt: expect.stringContaining("Payment history"),
+      }),
+    );
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"event\":\"lambda.assistant_context.loaded\""),
+    );
+  });
+
+  it("should preserve delegated Gmail payment capability on Lambda misroutes", async () => {
+    process.env.SSM_TELEGRAM_BOT_TOKEN = "/serverless-openclaw/secrets/telegram-bot-token";
+    mockResolveSecrets.mockResolvedValue(
+      new Map([
+        ["/serverless-openclaw/secrets/anthropic-api-key", "test-api-key"],
+        ["/serverless-openclaw/secrets/telegram-bot-token", "telegram-token"],
+      ]),
+    );
+
+    const handler = await loadHandler();
+    const result = await handler(createEvent({
+      message: "결제 이력 확인할 수 있어?",
+      channel: "telegram",
+      connectionId: undefined,
+      callbackUrl: undefined,
+      telegramChatId: "8585874705",
+      assistantContext: {
+        version: 1,
+        userId: "user-123",
+        channel: "telegram",
+        sessionId: "session-user-123:chat",
+        traceId: "trace-payment-capability",
+        generatedAt: "2026-05-04T00:00:00.000Z",
+        runtime: {
+          agentRuntime: "both",
+          runtimeClass: "chat-only",
+          routeDecision: "lambda",
+          lambdaRole: "chat-only-fast-path",
+          toolRuntimeProvider: "agentcore",
+          fallbackProvider: "fargate",
+        },
+        capabilities: {
+          tools: {
+            available: true,
+            executionRuntime: "agentcore",
+            note: "Tool tasks are delegated.",
+          },
+          gmail: {
+            status: "available_via_tool_runtime",
+            executionRuntime: "agentcore",
+            safetyMode: "headers-first",
+          },
+        },
+        toolAffinity: {
+          active: false,
+          provider: "agentcore",
+          fallbackProvider: "fargate",
+        },
+        guidance: {
+          selfAwareness: "The assistant has delegated Gmail capability.",
+          lambda: "Do not claim Gmail is impossible.",
+          toolRuntime: "Tool runtime owns Gmail tasks.",
+        },
+      },
+    })) as LambdaAgentResponse;
+
+    expect(result.success).toBe(true);
+    expect(result.payloads?.[0]?.text).toContain("결제 이력");
+    expect(result.payloads?.[0]?.text).toContain("지메일");
+    expect(result.payloads?.[0]?.text).toContain("agentcore");
+    expect(result.payloads?.[0]?.text).not.toContain("접근 불가");
+    expect(mockRunAgent).not.toHaveBeenCalled();
+    expect(mockDownload).not.toHaveBeenCalled();
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"event\":\"lambda.tool.misroute_detected\""),
+    );
+  });
+
+  it("should log Telegram delivery success", async () => {
+    process.env.SSM_TELEGRAM_BOT_TOKEN = "/serverless-openclaw/secrets/telegram-bot-token";
+    mockResolveSecrets.mockResolvedValue(
+      new Map([
+        ["/serverless-openclaw/secrets/anthropic-api-key", "test-api-key"],
+        ["/serverless-openclaw/secrets/telegram-bot-token", "telegram-token"],
+      ]),
+    );
+
+    const handler = await loadHandler();
+    const result = await handler(
+      createEvent({
+        channel: "telegram",
+        connectionId: undefined,
+        callbackUrl: undefined,
+        telegramChatId: "8585874705",
+      }),
+    ) as LambdaAgentResponse;
+
+    expect(result.success).toBe(true);
+    expect(fetchMock).toHaveBeenCalled();
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"event\":\"lambda.delivery.telegram.success\""),
+    );
+    expect(mockPublishLambdaDeliveryMetric).toHaveBeenCalledWith("DeliverySuccess", {
+      channel: "telegram",
+      deliveryType: "telegram",
+    });
+  });
+
+  it("should deliver partial replies instead of a done-only Telegram message", async () => {
+    process.env.SSM_TELEGRAM_BOT_TOKEN = "/serverless-openclaw/secrets/telegram-bot-token";
+    mockResolveSecrets.mockResolvedValue(
+      new Map([
+        ["/serverless-openclaw/secrets/anthropic-api-key", "test-api-key"],
+        ["/serverless-openclaw/secrets/telegram-bot-token", "telegram-token"],
+      ]),
+    );
+    mockRunAgent.mockImplementationOnce(async (params: unknown) => {
+      (params as { onPartialReply?: (delta: string) => void }).onPartialReply?.(
+        "리눅스에서 파일을 찾을 때는 find 명령어를 씁니다.",
+      );
+      return {
+        payloads: [],
+        meta: {
+          durationMs: 1000,
+          agentMeta: { provider: "anthropic", model: "claude-sonnet-4-20250514" },
+        },
+      };
+    });
+
+    const handler = await loadHandler();
+    const result = await handler(
+      createEvent({
+        channel: "telegram",
+        connectionId: undefined,
+        callbackUrl: undefined,
+        telegramChatId: "8585874705",
+        message: "리눅스에서 파일 찾는 명령어 알려줘",
+      }),
+    ) as LambdaAgentResponse;
+
+    expect(result.success).toBe(true);
+    expect(result.payloads?.[0]?.text).toContain("find 명령어");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]?.[1]?.body)).toContain("find 명령어");
+    expect(String(fetchMock.mock.calls[0]?.[1]?.body)).not.toContain("✅ Done");
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"event\":\"lambda.delivery.content_quality\""),
+    );
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"hasFindCommandAnswer\":true"),
+    );
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"hasFallbackFailureText\":false"),
+    );
+  });
+
+  it("should use direct Bedrock chat for stateless Telegram how-to questions when enabled", async () => {
+    process.env.AI_PROVIDER = "bedrock";
+    process.env.LAMBDA_DIRECT_BEDROCK_CHAT = "true";
+    process.env.SSM_TELEGRAM_BOT_TOKEN = "/serverless-openclaw/secrets/telegram-bot-token";
+    mockResolveSecrets.mockResolvedValue(
+      new Map([
+        ["/serverless-openclaw/secrets/telegram-bot-token", "telegram-token"],
+      ]),
+    );
+    mockInitConfig.mockResolvedValueOnce({
+      configDir: "/tmp/.openclaw",
+      sessionsDir: "/tmp/.openclaw/agents/default/sessions",
+      config: { gateway: { mode: "local" } },
+      runtimeConfig: {
+        provider: "bedrock",
+        openclawProvider: "amazon-bedrock",
+        openclawApi: "bedrock-converse-stream",
+        openclawAuth: "aws-sdk",
+        defaultModel: "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+        capability: "chat-only",
+        sessionNamespace: "bedrock-chat",
+        readiness: {
+          chatReady: true,
+          toolRuntimeReady: false,
+          gmailReady: true,
+        },
+        emailTokenBudget: {
+          mode: "headers-first",
+          maxMessages: 5,
+          paymentScanMessages: 25,
+          maxSnippetChars: 240,
+          maxBodyChars: 1600,
+          requireExplicitBodyAccess: true,
+        },
+        secretContract: {
+          requiresAnthropicApiKey: false,
+          supportsOpenclawAuthProfiles: true,
+          supportsOpenclawOauth: true,
+          supportsGoogleOauthClient: true,
+        },
+      },
+      gmailReady: true,
+      toolRuntimeReady: false,
+      sessionNamespace: "bedrock-chat",
+    });
+
+    const handler = await loadHandler();
+    const result = await handler(createEvent({
+      channel: "telegram",
+      connectionId: undefined,
+      callbackUrl: undefined,
+      telegramChatId: "8585874705",
+      message: "리눅스에서 파일 찾는 명령어 알려줘",
+    })) as LambdaAgentResponse;
+
+    expect(result.success).toBe(true);
+    expect(result.payloads?.[0]?.text).toContain("find 명령어");
+    expect(mockRunDirectBedrockChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: "리눅스에서 파일 찾는 명령어 알려줘",
+        model: "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+      }),
+    );
+    expect(mockRunAgent).not.toHaveBeenCalled();
+    expect(mockDownload).not.toHaveBeenCalled();
+    expect(mockUpload).not.toHaveBeenCalled();
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"event\":\"lambda.direct_chat.completed\""),
+    );
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"event\":\"lambda.cost.estimated\""),
+    );
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"estimatedUsd\""),
+    );
+    expect(mockSaveRecentCost).toHaveBeenCalledWith(
+      "user-123",
+      "bedrock-chat:telegram:session-456",
+      expect.objectContaining({
+        estimatedUsd: expect.any(Number),
+        breakdown: expect.objectContaining({
+          bedrockUsd: expect.any(Number),
+        }),
+      }),
+    );
+  });
+
+  it("should use direct Bedrock chat for everyday standalone Telegram chat when enabled", async () => {
+    process.env.AI_PROVIDER = "bedrock";
+    process.env.LAMBDA_DIRECT_BEDROCK_CHAT = "true";
+    process.env.LAMBDA_DIRECT_CHAT_MODEL = "apac.amazon.nova-micro-v1:0";
+    process.env.SSM_TELEGRAM_BOT_TOKEN = "/serverless-openclaw/secrets/telegram-bot-token";
+    mockResolveSecrets.mockResolvedValue(
+      new Map([
+        ["/serverless-openclaw/secrets/telegram-bot-token", "telegram-token"],
+      ]),
+    );
+    mockRunDirectBedrockChat.mockResolvedValueOnce({
+      text: "오늘은 가볍게 김치볶음밥이나 우동을 추천해요.",
+      usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 },
+    });
+    mockInitConfig.mockResolvedValueOnce({
+      configDir: "/tmp/.openclaw",
+      sessionsDir: "/tmp/.openclaw/agents/default/sessions",
+      config: { gateway: { mode: "local" } },
+      runtimeConfig: {
+        provider: "bedrock",
+        openclawProvider: "amazon-bedrock",
+        openclawApi: "bedrock-converse-stream",
+        openclawAuth: "aws-sdk",
+        defaultModel: "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+        capability: "chat-only",
+        sessionNamespace: "bedrock-chat",
+        readiness: {
+          chatReady: true,
+          toolRuntimeReady: false,
+          gmailReady: true,
+        },
+        emailTokenBudget: {
+          mode: "headers-first",
+          maxMessages: 5,
+          paymentScanMessages: 25,
+          maxSnippetChars: 240,
+          maxBodyChars: 1600,
+          requireExplicitBodyAccess: true,
+        },
+        secretContract: {
+          requiresAnthropicApiKey: false,
+          supportsOpenclawAuthProfiles: true,
+          supportsOpenclawOauth: true,
+          supportsGoogleOauthClient: true,
+        },
+      },
+      gmailReady: true,
+      toolRuntimeReady: false,
+      sessionNamespace: "bedrock-chat",
+    });
+
+    const handler = await loadHandler();
+    const result = await handler(createEvent({
+      channel: "telegram",
+      connectionId: undefined,
+      callbackUrl: undefined,
+      telegramChatId: "8585874705",
+      message: "저녁 메뉴 추천해줘",
+    })) as LambdaAgentResponse;
+
+    expect(result.success).toBe(true);
+    expect(result.payloads?.[0]?.text).toContain("김치볶음밥");
+    expect(mockRunDirectBedrockChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: "저녁 메뉴 추천해줘",
+        model: "apac.amazon.nova-micro-v1:0",
+        maxTokens: 180,
+      }),
+    );
+    expect(mockRunAgent).not.toHaveBeenCalled();
+    expect(mockDownload).not.toHaveBeenCalled();
+    expect(mockUpload).not.toHaveBeenCalled();
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"event\":\"lambda.direct_chat.completed\""),
+    );
+  });
+
+  it("should use direct Bedrock vision for image input without falling back to OpenClaw", async () => {
+    process.env.AI_PROVIDER = "bedrock";
+    mockRunDirectBedrockChat.mockResolvedValueOnce({
+      text: "사진에는 결제 영수증처럼 보이는 화면이 있습니다.",
+      usage: { inputTokens: 30, outputTokens: 20, totalTokens: 50 },
+    });
+    mockInitConfig.mockResolvedValueOnce({
+      configDir: "/tmp/.openclaw",
+      sessionsDir: "/tmp/.openclaw/agents/default/sessions",
+      config: { gateway: { mode: "local" } },
+      runtimeConfig: {
+        provider: "bedrock",
+        openclawProvider: "amazon-bedrock",
+        openclawApi: "bedrock-converse-stream",
+        openclawAuth: "aws-sdk",
+        defaultModel: "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+        capability: "chat-only",
+        sessionNamespace: "bedrock-chat",
+        readiness: {
+          chatReady: true,
+          toolRuntimeReady: false,
+          gmailReady: true,
+        },
+        emailTokenBudget: {
+          mode: "headers-first",
+          maxMessages: 5,
+          paymentScanMessages: 25,
+          maxSnippetChars: 240,
+          maxBodyChars: 1600,
+          requireExplicitBodyAccess: true,
+        },
+      },
+    });
+
+    const handler = await loadHandler();
+    const result = await handler(createEvent({
+      message: "이 사진 분석해줘",
+      imageInput: {
+        source: "telegram",
+        mediaType: "image/jpeg",
+        dataBase64: "AQID",
+        fileId: "photo-1",
+        fileSize: 3,
+      },
+    })) as LambdaAgentResponse;
+
+    expect(result.success).toBe(true);
+    expect(result.payloads?.[0]?.text).toContain("영수증");
+    expect(mockRunDirectBedrockChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: "이 사진 분석해줘",
+        model: "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+        maxTokens: 420,
+        temperature: 0.1,
+        imageInput: expect.objectContaining({
+          mediaType: "image/jpeg",
+          dataBase64: "AQID",
+        }),
+      }),
+    );
+    expect(mockSaveRecentImage).toHaveBeenCalledWith(
+      "user-123",
+      "bedrock-chat:web:session-456",
+      expect.objectContaining({
+        mediaType: "image/jpeg",
+        dataBase64: "AQID",
+      }),
+      "이 사진 분석해줘",
+    );
+    expect(mockRunAgent).not.toHaveBeenCalled();
+    expect(mockDownload).not.toHaveBeenCalled();
+    expect(mockUpload).not.toHaveBeenCalled();
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"event\":\"lambda.direct_vision.completed\""),
+    );
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"event\":\"lambda.cost.estimated\""),
+    );
+    expect(mockSaveRecentCost).toHaveBeenCalledWith(
+      "user-123",
+      "bedrock-chat:web:session-456",
+      expect.objectContaining({
+        estimatedUsd: expect.any(Number),
+      }),
+    );
+  });
+
+  it("should reuse a recent image context for image follow-up messages", async () => {
+    process.env.AI_PROVIDER = "bedrock";
+    mockLoadRecentImage.mockResolvedValueOnce({
+      version: 1,
+      userId: "user-123",
+      sessionId: "bedrock-chat:web:session-456",
+      imageInput: {
+        source: "telegram",
+        mediaType: "image/jpeg",
+        dataBase64: "AQID",
+        fileId: "photo-1",
+        fileSize: 3,
+      },
+      lastPrompt: "이 사진 분석해줘",
+      createdAt: "2026-05-09T12:00:00.000Z",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+    mockRunDirectBedrockChat.mockResolvedValueOnce({
+      text: "방금 사진을 다시 보면 영수증 화면입니다.",
+      usage: { inputTokens: 30, outputTokens: 20, totalTokens: 50 },
+    });
+    mockInitConfig.mockResolvedValueOnce({
+      configDir: "/tmp/.openclaw",
+      sessionsDir: "/tmp/.openclaw/agents/default/sessions",
+      config: { gateway: { mode: "local" } },
+      runtimeConfig: {
+        provider: "bedrock",
+        openclawProvider: "amazon-bedrock",
+        openclawApi: "bedrock-converse-stream",
+        openclawAuth: "aws-sdk",
+        defaultModel: "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+        capability: "chat-only",
+        sessionNamespace: "bedrock-chat",
+        readiness: {
+          chatReady: true,
+          toolRuntimeReady: false,
+          gmailReady: true,
+        },
+        emailTokenBudget: {
+          mode: "headers-first",
+          maxMessages: 5,
+          paymentScanMessages: 25,
+          maxSnippetChars: 240,
+          maxBodyChars: 1600,
+          requireExplicitBodyAccess: true,
+        },
+      },
+    });
+
+    const handler = await loadHandler();
+    const result = await handler(createEvent({
+      message: "표로 정리해줘",
+    })) as LambdaAgentResponse;
+
+    expect(result.success).toBe(true);
+    expect(result.payloads?.[0]?.text).toContain("영수증");
+    expect(mockLoadRecentImage).toHaveBeenCalledWith(
+      "user-123",
+      "bedrock-chat:web:session-456",
+    );
+    expect(mockRunDirectBedrockChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringContaining("Use the recent Telegram image"),
+        imageInput: expect.objectContaining({
+          mediaType: "image/jpeg",
+          dataBase64: "AQID",
+        }),
+      }),
+    );
+    expect(mockSaveRecentImage).not.toHaveBeenCalled();
+    expect(mockRunAgent).not.toHaveBeenCalled();
+  });
+
+  it("should answer a recent cost lookup without invoking the model", async () => {
+    mockLoadRecentCost.mockResolvedValueOnce({
+      version: 1,
+      userId: "user-123",
+      sessionId: "anthropic-tools:web:session-456",
+      createdAt: "2026-05-09T12:00:00.000Z",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      estimate: {
+        traceId: "trace-cost",
+        userId: "user-123",
+        channel: "web",
+        runtimeClass: "chat-only",
+        provider: "lambda",
+        model: "apac.amazon.nova-micro-v1:0",
+        durationMs: 1068,
+        memoryMb: 2048,
+        architecture: "arm64",
+        estimatedUsd: 0.000047195,
+        confidence: "high",
+        breakdown: {
+          bedrockUsd: 0.000018515,
+          lambdaUsd: 0.00002848,
+          requestUsd: 0.0000002,
+        },
+        tokenUsage: {
+          inputTokens: 105,
+          outputTokens: 106,
+          totalTokens: 211,
+        },
+      },
+    });
+
+    const handler = await loadHandler();
+    const result = await handler(createEvent({
+      message: "이번 질문 비용 얼마야?",
+    })) as LambdaAgentResponse;
+
+    expect(result.success).toBe(true);
+    expect(result.payloads?.[0]?.text).toContain("직전 질의 추정 비용");
+    expect(result.payloads?.[0]?.text).toContain("$0.000047195");
+    expect(result.payloads?.[0]?.text).toContain("input 105, output 106");
+    expect(mockLoadRecentCost).toHaveBeenCalledWith(
+      "user-123",
+      "anthropic-tools:web:session-456",
+    );
+    expect(mockRunDirectBedrockChat).not.toHaveBeenCalled();
+    expect(mockRunAgent).not.toHaveBeenCalled();
+    expect(mockSaveRecentCost).not.toHaveBeenCalled();
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"event\":\"lambda.cost.loaded\""),
+    );
+  });
+
+  it("should answer an AWS Cost Explorer lookup when the capability is enabled", async () => {
+    process.env.AWS_COST_LOOKUP_ENABLED = "true";
+    mockLookupAwsCost.mockResolvedValueOnce({
+      request: { period: "month_to_date", groupByService: true, maxServices: 8 },
+      dateRange: {
+        start: "2026-05-01",
+        end: "2026-05-15",
+        label: "이번 달 현재까지",
+        freshnessNote: "오늘 진행 중인 비용은 Cost Explorer에 아직 완전히 반영되지 않을 수 있습니다.",
+      },
+      totalUsd: 1.23,
+      unit: "USD",
+      services: [
+        { service: "AWS Lambda", amountUsd: 0.5, unit: "USD" },
+      ],
+      generatedAt: "2026-05-15T12:00:00.000Z",
+      source: "aws-cost-explorer",
+    });
+
+    const handler = await loadHandler();
+    const result = await handler(createEvent({
+      message: "이번달 AWS 비용 서비스별로 알려줘",
+    })) as LambdaAgentResponse;
+
+    expect(result.success).toBe(true);
+    expect(result.payloads?.[0]?.text).toContain("AWS Cost Explorer 기준");
+    expect(result.payloads?.[0]?.text).toContain("AWS Lambda");
+    expect(mockLookupAwsCost).toHaveBeenCalledWith(expect.objectContaining({
+      period: "month_to_date",
+      groupByService: true,
+    }));
+    expect(mockLoadRecentCost).not.toHaveBeenCalled();
+    expect(mockRunDirectBedrockChat).not.toHaveBeenCalled();
+    expect(mockRunAgent).not.toHaveBeenCalled();
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"event\":\"lambda.aws_cost.lookup_completed\""),
+    );
+  });
+
+  it("should retry the default direct chat model before falling back to OpenClaw", async () => {
+    process.env.AI_PROVIDER = "bedrock";
+    process.env.LAMBDA_DIRECT_BEDROCK_CHAT = "true";
+    process.env.LAMBDA_DIRECT_CHAT_MODEL = "apac.amazon.nova-micro-v1:0";
+    process.env.SSM_TELEGRAM_BOT_TOKEN = "/serverless-openclaw/secrets/telegram-bot-token";
+    mockResolveSecrets.mockResolvedValue(
+      new Map([
+        ["/serverless-openclaw/secrets/telegram-bot-token", "telegram-token"],
+      ]),
+    );
+    mockRunDirectBedrockChat
+      .mockRejectedValueOnce(new Error("configured direct model unavailable"))
+      .mockResolvedValueOnce({
+        text: "오늘은 따뜻한 우동을 추천해요.",
+        usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 },
+      });
+    mockInitConfig.mockResolvedValueOnce({
+      configDir: "/tmp/.openclaw",
+      sessionsDir: "/tmp/.openclaw/agents/default/sessions",
+      config: { gateway: { mode: "local" } },
+      runtimeConfig: {
+        provider: "bedrock",
+        openclawProvider: "amazon-bedrock",
+        openclawApi: "bedrock-converse-stream",
+        openclawAuth: "aws-sdk",
+        defaultModel: "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+        capability: "chat-only",
+        sessionNamespace: "bedrock-chat",
+        readiness: {
+          chatReady: true,
+          toolRuntimeReady: false,
+          gmailReady: true,
+        },
+        emailTokenBudget: {
+          mode: "headers-first",
+          maxMessages: 5,
+          paymentScanMessages: 25,
+          maxSnippetChars: 240,
+          maxBodyChars: 1600,
+          requireExplicitBodyAccess: true,
+        },
+        secretContract: {
+          requiresAnthropicApiKey: false,
+          supportsOpenclawAuthProfiles: true,
+          supportsOpenclawOauth: true,
+          supportsGoogleOauthClient: true,
+        },
+      },
+      gmailReady: true,
+      toolRuntimeReady: false,
+      sessionNamespace: "bedrock-chat",
+    });
+
+    const handler = await loadHandler();
+    const result = await handler(createEvent({
+      channel: "telegram",
+      connectionId: undefined,
+      callbackUrl: undefined,
+      telegramChatId: "8585874705",
+      message: "저녁 메뉴 추천해줘",
+    })) as LambdaAgentResponse;
+
+    expect(result.success).toBe(true);
+    expect(result.payloads?.[0]?.text).toContain("우동");
+    expect(mockRunDirectBedrockChat).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        model: "apac.amazon.nova-micro-v1:0",
+      }),
+    );
+    expect(mockRunDirectBedrockChat).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        model: "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+      }),
+    );
+    expect(mockRunAgent).not.toHaveBeenCalled();
+    expect(mockDownload).not.toHaveBeenCalled();
+    expect(mockUpload).not.toHaveBeenCalled();
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"event\":\"lambda.direct_chat.attempt_failed\""),
+    );
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"event\":\"lambda.direct_chat.completed\""),
+    );
+  });
+
+  it("should fallback to OpenClaw when direct Bedrock chat fails", async () => {
+    process.env.AI_PROVIDER = "bedrock";
+    process.env.LAMBDA_DIRECT_BEDROCK_CHAT = "true";
+    process.env.SSM_TELEGRAM_BOT_TOKEN = "/serverless-openclaw/secrets/telegram-bot-token";
+    mockResolveSecrets.mockResolvedValue(
+      new Map([
+        ["/serverless-openclaw/secrets/telegram-bot-token", "telegram-token"],
+      ]),
+    );
+    mockRunDirectBedrockChat.mockRejectedValueOnce(new Error("Bedrock throttled"));
+    mockInitConfig.mockResolvedValueOnce({
+      configDir: "/tmp/.openclaw",
+      sessionsDir: "/tmp/.openclaw/agents/default/sessions",
+      config: { gateway: { mode: "local" } },
+      runtimeConfig: {
+        provider: "bedrock",
+        openclawProvider: "amazon-bedrock",
+        openclawApi: "bedrock-converse-stream",
+        openclawAuth: "aws-sdk",
+        defaultModel: "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+        capability: "chat-only",
+        sessionNamespace: "bedrock-chat",
+        readiness: {
+          chatReady: true,
+          toolRuntimeReady: false,
+          gmailReady: true,
+        },
+        emailTokenBudget: {
+          mode: "headers-first",
+          maxMessages: 5,
+          paymentScanMessages: 25,
+          maxSnippetChars: 240,
+          maxBodyChars: 1600,
+          requireExplicitBodyAccess: true,
+        },
+        secretContract: {
+          requiresAnthropicApiKey: false,
+          supportsOpenclawAuthProfiles: true,
+          supportsOpenclawOauth: true,
+          supportsGoogleOauthClient: true,
+        },
+      },
+      gmailReady: true,
+      toolRuntimeReady: false,
+      sessionNamespace: "bedrock-chat",
+    });
+
+    const handler = await loadHandler();
+    const result = await handler(createEvent({
+      channel: "telegram",
+      connectionId: undefined,
+      callbackUrl: undefined,
+      telegramChatId: "8585874705",
+      message: "리눅스에서 파일 찾는 명령어 알려줘",
+    })) as LambdaAgentResponse;
+
+    expect(result.success).toBe(true);
+    expect(mockRunAgent).toHaveBeenCalled();
+    expect(mockDownload).toHaveBeenCalledWith(
+      "user-123",
+      "bedrock-chat:telegram:session-456",
+    );
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"event\":\"lambda.direct_chat.fallback\""),
+    );
+  });
+
+  it("should log Telegram delivery failures for non-ok responses", async () => {
+    process.env.SSM_TELEGRAM_BOT_TOKEN = "/serverless-openclaw/secrets/telegram-bot-token";
+    mockResolveSecrets.mockResolvedValue(
+      new Map([
+        ["/serverless-openclaw/secrets/anthropic-api-key", "test-api-key"],
+        ["/serverless-openclaw/secrets/telegram-bot-token", "telegram-token"],
+      ]),
+    );
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      text: vi.fn().mockResolvedValue("Bad Request: chat not found"),
+    });
+
+    const handler = await loadHandler();
+    const result = await handler(
+      createEvent({
+        channel: "telegram",
+        connectionId: undefined,
+        callbackUrl: undefined,
+        telegramChatId: "8585874705",
+      }),
+    ) as LambdaAgentResponse;
+
+    expect(result.success).toBe(true);
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"event\":\"lambda.delivery.telegram.failure\""),
+    );
+    expect(mockPublishLambdaDeliveryMetric).toHaveBeenCalledWith("DeliveryFailure", {
+      channel: "telegram",
+      deliveryType: "telegram",
+    });
+  });
+
+  it("should log request acceptance with traceId", async () => {
+    const handler = await loadHandler();
+
+    await handler(createEvent());
+
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"event\":\"lambda.request.accepted\""),
+    );
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"traceId\":\"trace-456\""),
     );
   });
 });

@@ -8,7 +8,11 @@ import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as ssm from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
-import { BRIDGE_PORT, TABLE_NAMES } from "@serverless-openclaw/shared";
+import {
+  BEDROCK_DEFAULT_MODEL,
+  BRIDGE_PORT,
+  TABLE_NAMES,
+} from "@serverless-openclaw/shared";
 import { SSM_PARAMS, SSM_SECRETS } from "./ssm-params.js";
 
 export interface ComputeStackProps extends cdk.StackProps {
@@ -27,6 +31,7 @@ export interface ComputeStackProps extends cdk.StackProps {
   fargateMemory?: number;
   aiProvider?: string;
   aiModel?: string;
+  toolSlmBackend?: string;
 }
 
 export class ComputeStack extends cdk.Stack {
@@ -37,6 +42,10 @@ export class ComputeStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: ComputeStackProps) {
     super(scope, id, props);
 
+    const resolvedAiProvider = props.aiProvider ?? "anthropic";
+    const resolvedAiModel =
+      props.aiModel ?? (resolvedAiProvider === "bedrock" ? BEDROCK_DEFAULT_MODEL : undefined);
+
     // SSM SecureString parameter references (manually created)
     const bridgeAuthToken = ssm.StringParameter.fromSecureStringParameterAttributes(
       this, "BridgeAuthToken",
@@ -46,7 +55,7 @@ export class ComputeStack extends cdk.Stack {
       this, "OpenclawGatewayToken",
       { parameterName: SSM_SECRETS.OPENCLAW_GATEWAY_TOKEN },
     );
-    const anthropicApiKey = props.aiProvider !== "bedrock"
+    const anthropicApiKey = resolvedAiProvider !== "bedrock"
       ? ssm.StringParameter.fromSecureStringParameterAttributes(
           this, "AnthropicApiKey",
           { parameterName: SSM_SECRETS.ANTHROPIC_API_KEY },
@@ -55,6 +64,21 @@ export class ComputeStack extends cdk.Stack {
     const telegramBotToken = ssm.StringParameter.fromSecureStringParameterAttributes(
       this, "TelegramBotToken",
       { parameterName: SSM_SECRETS.TELEGRAM_BOT_TOKEN },
+    );
+    const openclawAuthProfilesJson = ssm.StringParameter.fromSecureStringParameterAttributes(
+      this,
+      "OpenclawAuthProfilesJson",
+      { parameterName: SSM_SECRETS.OPENCLAW_AUTH_PROFILES_JSON },
+    );
+    const openclawOauthJson = ssm.StringParameter.fromSecureStringParameterAttributes(
+      this,
+      "OpenclawOauthJson",
+      { parameterName: SSM_SECRETS.OPENCLAW_OAUTH_JSON },
+    );
+    const googleOauthClientJson = ssm.StringParameter.fromSecureStringParameterAttributes(
+      this,
+      "GoogleOauthClientJson",
+      { parameterName: SSM_SECRETS.GOOGLE_OAUTH_CLIENT_JSON },
     );
 
     // ECS Cluster — FARGATE_SPOT only
@@ -95,15 +119,34 @@ export class ComputeStack extends cdk.Stack {
         DATA_BUCKET: props.dataBucket.bucketName,
         BRIDGE_PORT: String(BRIDGE_PORT),
         METRICS_ENABLED: "true",
-        AI_PROVIDER: props.aiProvider ?? "anthropic",
-        ...(props.aiModel ? { AI_MODEL: props.aiModel } : {}),
+        AI_PROVIDER: resolvedAiProvider,
+        ...(resolvedAiModel ? { AI_MODEL: resolvedAiModel } : {}),
+        ...(props.toolSlmBackend ? { TOOL_SLM_BACKEND: props.toolSlmBackend } : {}),
+        TOOL_CONTEXT_STORE: process.env.TOOL_CONTEXT_STORE ?? "ddb",
+        GMAIL_SUMMARY_FETCH_CONCURRENCY:
+          process.env.GMAIL_SUMMARY_FETCH_CONCURRENCY ?? "10",
+        TOOL_DETERMINISTIC_PAYMENT_FAST_PATH:
+          process.env.TOOL_DETERMINISTIC_PAYMENT_FAST_PATH ?? "false",
+        AWS_COST_LOOKUP_ENABLED: process.env.AWS_COST_LOOKUP_ENABLED ?? "false",
+        AWS_COST_EXPLORER_REGION: process.env.AWS_COST_EXPLORER_REGION ?? "us-east-1",
         AWS_REGION: this.region,
+        // Pending queue retry tuning stays in env vars so operations can adjust
+        // backoff/dead-letter behaviour without rebuilding the Fargate image.
+        PENDING_MESSAGE_MAX_RETRIES:
+          process.env.PENDING_MESSAGE_MAX_RETRIES ?? "3",
+        PENDING_MESSAGE_BASE_RETRY_DELAY_MS:
+          process.env.PENDING_MESSAGE_BASE_RETRY_DELAY_MS ?? "30000",
+        PENDING_MESSAGE_MAX_RETRY_DELAY_MS:
+          process.env.PENDING_MESSAGE_MAX_RETRY_DELAY_MS ?? "600000",
       },
       secrets: {
         BRIDGE_AUTH_TOKEN: ecs.Secret.fromSsmParameter(bridgeAuthToken),
         OPENCLAW_GATEWAY_TOKEN: ecs.Secret.fromSsmParameter(openclawGatewayToken),
         ...(anthropicApiKey ? { ANTHROPIC_API_KEY: ecs.Secret.fromSsmParameter(anthropicApiKey) } : {}),
         TELEGRAM_BOT_TOKEN: ecs.Secret.fromSsmParameter(telegramBotToken),
+        OPENCLAW_AUTH_PROFILES_JSON: ecs.Secret.fromSsmParameter(openclawAuthProfilesJson),
+        OPENCLAW_OAUTH_JSON: ecs.Secret.fromSsmParameter(openclawOauthJson),
+        GOOGLE_OAUTH_CLIENT_JSON: ecs.Secret.fromSsmParameter(googleOauthClientJson),
       },
       logging: ecs.LogDrivers.awsLogs({
         logGroup,
@@ -135,6 +178,14 @@ export class ComputeStack extends cdk.Stack {
     this.taskRole.addToPrincipalPolicy(
       new iam.PolicyStatement({
         actions: ["cloudwatch:PutMetricData"],
+        resources: ["*"],
+      }),
+    );
+
+    // IAM — AWS Cost Explorer read-only lookup. IAM policies cost nothing.
+    this.taskRole.addToPrincipalPolicy(
+      new iam.PolicyStatement({
+        actions: ["ce:GetCostAndUsage"],
         resources: ["*"],
       }),
     );
@@ -198,3 +249,8 @@ export class ComputeStack extends cdk.Stack {
     });
   }
 }
+
+
+
+
+

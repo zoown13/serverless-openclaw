@@ -12,4 +12,9 @@ export const SSM_SECRETS = {
   ANTHROPIC_API_KEY: "/serverless-openclaw/secrets/anthropic-api-key",
   TELEGRAM_BOT_TOKEN: "/serverless-openclaw/secrets/telegram-bot-token",
   TELEGRAM_WEBHOOK_SECRET: "/serverless-openclaw/secrets/telegram-webhook-secret",
+  OPENCLAW_AUTH_PROFILES_JSON:
+    "/serverless-openclaw/secrets/openclaw-auth-profiles-json",
+  OPENCLAW_OAUTH_JSON: "/serverless-openclaw/secrets/openclaw-oauth-json",
+  GOOGLE_OAUTH_CLIENT_JSON:
+    "/serverless-openclaw/secrets/google-oauth-client-json",
 } as const;

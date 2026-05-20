@@ -268,6 +268,29 @@ describe("OpenClawClient", () => {
     await expect(client.waitForReady()).rejects.toThrow("bad token");
   });
 
+  it("should retry waitForReady when the gateway is still starting", async () => {
+    await vi.advanceTimersByTimeAsync(0);
+    const firstSocket = client.ws;
+
+    client.ws?.emit(
+      "message",
+      JSON.stringify({
+        type: "res",
+        id: "connect-1",
+        ok: false,
+        error: { code: "STARTING", message: "gateway starting; retry shortly" },
+      }),
+    );
+
+    expect(firstSocket?.close).toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(250);
+    expect(client.ws).not.toBe(firstSocket);
+
+    simulateHandshake(client);
+    await expect(client.waitForReady()).resolves.toBeUndefined();
+  });
+
   it("should close the WebSocket connection", async () => {
     await vi.advanceTimersByTimeAsync(0);
     client.close();

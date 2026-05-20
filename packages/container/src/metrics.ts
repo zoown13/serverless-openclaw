@@ -8,6 +8,13 @@ const NAMESPACE = "ServerlessOpenClaw";
 const enabled = process.env.METRICS_ENABLED === "true";
 const client = new CloudWatchClient({});
 
+export interface ObservabilityCountDimensions {
+  channel: string;
+  runtime?: string;
+  outcome?: string;
+  deliveryType?: string;
+}
+
 async function putMetrics(metrics: MetricDatum[]): Promise<void> {
   if (!enabled) return;
   try {
@@ -117,6 +124,35 @@ export async function publishFirstResponseTime(
       Value: ms,
       Unit: "Milliseconds",
       Dimensions: [{ Name: "Channel", Value: channel }],
+      Timestamp: new Date(),
+    },
+  ]);
+}
+
+export async function publishCountMetric(
+  metricName: string,
+  dimensions: ObservabilityCountDimensions,
+  value = 1,
+): Promise<void> {
+  const metricDimensions = [
+    { Name: "Channel", Value: dimensions.channel },
+    ...(dimensions.runtime
+      ? [{ Name: "Runtime", Value: dimensions.runtime }]
+      : []),
+    ...(dimensions.outcome
+      ? [{ Name: "Outcome", Value: dimensions.outcome }]
+      : []),
+    ...(dimensions.deliveryType
+      ? [{ Name: "DeliveryType", Value: dimensions.deliveryType }]
+      : []),
+  ];
+
+  await putMetrics([
+    {
+      MetricName: metricName,
+      Value: value,
+      Unit: "Count",
+      Dimensions: metricDimensions,
       Timestamp: new Date(),
     },
   ]);

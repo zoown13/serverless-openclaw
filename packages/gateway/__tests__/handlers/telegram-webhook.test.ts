@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { handler } from "../../src/handlers/telegram-webhook.js";
 import type { APIGatewayProxyEventV2 } from "aws-lambda";
 
@@ -7,6 +7,11 @@ const mockSendTelegramMessage = vi.fn();
 const mockGetTaskState = vi.fn();
 const mockResolveUserId = vi.fn();
 const mockVerifyOtpAndLink = vi.fn();
+const mockGetPendingClarification = vi.fn();
+const mockPutPendingClarification = vi.fn();
+const mockDeletePendingClarification = vi.fn();
+const fetchMock = vi.fn();
+vi.stubGlobal("fetch", fetchMock);
 
 vi.mock("../../src/services/message.js", () => ({
   routeMessage: (...args: unknown[]) => mockRouteMessage(...args),
@@ -34,6 +39,12 @@ vi.mock("../../src/services/lambda-agent.js", () => ({
 vi.mock("../../src/services/identity.js", () => ({
   resolveUserId: (...args: unknown[]) => mockResolveUserId(...args),
   verifyOtpAndLink: (...args: unknown[]) => mockVerifyOtpAndLink(...args),
+}));
+
+vi.mock("../../src/services/clarification.js", () => ({
+  getPendingClarification: (...args: unknown[]) => mockGetPendingClarification(...args),
+  putPendingClarification: (...args: unknown[]) => mockPutPendingClarification(...args),
+  deletePendingClarification: (...args: unknown[]) => mockDeletePendingClarification(...args),
 }));
 
 vi.mock("../../src/services/secrets.js", () => ({
@@ -73,8 +84,11 @@ function makeEvent(body: Record<string, unknown>, secretToken?: string): APIGate
 }
 
 describe("telegram-webhook handler", () => {
+  let logSpy: ReturnType<typeof vi.spyOn>;
+
   beforeEach(() => {
     vi.clearAllMocks();
+    logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
     vi.stubEnv("SSM_TELEGRAM_SECRET_TOKEN", "/serverless-openclaw/secrets/telegram-webhook-secret");
     vi.stubEnv("SSM_TELEGRAM_BOT_TOKEN", "/serverless-openclaw/secrets/telegram-bot-token");
     vi.stubEnv("ECS_CLUSTER_ARN", "arn:cluster");
@@ -85,9 +99,17 @@ describe("telegram-webhook handler", () => {
     vi.stubEnv("WEBSOCKET_CALLBACK_URL", "https://api.example.com");
     mockRouteMessage.mockResolvedValue(undefined);
     mockSendTelegramMessage.mockResolvedValue(undefined);
+    fetchMock.mockReset();
     mockGetTaskState.mockResolvedValue(null);
     mockResolveUserId.mockImplementation((_send: unknown, uid: string) => Promise.resolve(uid));
     mockVerifyOtpAndLink.mockResolvedValue({ error: "not set" });
+    mockGetPendingClarification.mockResolvedValue(null);
+    mockPutPendingClarification.mockResolvedValue(undefined);
+    mockDeletePendingClarification.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
   });
 
   it("should return 403 for invalid secret token", async () => {
@@ -132,6 +154,7 @@ describe("telegram-webhook handler", () => {
 
   it("should send cold start reply when no task exists", async () => {
     mockGetTaskState.mockResolvedValue(null);
+    mockRouteMessage.mockResolvedValueOnce("started");
 
     const event = makeEvent(
       {
@@ -157,6 +180,7 @@ describe("telegram-webhook handler", () => {
 
   it("should send cold start reply when task is Starting", async () => {
     mockGetTaskState.mockResolvedValue({ status: "Starting" });
+    mockRouteMessage.mockResolvedValueOnce("queued");
 
     const event = makeEvent(
       {
@@ -184,6 +208,7 @@ describe("telegram-webhook handler", () => {
       status: "Running",
       publicIp: "1.2.3.4",
     });
+    mockRouteMessage.mockResolvedValueOnce("sent");
 
     const event = makeEvent(
       {
@@ -208,6 +233,88 @@ describe("telegram-webhook handler", () => {
 
     expect(result.statusCode).toBe(200);
     expect(mockRouteMessage).not.toHaveBeenCalled();
+  });
+
+  it("should download Telegram photo uploads and route them as Lambda image input", async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: vi.fn().mockResolvedValue({
+          ok: true,
+          result: { file_path: "photos/file_1.jpg", file_size: 4 },
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        arrayBuffer: vi.fn().mockResolvedValue(
+          Uint8Array.from([1, 2, 3, 4]).buffer,
+        ),
+      });
+
+    const event = makeEvent(
+      {
+        message: {
+          chat: { id: 12345 },
+          from: { id: 67890 },
+          caption: "이 사진 분석해줘",
+          photo: [
+            { file_id: "photo-small", file_unique_id: "small", file_size: 4 },
+            { file_id: "photo-large", file_unique_id: "large", file_size: 400_000 },
+          ],
+        },
+      },
+      "my-secret",
+    );
+
+    const result = await handler(event);
+
+    expect(result.statusCode).toBe(200);
+    expect(mockRouteMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: "이 사진 분석해줘",
+        imageInput: expect.objectContaining({
+          source: "telegram",
+          mediaType: "image/jpeg",
+          dataBase64: Buffer.from([1, 2, 3, 4]).toString("base64"),
+          fileId: "photo-small",
+          fileUniqueId: "small",
+          fileSize: 4,
+          caption: "이 사진 분석해줘",
+        }),
+      }),
+    );
+    expect(mockSendTelegramMessage).not.toHaveBeenCalled();
+  });
+
+  it("should return a controlled unsupported message for non-photo Telegram media", async () => {
+    const event = makeEvent(
+      {
+        message: {
+          chat: { id: 12345 },
+          from: { id: 67890 },
+          caption: "이 파일 분석해줘",
+          document: {
+            file_id: "doc-1",
+            file_name: "receipt.pdf",
+            mime_type: "application/pdf",
+          },
+        },
+      },
+      "my-secret",
+    );
+
+    const result = await handler(event);
+
+    expect(result.statusCode).toBe(200);
+    expect(mockRouteMessage).not.toHaveBeenCalled();
+    expect(mockSendTelegramMessage).toHaveBeenCalledWith(
+      expect.anything(),
+      "123456:ABC-DEF",
+      "telegram:12345",
+      expect.stringContaining("파일 형식은 아직 지원하지 않습니다"),
+    );
   });
 
   // ── /link command tests ──
@@ -339,7 +446,6 @@ describe("telegram-webhook handler", () => {
     expect(routeCall.agentRuntime).toBe("both");
     expect(routeCall.lambdaAgentFunctionArn).toBe("arn:aws:lambda:us-east-1:123:function:agent");
     expect(routeCall.invokeLambdaAgent).toBeDefined();
-    expect(routeCall.onColdStartPreview).toBeDefined();
   });
 
   it("should default agentRuntime to fargate when env not set", async () => {
@@ -414,6 +520,49 @@ describe("telegram-webhook handler", () => {
       expect.arrayContaining([
         expect.objectContaining({ name: "TELEGRAM_CHAT_ID", value: "12345" }),
       ]),
+    );
+  });
+
+  it("should not send wake-up text when routeMessage returns clarify", async () => {
+    mockRouteMessage.mockResolvedValueOnce("clarify");
+
+    const event = makeEvent(
+      {
+        message: {
+          chat: { id: 12345 },
+          from: { id: 67890 },
+          text: "이번주 결제한 금액이 어느정도 되려나?",
+        },
+      },
+      "my-secret",
+    );
+
+    await handler(event);
+
+    expect(mockSendTelegramMessage).not.toHaveBeenCalled();
+    expect(mockRouteMessage).toHaveBeenCalled();
+  });
+
+  it("should log Hangul diagnostics for Korean messages", async () => {
+    const event = makeEvent(
+      {
+        message: {
+          chat: { id: 12345 },
+          from: { id: 67890 },
+          text: "일본 여행가는데 결제한 내역들 알려줘",
+        },
+      },
+      "my-secret",
+    );
+
+    await handler(event);
+
+    expect(logSpy).toHaveBeenCalledWith(
+      "[telegram] received message",
+      expect.objectContaining({
+        hasHangul: true,
+        messageCodePointSample: expect.arrayContaining(["U+C77C", "U+BCF8"]),
+      }),
     );
   });
 });

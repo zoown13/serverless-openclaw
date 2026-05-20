@@ -7,6 +7,7 @@ import * as logs from "aws-cdk-lib/aws-logs";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as ssm from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
+import { BEDROCK_DEFAULT_MODEL } from "@serverless-openclaw/shared";
 import { SSM_PARAMS, SSM_SECRETS } from "./ssm-params.js";
 
 export interface LambdaAgentStackProps extends cdk.StackProps {
@@ -14,6 +15,7 @@ export interface LambdaAgentStackProps extends cdk.StackProps {
   taskStateTable: dynamodb.ITable;
   aiProvider?: string;
   aiModel?: string;
+  lambdaAgentImageTag?: string;
 }
 
 export class LambdaAgentStack extends cdk.Stack {
@@ -35,12 +37,15 @@ export class LambdaAgentStack extends cdk.Stack {
       retention: logs.RetentionDays.ONE_WEEK,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
+    const resolvedAiProvider = props.aiProvider ?? "anthropic";
+    const resolvedAiModel =
+      props.aiModel ?? (resolvedAiProvider === "bedrock" ? BEDROCK_DEFAULT_MODEL : undefined);
 
     // Lambda function from container image
     this.agentFunction = new lambda.DockerImageFunction(this, "AgentFunction", {
       functionName: "serverless-openclaw-agent",
       code: lambda.DockerImageCode.fromEcr(this.ecrRepository, {
-        tagOrDigest: "latest",
+        tagOrDigest: props.lambdaAgentImageTag ?? "latest",
       }),
       architecture: lambda.Architecture.ARM_64,
       memorySize: 2048,
@@ -49,10 +54,26 @@ export class LambdaAgentStack extends cdk.Stack {
       logGroup,
       environment: {
         HOME: "/tmp",
+        NODE_OPTIONS: "--no-deprecation",
         SSM_ANTHROPIC_API_KEY: SSM_SECRETS.ANTHROPIC_API_KEY,
+        SSM_TELEGRAM_BOT_TOKEN: SSM_SECRETS.TELEGRAM_BOT_TOKEN,
+        SSM_OPENCLAW_AUTH_PROFILES_JSON:
+          "/serverless-openclaw/secrets/openclaw-auth-profiles-json",
+        SSM_OPENCLAW_OAUTH_JSON:
+          "/serverless-openclaw/secrets/openclaw-oauth-json",
+        SSM_GOOGLE_OAUTH_CLIENT_JSON:
+          "/serverless-openclaw/secrets/google-oauth-client-json",
         SESSION_BUCKET: props.dataBucket.bucketName,
-        AI_PROVIDER: props.aiProvider ?? "anthropic",
-        ...(props.aiModel ? { AI_MODEL: props.aiModel } : {}),
+        AI_PROVIDER: resolvedAiProvider,
+        LAMBDA_DIRECT_BEDROCK_CHAT: resolvedAiProvider === "bedrock" ? "true" : "false",
+        ...(resolvedAiProvider === "bedrock"
+          ? { LAMBDA_DIRECT_CHAT_MODEL: "apac.amazon.nova-micro-v1:0" }
+          : {}),
+        LAMBDA_DIRECT_CHAT_MAX_TOKENS: "320",
+        LAMBDA_DIRECT_CHAT_EVERYDAY_MAX_TOKENS: "180",
+        AWS_COST_LOOKUP_ENABLED: process.env.AWS_COST_LOOKUP_ENABLED ?? "false",
+        AWS_COST_EXPLORER_REGION: process.env.AWS_COST_EXPLORER_REGION ?? "us-east-1",
+        ...(resolvedAiModel ? { AI_MODEL: resolvedAiModel } : {}),
       },
     });
 
@@ -87,6 +108,14 @@ export class LambdaAgentStack extends cdk.Stack {
       }),
     );
 
+    // IAM — AWS Cost Explorer read-only lookup. IAM policies cost nothing.
+    this.agentFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["ce:GetCostAndUsage"],
+        resources: ["*"],
+      }),
+    );
+
     // IAM — Bedrock (always provisioned; IAM policies cost nothing)
     this.agentFunction.addToRolePolicy(
       new iam.PolicyStatement({
@@ -96,6 +125,16 @@ export class LambdaAgentStack extends cdk.Stack {
           "bedrock:ListFoundationModels",
         ],
         resources: ["*"],
+      }),
+    );
+
+    // IAM — WebSocket push (async invocation: agent pushes responses directly)
+    this.agentFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["execute-api:ManageConnections"],
+        resources: [
+          `arn:aws:execute-api:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:*/*`,
+        ],
       }),
     );
 

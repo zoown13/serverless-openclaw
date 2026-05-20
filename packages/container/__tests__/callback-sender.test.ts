@@ -105,6 +105,37 @@ describe("CallbackSender — Telegram routing", () => {
     );
   });
 
+  it("should emit redacted Telegram content-quality signals", async () => {
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await sender.send("telegram:12345", {
+      type: "stream_chunk",
+      content:
+        "Gmail 헤더/스니펫 기준으로 후보 12건을 확인했습니다. 본문과 첨부파일은 열지 않았습니다. 확인 가능한 합계: KRW 10,000. 확인된 카드사: 삼성카드. 일본/여행 관련 결제만 정리했습니다. 스타벅스",
+    });
+    await sender.send("telegram:12345", { type: "stream_end" });
+
+    const qualityLog = consoleSpy.mock.calls
+      .map(([value]) => String(value))
+      .find((value) => value.includes("telegram.delivery.content_quality"));
+    expect(qualityLog).toBeDefined();
+    expect(qualityLog).not.toContain("스타벅스");
+
+    const payload = JSON.parse(qualityLog ?? "{}") as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      component: "callback",
+      event: "telegram.delivery.content_quality",
+      hasKoreanPaymentSummary: true,
+      hasPaymentCoverageDisclosure: true,
+      hasIssuerBreakdownSignal: true,
+      hasTopicFilteredPaymentSignal: true,
+      hasRawInternalError: false,
+      hasLegacyEnglishPaymentPhrases: false,
+    });
+
+    consoleSpy.mockRestore();
+  });
+
   it("should send error message via Telegram Bot API", async () => {
     await sender.send("telegram:12345", { type: "stream_chunk", content: "partial" });
     await sender.send("telegram:12345", {
@@ -191,12 +222,14 @@ describe("CallbackSender — Telegram routing", () => {
     expect(mockWsSend).not.toHaveBeenCalled();
   });
 
-  it("should handle fetch failure gracefully", async () => {
+  it("should surface fetch failure after logging it", async () => {
     mockFetch.mockRejectedValue(new Error("Network error"));
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     await sender.send("telegram:12345", { type: "stream_chunk", content: "hi" });
-    await sender.send("telegram:12345", { type: "stream_end" });
+    await expect(
+      sender.send("telegram:12345", { type: "stream_end" }),
+    ).rejects.toThrow("Network error");
 
     expect(consoleSpy).toHaveBeenCalledWith(
       expect.stringContaining("Failed to send Telegram message"),

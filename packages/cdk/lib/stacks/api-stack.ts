@@ -38,6 +38,12 @@ export interface ApiStackProps extends cdk.StackProps {
   userPoolClient: cognito.IUserPoolClient;
   /** Agent runtime mode: 'fargate' | 'lambda' | 'both'. Default: 'fargate' */
   agentRuntime?: string;
+  /** Tool-capable runtime provider: 'fargate' | 'agentcore'. Default: 'agentcore' */
+  toolRuntimeProvider?: string;
+  /** Optional Bedrock AgentCore runtime ARN for tool-capable requests. */
+  agentCoreRuntimeArn?: string;
+  /** Optional AgentCore runtime qualifier. */
+  agentCoreRuntimeQualifier?: string;
 }
 
 export class ApiStack extends cdk.Stack {
@@ -53,6 +59,7 @@ export class ApiStack extends cdk.Stack {
 
     // Common environment variables for Lambda functions
     const agentRuntime = props.agentRuntime ?? "fargate";
+    const toolRuntimeProvider = props.toolRuntimeProvider ?? "agentcore";
     const fargateEnabled = agentRuntime !== "lambda";
 
     let subnetIds = "";
@@ -95,6 +102,20 @@ export class ApiStack extends cdk.Stack {
           }
         : {}),
       AGENT_RUNTIME: agentRuntime,
+      TOOL_RUNTIME_PROVIDER: toolRuntimeProvider,
+      AGENTCORE_FALLBACK_PROVIDER: process.env.AGENTCORE_FALLBACK_PROVIDER ?? "fargate",
+      AGENTCORE_INVOKE_DEADLINE_MS: process.env.AGENTCORE_INVOKE_DEADLINE_MS ?? "12000",
+      AWS_COST_LOOKUP_ENABLED: process.env.AWS_COST_LOOKUP_ENABLED ?? "false",
+      AWS_COST_EXPLORER_REGION: process.env.AWS_COST_EXPLORER_REGION ?? "us-east-1",
+      ...(process.env.AGENTCORE_SESSION_NAMESPACE
+        ? { AGENTCORE_SESSION_NAMESPACE: process.env.AGENTCORE_SESSION_NAMESPACE }
+        : {}),
+      ...(props.agentCoreRuntimeArn
+        ? { AGENTCORE_RUNTIME_ARN: props.agentCoreRuntimeArn }
+        : {}),
+      ...(props.agentCoreRuntimeQualifier
+        ? { AGENTCORE_RUNTIME_QUALIFIER: props.agentCoreRuntimeQualifier }
+        : {}),
       LAMBDA_AGENT_FUNCTION_ARN: lambdaAgentFunctionArn,
     };
 
@@ -102,11 +123,11 @@ export class ApiStack extends cdk.Stack {
     const bundlingDefaults = {
       externalModules: ["@aws-sdk/*"],
       sourceMap: true,
-      target: "node22",
+      target: "node24",
     };
 
     const nodejsFunctionDefaults = {
-      runtime: lambda.Runtime.NODEJS_22_X,
+      runtime: lambda.Runtime.NODEJS_24_X,
       architecture: lambda.Architecture.ARM_64,
       memorySize: 256,
       timeout: cdk.Duration.seconds(30),
@@ -282,6 +303,21 @@ export class ApiStack extends cdk.Stack {
           new iam.PolicyStatement({
             actions: ["lambda:InvokeFunction"],
             resources: [lambdaAgentFunctionArn],
+          }),
+        );
+      }
+    }
+
+    if (toolRuntimeProvider === "agentcore" && props.agentCoreRuntimeArn) {
+      const agentCoreInvokeFunctions = [wsMessageFn, telegramWebhookFn];
+      for (const fn of agentCoreInvokeFunctions) {
+        fn.addToRolePolicy(
+          new iam.PolicyStatement({
+            actions: ["bedrock-agentcore:InvokeAgentRuntime"],
+            resources: [
+              props.agentCoreRuntimeArn,
+              `${props.agentCoreRuntimeArn}/runtime-endpoint/*`,
+            ],
           }),
         );
       }

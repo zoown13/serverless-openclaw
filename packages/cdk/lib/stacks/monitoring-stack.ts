@@ -21,6 +21,11 @@ const KEY_LAMBDA_FUNCTIONS = [
   "serverless-openclaw-telegram-webhook",
 ];
 
+const GATEWAY_RUNTIME_LOG_GROUPS = [
+  "/aws/lambda/serverless-openclaw-ws-message",
+  "/aws/lambda/serverless-openclaw-telegram-webhook",
+];
+
 /** Custom metric with Channel dimension — one per channel for correct CloudWatch lookup */
 function channelMetrics(
   metricName: string,
@@ -39,6 +44,24 @@ function channelMetrics(
         label: `${metricName} (${ch})`,
       }),
   );
+}
+
+function dimensionMetric(
+  metricName: string,
+  dimensionsMap: Record<string, string>,
+  statistic: string,
+  label: string,
+  unit?: cloudwatch.Unit,
+): cloudwatch.Metric {
+  return new cloudwatch.Metric({
+    namespace: NAMESPACE,
+    metricName,
+    dimensionsMap,
+    statistic,
+    unit,
+    period: cdk.Duration.minutes(5),
+    label,
+  });
 }
 
 function lambdaMetric(
@@ -170,6 +193,278 @@ export class MonitoringStack extends cdk.Stack {
         width: 8,
         height: 4,
         leftYAxis: { label: "ms" },
+      }),
+    );
+
+    dashboard.addWidgets(
+      sectionHeader(
+        "Routing & Runtime Selection",
+        "How requests are classified between Lambda and Fargate, including fallback behavior and pending queue activity.",
+      ),
+    );
+
+    dashboard.addWidgets(
+      new cloudwatch.GraphWidget({
+        title: "Lambda / Fargate Routing Ratio",
+        left: [
+          ...CHANNELS.map((ch) =>
+            dimensionMetric(
+              "RouteToLambda",
+              { Channel: ch, Runtime: "lambda" },
+              "Sum",
+              `RouteToLambda (${ch})`,
+              cloudwatch.Unit.COUNT,
+            )),
+          ...CHANNELS.map((ch) =>
+            dimensionMetric(
+              "RouteToFargate",
+              { Channel: ch, Runtime: "fargate" },
+              "Sum",
+              `RouteToFargate (${ch})`,
+              cloudwatch.Unit.COUNT,
+            )),
+        ],
+        width: 12,
+        height: 4,
+        leftYAxis: { label: "count" },
+      }),
+      new cloudwatch.GraphWidget({
+        title: "Fargate Fallbacks",
+        left: CHANNELS.map((ch) =>
+          dimensionMetric(
+            "RouteFallbackToFargate",
+            { Channel: ch, Runtime: "fargate" },
+            "Sum",
+            `Fallback (${ch})`,
+            cloudwatch.Unit.COUNT,
+          )),
+        width: 6,
+        height: 4,
+        leftYAxis: { label: "count" },
+      }),
+      new cloudwatch.GraphWidget({
+        title: "Pending Queue — queued / drained",
+        left: [
+          ...CHANNELS.map((ch) =>
+            dimensionMetric(
+              "PendingMessagesQueued",
+              { Channel: ch, Runtime: "fargate" },
+              "Sum",
+              `Queued (${ch})`,
+              cloudwatch.Unit.COUNT,
+            )),
+          ...CHANNELS.map((ch) =>
+            dimensionMetric(
+              "PendingMessagesDrained",
+              { Channel: ch, Runtime: "fargate" },
+              "Sum",
+              `Drained (${ch})`,
+              cloudwatch.Unit.COUNT,
+            )),
+        ],
+        width: 6,
+        height: 4,
+        leftYAxis: { label: "count" },
+      }),
+      new cloudwatch.GraphWidget({
+        title: "Pending Queue — retry / dead-letter",
+        left: [
+          ...CHANNELS.map((ch) =>
+            dimensionMetric(
+              "PendingMessagesRetryScheduled",
+              { Channel: ch, Runtime: "fargate" },
+              "Sum",
+              `RetryScheduled (${ch})`,
+              cloudwatch.Unit.COUNT,
+            )),
+          ...CHANNELS.map((ch) =>
+            dimensionMetric(
+              "PendingMessagesDeadLettered",
+              { Channel: ch, Runtime: "fargate" },
+              "Sum",
+              `DeadLettered (${ch})`,
+              cloudwatch.Unit.COUNT,
+            )),
+        ],
+        width: 6,
+        height: 4,
+        leftYAxis: { label: "count" },
+      }),
+    );
+
+    dashboard.addWidgets(
+      sectionHeader(
+        "AgentCore Harness & Handoff",
+        "AgentCore-first tool runtime control plane, chat-only handoff, and Fargate fallback lock diagnostics from gateway logs.",
+      ),
+    );
+
+    dashboard.addWidgets(
+      new cloudwatch.LogQueryWidget({
+        title: "AgentCore invoke / handoff / fallback events",
+        logGroupNames: GATEWAY_RUNTIME_LOG_GROUPS,
+        queryLines: [
+          "fields @timestamp, @message",
+          'filter @message like /"event":"agentcore.invoke/',
+          'parse @message /"event":"(?<event>[^"]+)"/',
+          'parse @message /"traceId":"(?<traceId>[^"]+)"/',
+          'parse @message /"channel":"(?<channel>[^"]+)"/',
+          'parse @message /"toolRuntimeProvider":"(?<provider>[^"]+)"/',
+          'parse @message /"handoffRuntimeClass":"(?<handoffRuntimeClass>[^"]+)"/',
+          "display @timestamp, event, channel, provider, handoffRuntimeClass, traceId",
+          "sort @timestamp desc",
+          "limit 50",
+        ],
+        width: 12,
+        height: 6,
+      }),
+      new cloudwatch.LogQueryWidget({
+        title: "Tool affinity clear / provider lock events",
+        logGroupNames: GATEWAY_RUNTIME_LOG_GROUPS,
+        queryLines: [
+          "fields @timestamp, @message",
+          'filter @message like /"event":"route.affinity./ or @message like /"event":"gateway.harness.session./',
+          'parse @message /"event":"(?<event>[^"]+)"/',
+          'parse @message /"traceId":"(?<traceId>[^"]+)"/',
+          'parse @message /"channel":"(?<channel>[^"]+)"/',
+          'parse @message /"reason":"(?<reason>[^"]+)"/',
+          'parse @message /"provider":"(?<provider>[^"]+)"/',
+          "display @timestamp, event, channel, provider, reason, traceId",
+          "sort @timestamp desc",
+          "limit 50",
+        ],
+        width: 12,
+        height: 6,
+      }),
+    );
+
+    dashboard.addWidgets(
+      new cloudwatch.LogQueryWidget({
+        title: "AgentCore handoff / fallback counts",
+        logGroupNames: GATEWAY_RUNTIME_LOG_GROUPS,
+        queryLines: [
+          "fields @timestamp, @message",
+          'filter @message like /"event":"agentcore.invoke.handoff"/ or @message like /"event":"agentcore.invoke.fallback"/',
+          'parse @message /"event":"(?<event>[^"]+)"/',
+          "stats count(*) by bin(5m), event",
+          "sort bin(5m) desc",
+        ],
+        width: 12,
+        height: 6,
+      }),
+    );
+
+    dashboard.addWidgets(
+      sectionHeader(
+        "Gmail Tool & Delivery Outcomes",
+        "Structured visibility into direct Gmail tool execution and final response delivery for WebSocket and Telegram.",
+      ),
+    );
+
+    dashboard.addWidgets(
+      new cloudwatch.GraphWidget({
+        title: "Gmail Tool Outcomes",
+        left: [
+          ...CHANNELS.map((ch) =>
+            dimensionMetric(
+              "GmailToolMatched",
+              { Channel: ch, Runtime: "fargate" },
+              "Sum",
+              `Matched (${ch})`,
+              cloudwatch.Unit.COUNT,
+            )),
+          ...CHANNELS.map((ch) =>
+            dimensionMetric(
+              "GmailToolSuccess",
+              { Channel: ch, Runtime: "fargate" },
+              "Sum",
+              `Success (${ch})`,
+              cloudwatch.Unit.COUNT,
+            )),
+          ...CHANNELS.map((ch) =>
+            dimensionMetric(
+              "GmailToolNoResults",
+              { Channel: ch, Runtime: "fargate" },
+              "Sum",
+              `NoResults (${ch})`,
+              cloudwatch.Unit.COUNT,
+            )),
+          ...CHANNELS.map((ch) =>
+            dimensionMetric(
+              "GmailToolFailure",
+              { Channel: ch, Runtime: "fargate" },
+              "Sum",
+              `Failure (${ch})`,
+              cloudwatch.Unit.COUNT,
+            )),
+        ],
+        width: 12,
+        height: 4,
+        leftYAxis: { label: "count" },
+      }),
+      new cloudwatch.GraphWidget({
+        title: "Delivery Success / Failure",
+        left: [
+          dimensionMetric(
+            "DeliverySuccess",
+            { Channel: "web", Runtime: "lambda", DeliveryType: "websocket" },
+            "Sum",
+            "Success (web/lambda)",
+            cloudwatch.Unit.COUNT,
+          ),
+          dimensionMetric(
+            "DeliverySuccess",
+            { Channel: "web", Runtime: "fargate", DeliveryType: "websocket" },
+            "Sum",
+            "Success (web/fargate)",
+            cloudwatch.Unit.COUNT,
+          ),
+          dimensionMetric(
+            "DeliverySuccess",
+            { Channel: "telegram", Runtime: "lambda", DeliveryType: "telegram" },
+            "Sum",
+            "Success (telegram/lambda)",
+            cloudwatch.Unit.COUNT,
+          ),
+          dimensionMetric(
+            "DeliverySuccess",
+            { Channel: "telegram", Runtime: "fargate", DeliveryType: "telegram" },
+            "Sum",
+            "Success (telegram/fargate)",
+            cloudwatch.Unit.COUNT,
+          ),
+          dimensionMetric(
+            "DeliveryFailure",
+            { Channel: "web", Runtime: "lambda", DeliveryType: "websocket" },
+            "Sum",
+            "Failure (web/lambda)",
+            cloudwatch.Unit.COUNT,
+          ),
+          dimensionMetric(
+            "DeliveryFailure",
+            { Channel: "web", Runtime: "fargate", DeliveryType: "websocket" },
+            "Sum",
+            "Failure (web/fargate)",
+            cloudwatch.Unit.COUNT,
+          ),
+          dimensionMetric(
+            "DeliveryFailure",
+            { Channel: "telegram", Runtime: "lambda", DeliveryType: "telegram" },
+            "Sum",
+            "Failure (telegram/lambda)",
+            cloudwatch.Unit.COUNT,
+          ),
+          dimensionMetric(
+            "DeliveryFailure",
+            { Channel: "telegram", Runtime: "fargate", DeliveryType: "telegram" },
+            "Sum",
+            "Failure (telegram/fargate)",
+            cloudwatch.Unit.COUNT,
+          ),
+        ],
+        width: 12,
+        height: 4,
+        leftYAxis: { label: "count" },
       }),
     );
 

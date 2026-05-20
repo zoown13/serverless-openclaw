@@ -34,6 +34,9 @@ cp .env.example .env
 #   FARGATE_MEMORY=2048    # optional (must be compatible with CPU), default: 2048
 #   PREWARM_SCHEDULE=0 9 ? * MON-FRI *   # optional, comma-separated cron expressions
 #   PREWARM_DURATION=60                   # optional, minutes (default: 60)
+#   PENDING_MESSAGE_MAX_RETRIES=3         # optional, Fargate pending queue retry budget
+#   PENDING_MESSAGE_BASE_RETRY_DELAY_MS=30000   # optional, exponential backoff base delay
+#   PENDING_MESSAGE_MAX_RETRY_DELAY_MS=600000   # optional, exponential backoff ceiling
 ```
 
 Then load the environment before running any AWS/CDK commands:
@@ -282,12 +285,35 @@ VITE_COGNITO_CLIENT_ID=<AuthStack.UserPoolClientId>
 
 Set in `.env` or exported before running CDK commands.
 
-| Variable        | Default              | Values                          | Purpose                     |
-| --------------- | -------------------- | ------------------------------- | --------------------------- |
-| `AGENT_RUNTIME` | `fargate`            | `fargate` \| `lambda` \| `both` | Compute path selection      |
-| `AI_PROVIDER`   | `anthropic`          | `anthropic` \| `bedrock`        | AI provider selection       |
-| `AI_MODEL`      | _(provider default)_ | any model ID                    | Override default model      |
-| `DEPLOY_WEB`    | `true`               | `true` \| `false`               | Include WebStack deployment |
+| Variable | Default | Values | Purpose |
+|----------|---------|--------|---------|
+| `AGENT_RUNTIME` | `fargate` | `fargate` \| `lambda` \| `both` | Compute path selection |
+| `AI_PROVIDER` | `anthropic` | `anthropic` \| `bedrock` | AI provider selection |
+| `AI_MODEL` | _(provider default)_ | any model ID | Override default model |
+| `DEPLOY_WEB` | `true` | `true` \| `false` | Include WebStack deployment |
+| `PENDING_MESSAGE_MAX_RETRIES` | `3` | positive integer | Retry budget before soft dead-lettering a pending message |
+| `PENDING_MESSAGE_BASE_RETRY_DELAY_MS` | `30000` | positive integer (ms) | Base delay used for exponential retry backoff in Fargate |
+| `PENDING_MESSAGE_MAX_RETRY_DELAY_MS` | `600000` | positive integer (ms) | Upper bound for pending-message retry delay in Fargate |
+| `TOOL_RUNTIME_PROVIDER` | `fargate` | `fargate` \| `agentcore` | Selects the primary tool runtime provider |
+| `AGENTCORE_FALLBACK_PROVIDER` | `fargate` | `fargate` | Fallback provider when AgentCore is unavailable |
+| `AGENTCORE_INVOKE_DEADLINE_MS` | `12000` | positive integer (ms) | Gateway-side AgentCore deadline before fallback |
+| `AWS_COST_LOOKUP_ENABLED` | `false` | `true` \| `false` | Enables AWS Cost Explorer lookup capability |
+
+These pending-queue settings are consumed by the Fargate container only. They do not affect the Lambda chat runtime. The defaults preserve the current behavior, while letting operations tune retry aggressiveness without rebuilding the image.
+
+### Local Option B / AgentCore-first deployment shortcut
+
+During active development, use the local deploy script instead of waiting for GitHub Actions. This keeps the architecture in `Lambda default chat + AgentCore primary tool runtime + Fargate fallback` mode and updates only the API/Gateway wiring when `-ApiOnly` is used.
+
+```powershell
+$env:AWS_COST_LOOKUP_ENABLED = "true"
+powershell -File .\scripts\deploy-option-b-tool-runtime.ps1 `
+  -ToolRuntimeProvider agentcore `
+  -AgentCoreSessionNamespace <CURRENT_AGENTCORE_SESSION_NAMESPACE> `
+  -ApiOnly
+```
+
+Use this path after Gateway routing, affinity, or `AssistantRuntimeContext` changes. Rebuild and push the container image only when changing `packages/container` or the AgentCore runtime adapter image.
 
 ---
 
@@ -313,6 +339,46 @@ wscat -c "<WebSocketApiEndpoint>?token=<ID_TOKEN>"
 1. Send a message to the bot in Telegram
 2. Verify "Waking up..." response (cold start)
 3. Verify agent response
+
+### Final regression smoke
+
+After a deployment that changes routing, AgentCore fallback, Gmail/payment behavior, AWS cost lookup, or Telegram delivery, run the final regression smoke.
+
+Critical suite:
+
+```powershell
+powershell -File .\scripts\final-regression-smoke.ps1 `
+  -ChatId <TELEGRAM_CHAT_ID> `
+  -TelegramId <TELEGRAM_USER_ID> `
+  -Suite Critical `
+  -BridgeSignalTimeoutSeconds 240
+```
+
+Full suite:
+
+```powershell
+powershell -File .\scripts\final-regression-smoke.ps1 `
+  -ChatId <TELEGRAM_CHAT_ID> `
+  -TelegramId <TELEGRAM_USER_ID> `
+  -Suite Full `
+  -BridgeSignalTimeoutSeconds 240
+```
+
+`Critical` verifies the minimum operational paths:
+
+- Lambda chat-only route and `/cost` recent query-cost recall
+- AWS Cost Explorer lookup
+- Gmail/payment capability awareness followed by Lambda chat handoff
+- Travel payment refinement, issuer breakdown, and chat handoff
+
+`Full` adds longer behavior checks:
+
+- Payment coverage correction
+- User-requested payment scan expansion
+- Payment date-range follow-ups
+- Planner/advisor continuity and explicit topic switch handoff
+
+The release gate for the v1.0 operational assistant baseline is `Suite Full` with zero failures.
 
 ### Telegram-Web Identity Linking Test
 
@@ -485,6 +551,16 @@ AI_PROVIDER=bedrock npx cdk deploy --all --profile $AWS_PROFILE --region $AWS_RE
 
 The SecretsStack skips the `AnthropicApiKey` SSM parameter when `AI_PROVIDER=bedrock`. Bedrock IAM permissions (`bedrock:InvokeModel`, `bedrock:InvokeModelWithResponseStream`) are provisioned on both Lambda and Fargate roles regardless of provider (no cost, avoids drift on provider switch).
 
+### Serverless Gmail / OAuth readiness
+
+For the Bedrock Lambda runtime, the current stabilization baseline is **chat-only**. Gmail and other tool-driven actions are not attempted unless the runtime is explicitly configured to be tool-ready.
+
+- `google-oauth-client-json` is only the OAuth app/client metadata
+- `openclaw-oauth-json` is the canonical user token secret used to mark Gmail as connected
+- `openclaw-auth-profiles-json` is reserved for the OpenClaw auth store and does **not** by itself make Gmail ready
+
+Important: the OAuth client JSON alone does **not** complete Gmail integration. A valid user token secret must be present in `openclaw-oauth-json`, otherwise the Lambda runtime degrades to chat-only and Gmail requests return an explicit "not connected yet" response instead of failing the whole cold start.
+
 ### Switching back to Anthropic
 
 ```bash
@@ -543,3 +619,29 @@ curl "https://api.telegram.org/bot<BOT_TOKEN>/getWebhookInfo"
 - Webhook URL not registered → run `make telegram-webhook`
 - Secret token mismatch (403 Forbidden) → run `make telegram-webhook` to re-register with SSM secret
 - Lambda error → check CloudWatch logs for `telegram-webhook` function
+
+## 12. Tracing a single request
+
+When you need to explain one user request end-to-end, follow the log groups in this order:
+
+1. `/aws/lambda/serverless-openclaw-ws-message` for Web ingress, or `/aws/lambda/serverless-openclaw-telegram-webhook` for Telegram ingress
+2. `/aws/lambda/serverless-openclaw-agent` when the request was routed to the Lambda runtime
+3. `/ecs/serverless-openclaw` when the request was routed to Fargate or drained from the pending queue
+
+The common join key is `traceId`. The gateway emits `route.classified` first, then either `route.lambda.invoked`, `route.fargate.reused`, `route.fargate.started`, `route.pending.queued`, or `route.lambda.fallback_to_fargate`. The downstream runtime keeps the same `traceId`, so you can search CloudWatch Logs Insights for that value and read the structured `event` field in chronological order.
+
+For Lambda requests, start with `lambda.request.accepted` and `lambda.runtime.summary`, then check `lambda.tool.blocked` or the delivery events:
+
+- `lambda.delivery.websocket.success`
+- `lambda.delivery.websocket.failure`
+- `lambda.delivery.telegram.success`
+- `lambda.delivery.telegram.failure`
+
+For Fargate requests, start with `bridge.message.accepted`. Gmail requests emit these structured events:
+
+- `bridge.gmail.matched`
+- `bridge.gmail.query.built`
+- `bridge.gmail.query.result`
+- `bridge.gmail.query.failure`
+
+To diagnose a Gmail query mismatch, compare the original runtime decision in `route.classified` with the sanitized Gmail query in `bridge.gmail.query.built`, then confirm the final match counts in `bridge.gmail.query.result`. If the request reached Fargate but `bridge.gmail.query.result` shows `outcome=no-results`, the routing worked and the issue is the derived Gmail query rather than runtime selection.

@@ -1,10 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 
-# Deploy container image to ECR with zstd compression and optional SOCI index
+# Deploy container image to ECR with AgentCore-compatible gzip compression and optional SOCI index
 # Usage: ./scripts/deploy-image.sh [--soci]
 #
-# Uses zstd compression (level 3) for faster Fargate image pull.
+# Uses gzip by default because AgentCore Runtime has shown snapshot pull failures
+# with zstd-compressed layers. Set IMAGE_COMPRESSION=zstd only for Fargate-only
+# experiments.
 #
 # Prerequisites:
 #   - AWS CLI configured (profile via AWS_PROFILE or .env)
@@ -16,6 +18,7 @@ REGION="${AWS_REGION:-ap-northeast-2}"
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 ECR_REPO="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/serverless-openclaw"
 ENABLE_SOCI=false
+IMAGE_COMPRESSION="${IMAGE_COMPRESSION:-gzip}"
 
 for arg in "$@"; do
   case $arg in
@@ -26,6 +29,7 @@ done
 echo "=== Build & Deploy Container Image ==="
 echo "ECR: ${ECR_REPO}"
 echo "SOCI: ${ENABLE_SOCI}"
+echo "Compression: ${IMAGE_COMPRESSION}"
 
 # Step 1: Login to ECR (needed before buildx --push)
 echo ""
@@ -35,17 +39,32 @@ aws ecr get-login-password --region "${REGION}" | \
 
 # Step 2: Build & Push with zstd compression
 echo ""
-echo "[2/3] Building and pushing Docker image (zstd compression)..."
+echo "[2/3] Building and pushing Docker image (${IMAGE_COMPRESSION} compression)..."
 OPENCLAW_VERSION="${OPENCLAW_VERSION:-latest}"
+IMAGE_TAG="${IMAGE_TAG:-latest}"
 echo "OpenClaw version: ${OPENCLAW_VERSION}"
+echo "Image tag: ${IMAGE_TAG}"
+
+IMAGE_TAG_ARGS=(-t "${ECR_REPO}:latest")
+if [ "${IMAGE_TAG}" != "latest" ]; then
+  IMAGE_TAG_ARGS+=(-t "${ECR_REPO}:${IMAGE_TAG}")
+fi
+
+OUTPUT_ARGS=(--output type=image,push=true)
+if [ "${IMAGE_COMPRESSION}" = "zstd" ]; then
+  OUTPUT_ARGS=(--output type=image,push=true,compression=zstd,compression-level=3,force-compression=true)
+elif [ "${IMAGE_COMPRESSION}" != "gzip" ] && [ "${IMAGE_COMPRESSION}" != "default" ]; then
+  echo "ERROR: IMAGE_COMPRESSION must be one of: zstd, gzip, default"
+  exit 1
+fi
 
 docker buildx build \
   --platform linux/arm64 \
-  -t "${ECR_REPO}:latest" \
+  "${IMAGE_TAG_ARGS[@]}" \
   --build-arg OPENCLAW_VERSION="${OPENCLAW_VERSION}" \
   --provenance=false \
   --no-cache \
-  --output type=image,push=true,compression=zstd,compression-level=3,force-compression=true \
+  "${OUTPUT_ARGS[@]}" \
   -f packages/container/Dockerfile .
 
 # Step 3: SOCI Index (optional, Linux only)
@@ -80,9 +99,12 @@ fi
 echo ""
 echo "=== Deploy complete ==="
 echo "Image: ${ECR_REPO}:latest"
+if [ "${IMAGE_TAG}" != "latest" ]; then
+  echo "AgentCore image: ${ECR_REPO}:${IMAGE_TAG}"
+fi
 
 # Check image size in ECR
-IMAGE_SIZE=$(aws ecr describe-images --repository-name serverless-openclaw --image-ids imageTag=latest \
+IMAGE_SIZE=$(aws ecr describe-images --repository-name serverless-openclaw --image-ids imageTag="${IMAGE_TAG}" \
   --query 'imageDetails[0].imageSizeInBytes' --output text --region "${REGION}" 2>/dev/null || echo "unknown")
 if [ "${IMAGE_SIZE}" != "unknown" ]; then
   IMAGE_SIZE_MB=$((IMAGE_SIZE / 1024 / 1024))

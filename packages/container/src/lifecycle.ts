@@ -18,6 +18,7 @@ interface LifecycleDeps {
   workspacePath: string;
   /** Path to OpenClaw sessions directory (e.g., /home/openclaw/.openclaw) */
   openclawHome?: string;
+  taskStateEnabled?: boolean;
 }
 
 export class LifecycleManager {
@@ -39,6 +40,10 @@ export class LifecycleManager {
   }
 
   async updateTaskState(status: TaskStatus, publicIp?: string): Promise<void> {
+    if (this.deps.taskStateEnabled === false) {
+      return;
+    }
+
     const item: Record<string, unknown> = {
       PK: `${KEY_PREFIX.USER}${this.deps.userId}`,
       taskArn: this.deps.taskArn,
@@ -106,6 +111,8 @@ export class LifecycleManager {
   async gracefulShutdown(): Promise<void> {
     this.stopPeriodicBackup();
     await this.backupToS3();
-    await this.updateTaskState("Idle");
+    if (this.deps.taskStateEnabled !== false) {
+      await this.updateTaskState("Idle");
+    }
   }
 }

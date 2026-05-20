@@ -54,6 +54,7 @@ const mockListen = vi.fn(
 
 const mockPublishStartupMetrics = vi.fn(async () => {});
 const mockPublishMessageMetrics = vi.fn(async () => {});
+const mockPublishCountMetric = vi.fn(async () => {});
 const mockStartPeriodicBackup = vi.fn();
 
 vi.mock("../src/s3-sync.js", () => ({
@@ -77,6 +78,8 @@ vi.mock("../src/metrics.js", () => ({
     mockPublishStartupMetrics(...args),
   publishMessageMetrics: (...args: unknown[]) =>
     mockPublishMessageMetrics(...args),
+  publishCountMetric: (...args: unknown[]) =>
+    mockPublishCountMetric(...args),
 }));
 
 vi.mock("../src/discover-public-ip.js", () => ({
@@ -120,6 +123,7 @@ vi.mock("../src/lifecycle.js", () => ({
 }));
 
 import { startContainer } from "../src/startup.js";
+import { createApp } from "../src/bridge.js";
 
 function defaultOpts() {
   return {
@@ -326,5 +330,51 @@ describe("startContainer - parallel startup", () => {
     await startContainer(defaultOpts());
 
     expect(mockStartPeriodicBackup).toHaveBeenCalledOnce();
+  });
+
+  it("should skip ECS TaskState, IP discovery, and pending queue in AgentCore mode", async () => {
+    await startContainer({
+      ...defaultOpts(),
+      env: {
+        ...defaultOpts().env,
+        CONTAINER_RUNTIME_MODE: "agentcore",
+        AGENTCORE_HTTP_ENABLED: "true",
+      },
+    });
+
+    expect(mockUpdateTaskState).not.toHaveBeenCalled();
+    expect(mockDiscoverPublicIp).not.toHaveBeenCalled();
+    expect(mockConsumePendingMessages).not.toHaveBeenCalled();
+    expect(callOrder.indexOf("listen")).toBeGreaterThan(-1);
+    expect(callOrder.indexOf("listen")).toBeLessThan(
+      callOrder.indexOf("waitForPort"),
+    );
+    expect(callOrder.indexOf("listen")).toBeLessThan(
+      callOrder.indexOf("waitForReady"),
+    );
+    expect(createApp).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentCoreHttpEnabled: true,
+        runtimeLabel: "agentcore",
+      }),
+    );
+  });
+
+  it("should keep AgentCore bridge alive when OpenClaw fallback startup fails", async () => {
+    mockWaitForPort.mockRejectedValueOnce(new Error("Port 18789 not ready"));
+
+    await startContainer({
+      ...defaultOpts(),
+      env: {
+        ...defaultOpts().env,
+        CONTAINER_RUNTIME_MODE: "agentcore",
+        AGENTCORE_HTTP_ENABLED: "true",
+      },
+    });
+    await Promise.resolve();
+
+    expect(mockListen).toHaveBeenCalledOnce();
+    expect(mockUpdateTaskState).not.toHaveBeenCalled();
+    expect(mockConsumePendingMessages).not.toHaveBeenCalled();
   });
 });

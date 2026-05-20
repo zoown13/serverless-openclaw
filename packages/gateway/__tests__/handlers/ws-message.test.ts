@@ -5,6 +5,9 @@ import type { APIGatewayProxyEventV2WithRequestContext } from "aws-lambda";
 const mockGetConnection = vi.fn();
 const mockRouteMessage = vi.fn();
 const mockGetTaskState = vi.fn();
+const mockGetPendingClarification = vi.fn();
+const mockPutPendingClarification = vi.fn();
+const mockDeletePendingClarification = vi.fn();
 
 vi.mock("../../src/services/connections.js", () => ({
   getConnection: (...args: unknown[]) => mockGetConnection(...args),
@@ -19,6 +22,12 @@ vi.mock("../../src/services/message.js", () => ({
 vi.mock("../../src/services/task-state.js", () => ({
   getTaskState: (...args: unknown[]) => mockGetTaskState(...args),
   putTaskState: vi.fn(),
+}));
+
+vi.mock("../../src/services/clarification.js", () => ({
+  getPendingClarification: (...args: unknown[]) => mockGetPendingClarification(...args),
+  putPendingClarification: (...args: unknown[]) => mockPutPendingClarification(...args),
+  deletePendingClarification: (...args: unknown[]) => mockDeletePendingClarification(...args),
 }));
 
 vi.mock("../../src/services/container.js", () => ({
@@ -86,6 +95,9 @@ describe("ws-message handler", () => {
       connectedAt: "2024-01-01T00:00:00Z",
     });
     mockRouteMessage.mockResolvedValue(undefined);
+    mockGetPendingClarification.mockResolvedValue(null);
+    mockPutPendingClarification.mockResolvedValue(undefined);
+    mockDeletePendingClarification.mockResolvedValue(undefined);
   });
 
   it("should route sendMessage action to container", async () => {
@@ -150,7 +162,6 @@ describe("ws-message handler", () => {
     expect(routeCall.agentRuntime).toBe("both");
     expect(routeCall.lambdaAgentFunctionArn).toBe("arn:aws:lambda:us-east-1:123:function:agent");
     expect(routeCall.invokeLambdaAgent).toBeDefined();
-    expect(routeCall.onColdStartPreview).toBeDefined();
   });
 
   it("should default agentRuntime to fargate when env not set", async () => {

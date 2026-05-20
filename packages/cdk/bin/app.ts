@@ -19,6 +19,11 @@ const agentRuntime = process.env.AGENT_RUNTIME ?? "fargate"; // default: backwar
 const deployWeb = process.env.DEPLOY_WEB !== "false"; // default: true (deploy web)
 const aiProvider = process.env.AI_PROVIDER;
 const aiModel = process.env.AI_MODEL;
+const toolSlmBackend = process.env.TOOL_SLM_BACKEND;
+const toolRuntimeProvider = process.env.TOOL_RUNTIME_PROVIDER ?? "agentcore";
+const agentCoreRuntimeArn = process.env.AGENTCORE_RUNTIME_ARN;
+const agentCoreRuntimeQualifier = process.env.AGENTCORE_RUNTIME_QUALIFIER;
+const lambdaAgentImageTag = process.env.LAMBDA_AGENT_IMAGE_TAG;
 
 // Secrets (SSM SecureString parameters)
 const secrets = new SecretsStack(app, "SecretsStack", { aiProvider });
@@ -50,6 +55,7 @@ if (agentRuntime !== "lambda") {
     fargateMemory: process.env.FARGATE_MEMORY ? Number(process.env.FARGATE_MEMORY) : undefined,
     aiProvider,
     aiModel,
+    toolSlmBackend,
   });
   compute.addDependency(secrets);
 }
@@ -62,6 +68,7 @@ if (agentRuntime !== "fargate") {
     taskStateTable: storage.taskStateTable,
     aiProvider,
     aiModel,
+    lambdaAgentImageTag,
   });
   lambdaAgent.addDependency(secrets);
 }
@@ -78,6 +85,9 @@ const api = new ApiStack(app, "ApiStack", {
   userPool: auth.userPool,
   userPoolClient: auth.userPoolClient,
   agentRuntime,
+  toolRuntimeProvider,
+  agentCoreRuntimeArn,
+  agentCoreRuntimeQualifier,
 });
 if (compute) {
   api.addDependency(compute);

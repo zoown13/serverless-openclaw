@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import * as cdk from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
+import { BEDROCK_DEFAULT_MODEL } from "@serverless-openclaw/shared";
 import {
   NetworkStack,
   StorageStack,
@@ -152,6 +153,16 @@ describe("CDK Stacks E2E — synth all stacks", () => {
       });
     });
 
+    it("Settings table enables TTL for coarse tool affinity state", () => {
+      storageTemplate.hasResourceProperties("AWS::DynamoDB::Table", {
+        TableName: "serverless-openclaw-Settings",
+        TimeToLiveSpecification: {
+          AttributeName: "ttl",
+          Enabled: true,
+        },
+      });
+    });
+
     it("S3 data bucket with BlockPublicAccess", () => {
       storageTemplate.resourceCountIs("AWS::S3::Bucket", 1);
       storageTemplate.hasResourceProperties("AWS::S3::Bucket", {
@@ -205,6 +216,39 @@ describe("CDK Stacks E2E — synth all stacks", () => {
       });
     });
 
+    it("Fargate task definition includes pending queue retry env vars", () => {
+      const templateJson = JSON.stringify(computeTemplate.toJSON());
+      expect(templateJson).toContain("PENDING_MESSAGE_MAX_RETRIES");
+      expect(templateJson).toContain("PENDING_MESSAGE_BASE_RETRY_DELAY_MS");
+      expect(templateJson).toContain("PENDING_MESSAGE_MAX_RETRY_DELAY_MS");
+    });
+
+    it("omits TOOL_SLM_BACKEND unless explicitly configured", () => {
+      const templateJson = JSON.stringify(computeTemplate.toJSON());
+      expect(templateJson).not.toContain("TOOL_SLM_BACKEND");
+    });
+
+    it("sets safe Bedrock AI_MODEL for Fargate fallback when Bedrock provider omits an explicit model", () => {
+      const bedrockApp = new cdk.App();
+      const network = new NetworkStack(bedrockApp, "BedrockComputeNetworkStack");
+      const storage = new StorageStack(bedrockApp, "BedrockComputeStorageStack");
+      const compute = new ComputeStack(bedrockApp, "BedrockComputeStack", {
+        vpc: network.vpc,
+        fargateSecurityGroup: network.fargateSecurityGroup,
+        conversationsTable: storage.conversationsTable,
+        settingsTable: storage.settingsTable,
+        taskStateTable: storage.taskStateTable,
+        connectionsTable: storage.connectionsTable,
+        pendingMessagesTable: storage.pendingMessagesTable,
+        dataBucket: storage.dataBucket,
+        ecrRepository: storage.ecrRepository,
+        aiProvider: "bedrock",
+      });
+      const templateJson = JSON.stringify(Template.fromStack(compute).toJSON());
+
+      expect(templateJson).toContain(BEDROCK_DEFAULT_MODEL);
+    });
+
     it("CloudWatch Log Group", () => {
       computeTemplate.resourceCountIs("AWS::Logs::LogGroup", 1);
     });
@@ -249,6 +293,17 @@ describe("CDK Stacks E2E — synth all stacks", () => {
         const props = (fn as Record<string, unknown>).Properties as Record<string, unknown>;
         expect(props).toHaveProperty("Architectures", ["arm64"]);
       }
+    });
+
+    it("Handler Lambda functions use Node.js 24 runtime", () => {
+      const functions = apiTemplate.findResources("AWS::Lambda::Function");
+      for (const [, fn] of Object.entries(functions)) {
+        const props = (fn as Record<string, unknown>).Properties as Record<string, unknown>;
+        expect(props).toHaveProperty("Runtime", "nodejs24.x");
+      }
+
+      const templateJson = JSON.stringify(apiTemplate.toJSON());
+      expect(templateJson).not.toContain("nodejs20.x");
     });
   });
 
@@ -308,8 +363,26 @@ describe("CDK Stacks E2E — synth all stacks", () => {
       const fn = Object.values(functions)[0] as Record<string, unknown>;
       const env = ((fn.Properties as Record<string, unknown>).Environment as Record<string, unknown>).Variables as Record<string, unknown>;
       expect(env.HOME).toBe("/tmp");
+      expect(env.NODE_OPTIONS).toBe("--no-deprecation");
       expect(env.SSM_ANTHROPIC_API_KEY).toBe("/serverless-openclaw/secrets/anthropic-api-key");
       expect(env.SESSION_BUCKET).toBeDefined();
+    });
+
+    it("sets safe Bedrock AI_MODEL when Bedrock provider omits an explicit model", () => {
+      const bedrockApp = new cdk.App();
+      const storage = new StorageStack(bedrockApp, "BedrockLambdaStorageStack");
+      const lambdaAgent = new LambdaAgentStack(bedrockApp, "BedrockLambdaAgentStack", {
+        dataBucket: storage.dataBucket,
+        taskStateTable: storage.taskStateTable,
+        aiProvider: "bedrock",
+      });
+      const template = Template.fromStack(lambdaAgent);
+      const functions = template.findResources("AWS::Lambda::Function");
+      const fn = Object.values(functions)[0] as Record<string, unknown>;
+      const env = ((fn.Properties as Record<string, unknown>).Environment as Record<string, unknown>).Variables as Record<string, unknown>;
+
+      expect(env.AI_PROVIDER).toBe("bedrock");
+      expect(env.AI_MODEL).toBe(BEDROCK_DEFAULT_MODEL);
     });
 
     it("no ECR repository (imported externally via fromRepositoryName)", () => {
@@ -342,6 +415,75 @@ describe("CDK Stacks E2E — synth all stacks", () => {
       monitoringTemplate.hasResourceProperties("AWS::CloudWatch::Dashboard", {
         DashboardName: "ServerlessOpenClaw",
       });
+    });
+
+    it("Dashboard includes routing and Gmail observability widgets", () => {
+      const dashboards = monitoringTemplate.findResources("AWS::CloudWatch::Dashboard");
+      const dashboardJson = JSON.stringify(dashboards);
+
+      expect(dashboardJson).toContain("Routing & Runtime Selection");
+      expect(dashboardJson).toContain("AgentCore Harness & Handoff");
+      expect(dashboardJson).toContain("Gmail Tool & Delivery Outcomes");
+      expect(dashboardJson).toContain("agentcore.invoke.handoff");
+      expect(dashboardJson).toContain("agentcore.invoke.fallback");
+      expect(dashboardJson).toContain("route.affinity.");
+      expect(dashboardJson).toContain("gateway.harness.session.");
+      expect(dashboardJson).toContain("RouteToLambda");
+      expect(dashboardJson).toContain("RouteToFargate");
+      expect(dashboardJson).toContain("RouteFallbackToFargate");
+      expect(dashboardJson).toContain("PendingMessagesQueued");
+      expect(dashboardJson).toContain("PendingMessagesDrained");
+      expect(dashboardJson).toContain("PendingMessagesRetryScheduled");
+      expect(dashboardJson).toContain("PendingMessagesDeadLettered");
+      expect(dashboardJson).toContain("GmailToolSuccess");
+      expect(dashboardJson).toContain("DeliverySuccess");
+      expect(dashboardJson).toContain("DeliveryFailure");
+    });
+
+    it("defaults tool runtime provider to AgentCore-first without invoke permission when ARN is absent", () => {
+      const templateJson = JSON.stringify(apiTemplate.toJSON());
+      expect(templateJson).toContain("TOOL_RUNTIME_PROVIDER");
+      expect(templateJson).toContain("agentcore");
+      expect(templateJson).toContain("AGENTCORE_FALLBACK_PROVIDER");
+      expect(templateJson).toContain("AGENTCORE_INVOKE_DEADLINE_MS");
+      expect(templateJson).not.toContain("bedrock-agentcore:InvokeAgentRuntime");
+    });
+  });
+
+  describe("ApiStack with AgentCore tool runtime provider", () => {
+    it("passes AgentCore env vars and grants invoke permission to message handlers only", () => {
+      const agentCoreRuntimeArn = "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/test";
+      const app = new cdk.App();
+      const network = new NetworkStack(app, "AgentCoreNetworkStack");
+      const storage = new StorageStack(app, "AgentCoreStorageStack");
+      const auth = new AuthStack(app, "AgentCoreAuthStack");
+      const api = new ApiStack(app, "AgentCoreApiStack", {
+        vpc: network.vpc,
+        fargateSecurityGroup: network.fargateSecurityGroup,
+        conversationsTable: storage.conversationsTable,
+        settingsTable: storage.settingsTable,
+        taskStateTable: storage.taskStateTable,
+        connectionsTable: storage.connectionsTable,
+        pendingMessagesTable: storage.pendingMessagesTable,
+        userPool: auth.userPool,
+        userPoolClient: auth.userPoolClient,
+        agentRuntime: "both",
+        toolRuntimeProvider: "agentcore",
+        agentCoreRuntimeArn,
+        agentCoreRuntimeQualifier: "DEFAULT",
+      });
+
+      const templateJson = JSON.stringify(Template.fromStack(api).toJSON());
+      expect(templateJson).toContain("TOOL_RUNTIME_PROVIDER");
+      expect(templateJson).toContain("agentcore");
+      expect(templateJson).toContain("AGENTCORE_RUNTIME_ARN");
+      expect(templateJson).toContain(agentCoreRuntimeArn);
+      expect(templateJson).toContain("AGENTCORE_RUNTIME_QUALIFIER");
+      expect(templateJson).toContain("DEFAULT");
+      expect(templateJson).toContain("AGENTCORE_FALLBACK_PROVIDER");
+      expect(templateJson).toContain("AGENTCORE_INVOKE_DEADLINE_MS");
+      expect(templateJson).toContain("bedrock-agentcore:InvokeAgentRuntime");
+      expect(templateJson).toContain(`${agentCoreRuntimeArn}/runtime-endpoint/*`);
     });
   });
 });

@@ -22,8 +22,11 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Install OpenClaw CLI (version configurable via build arg)
+# OpenClaw 2026.4.x loads the Telegram extension on startup and expects grammy
+# to be present in the global runtime even when webhook delivery is handled by
+# our own Gateway layer.
 ARG OPENCLAW_VERSION=2026.2.13
-RUN npm install -g openclaw@${OPENCLAW_VERSION} && \
+RUN npm install -g openclaw@${OPENCLAW_VERSION} grammy@1.42.0 && \
     npm cache clean --force
 
 # Create non-root user
@@ -33,6 +36,33 @@ RUN groupadd -r openclaw && useradd -r -g openclaw -m openclaw
 RUN mkdir -p /home/openclaw/.openclaw && \
     echo '{"gateway":{"port":18789,"mode":"local"}}' > /home/openclaw/.openclaw/openclaw.json && \
     chown -R openclaw:openclaw /home/openclaw/.openclaw
+
+# Pre-seed OpenClaw bundled runtime dependencies in the external plugin runtime
+# cache used by packaged installs. Installing under the global OpenClaw package
+# root is not sufficient because packaged plugins resolve deps from
+# ~/.openclaw/plugin-runtime-deps/openclaw-<version>-<package-root-hash>.
+RUN set -eux; \
+    package_root="/usr/local/lib/node_modules/openclaw"; \
+    package_version="$(node -p "require('/usr/local/lib/node_modules/openclaw/package.json').version")"; \
+    package_hash="$(node -e "const crypto = require('node:crypto'); const path = require('node:path'); process.stdout.write(crypto.createHash('sha256').update(path.resolve('/usr/local/lib/node_modules/openclaw')).digest('hex').slice(0, 12));")"; \
+    install_root="/home/openclaw/.openclaw/plugin-runtime-deps/openclaw-${package_version}-${package_hash}"; \
+    mkdir -p "${install_root}"; \
+    npm install --prefix "${install_root}" \
+      --omit=dev \
+      --no-audit \
+      --no-fund \
+      @grammyjs/runner@^2.0.3 \
+      @grammyjs/transformer-throttler@^1.2.1 \
+      typebox@1.1.31 \
+      undici@8.1.0 \
+      acpx@0.5.3 \
+      @homebridge/ciao@^1.3.6 \
+      @modelcontextprotocol/sdk@1.29.0 \
+      express@^5.2.1 \
+      playwright-core@1.59.1 \
+      ws@^8.20.0; \
+    chown -R openclaw:openclaw /home/openclaw/.openclaw/plugin-runtime-deps; \
+    npm cache clean --force
 
 WORKDIR /app
 
@@ -46,7 +76,8 @@ COPY --from=builder --chown=openclaw:openclaw /build/packages/shared/package.jso
 COPY --chown=openclaw:openclaw packages/container/package.json /app/
 COPY --chown=openclaw:openclaw packages/container/start-openclaw.sh /app/
 
-RUN chmod +x /app/start-openclaw.sh && \
+RUN sed -i 's/\r$//' /app/start-openclaw.sh && \
+    chmod +x /app/start-openclaw.sh && \
     mkdir -p /data/workspace && \
     chown openclaw:openclaw /data/workspace
 
@@ -57,4 +88,4 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
   CMD curl -f http://localhost:8080/health || exit 1
 
-ENTRYPOINT ["/app/start-openclaw.sh"]
+ENTRYPOINT ["/bin/bash", "/app/start-openclaw.sh"]

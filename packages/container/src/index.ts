@@ -12,6 +12,12 @@ const REQUIRED_ENV = [
   "CALLBACK_URL",
 ] as const;
 
+const AGENTCORE_REQUIRED_ENV = [
+  "OPENCLAW_GATEWAY_TOKEN",
+  "USER_ID",
+  "DATA_BUCKET",
+] as const;
+
 function requireEnv(name: string): string {
   const val = process.env[name];
   if (!val) {
@@ -25,7 +31,16 @@ interface TaskMetadata {
   cluster: string;
 }
 
-async function getTaskMetadata(): Promise<TaskMetadata> {
+function isAgentCoreMode(): boolean {
+  return process.env.CONTAINER_RUNTIME_MODE === "agentcore" ||
+    process.env.AGENTCORE_HTTP_ENABLED === "true";
+}
+
+async function getTaskMetadata(agentCoreMode: boolean): Promise<TaskMetadata> {
+  if (agentCoreMode) {
+    return { taskArn: "agentcore-runtime", cluster: "agentcore" };
+  }
+
   // Prefer env vars if set, otherwise discover from ECS metadata
   if (process.env.TASK_ARN && process.env.CLUSTER_ARN) {
     return { taskArn: process.env.TASK_ARN, cluster: process.env.CLUSTER_ARN };
@@ -42,12 +57,14 @@ async function getTaskMetadata(): Promise<TaskMetadata> {
 }
 
 async function main(): Promise<void> {
+  const agentCoreMode = isAgentCoreMode();
+  const requiredEnv = agentCoreMode ? AGENTCORE_REQUIRED_ENV : REQUIRED_ENV;
   // Validate required env vars
   const env = Object.fromEntries(
-    REQUIRED_ENV.map((name) => [name, requireEnv(name)]),
-  ) as Record<(typeof REQUIRED_ENV)[number], string>;
+    requiredEnv.map((name) => [name, requireEnv(name)]),
+  ) as Record<string, string>;
 
-  const taskMetadata = await getTaskMetadata();
+  const taskMetadata = await getTaskMetadata(agentCoreMode);
 
   // Initialize AWS clients
   const dynamoClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -62,9 +79,15 @@ async function main(): Promise<void> {
 
   await startContainer({
     env: {
-      ...env,
+      BRIDGE_AUTH_TOKEN: env.BRIDGE_AUTH_TOKEN ?? process.env.BRIDGE_AUTH_TOKEN,
+      OPENCLAW_GATEWAY_TOKEN: env.OPENCLAW_GATEWAY_TOKEN,
+      USER_ID: env.USER_ID,
+      DATA_BUCKET: env.DATA_BUCKET,
+      CALLBACK_URL: env.CALLBACK_URL ?? process.env.CALLBACK_URL,
       TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN,
       TELEGRAM_CHAT_ID: process.env.TELEGRAM_CHAT_ID,
+      CONTAINER_RUNTIME_MODE: process.env.CONTAINER_RUNTIME_MODE,
+      AGENTCORE_HTTP_ENABLED: process.env.AGENTCORE_HTTP_ENABLED,
     },
     taskMetadata,
     dynamoSend,

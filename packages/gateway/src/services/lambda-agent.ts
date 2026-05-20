@@ -1,5 +1,8 @@
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
-import type { LambdaAgentEvent, LambdaAgentResponse } from "@serverless-openclaw/shared";
+import type {
+  AssistantRuntimeContext,
+  LambdaAgentImageInput,
+} from "@serverless-openclaw/shared";
 
 const lambda = new LambdaClient({});
 
@@ -7,48 +10,50 @@ export interface InvokeLambdaAgentParams {
   functionArn: string;
   userId: string;
   sessionId: string;
+  traceId?: string;
   message: string;
   channel: "web" | "telegram";
   connectionId?: string;
   telegramChatId?: string;
+  /** WebSocket callback URL — agent uses this to push responses directly */
+  callbackUrl?: string;
+  assistantContext?: AssistantRuntimeContext;
+  imageInput?: LambdaAgentImageInput;
   disableTools?: boolean;
 }
 
 /**
- * Invoke the Lambda agent function synchronously.
- * Returns the agent response or throws on failure.
+ * Invoke the Lambda agent function **asynchronously** (fire-and-forget).
+ *
+ * The agent Lambda will push responses directly to the WebSocket connection
+ * via API Gateway Management API using the provided callbackUrl.
+ *
+ * Returns immediately after the invoke request is accepted by AWS Lambda.
  */
 export async function invokeLambdaAgent(
   params: InvokeLambdaAgentParams,
-): Promise<LambdaAgentResponse> {
-  const payload: LambdaAgentEvent = {
+): Promise<{ accepted: true }> {
+  const payload = {
     userId: params.userId,
     sessionId: params.sessionId,
+    traceId: params.traceId,
     message: params.message,
     channel: params.channel,
     connectionId: params.connectionId,
     telegramChatId: params.telegramChatId,
+    callbackUrl: params.callbackUrl,
+    assistantContext: params.assistantContext,
+    imageInput: params.imageInput,
     disableTools: params.disableTools,
   };
 
-  const result = await lambda.send(
+  await lambda.send(
     new InvokeCommand({
       FunctionName: params.functionArn,
-      InvocationType: "RequestResponse",
+      InvocationType: "Event", // Async — fire-and-forget
       Payload: Buffer.from(JSON.stringify(payload)),
     }),
   );
 
-  if (result.FunctionError) {
-    const errorPayload = result.Payload
-      ? JSON.parse(Buffer.from(result.Payload).toString())
-      : { errorMessage: "Lambda function error" };
-    throw new Error(errorPayload.errorMessage ?? "Lambda agent invocation failed");
-  }
-
-  if (!result.Payload) {
-    throw new Error("Lambda agent returned empty payload");
-  }
-
-  return JSON.parse(Buffer.from(result.Payload).toString()) as LambdaAgentResponse;
+  return { accepted: true };
 }

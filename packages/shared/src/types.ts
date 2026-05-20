@@ -20,6 +20,174 @@ export interface ServerMessage {
 
 // === Channel ===
 export type Channel = "web" | "telegram";
+export type RuntimeClass = "chat-only" | "tool-enabled";
+export type AgentRuntimeMode = "lambda" | "fargate" | "both";
+export type ToolRuntimeProvider = "fargate" | "agentcore";
+export type ToolCapabilityId =
+  | "gmail_payment"
+  | "gmail_search"
+  | "gmail_body_selection"
+  | "aws_cost_lookup";
+export type ToolCapabilityFamily = "gmail" | "cloud_billing" | "generic_tool";
+export type ToolCapabilityStatus = "available" | "planned" | "disabled";
+export type ToolCapabilityDataSensitivity = "user_private" | "account_private";
+export type RouteDecision =
+  | "lambda"
+  | "fargate-reuse"
+  | "fargate-new"
+  | "agentcore"
+  | "clarify";
+export type ClarificationKind = "payment_source";
+
+export interface EmailTokenBudgetPolicy {
+  mode: "headers-first";
+  maxMessages: number;
+  paymentScanMessages?: number;
+  maxSnippetChars: number;
+  maxBodyChars: number;
+  requireExplicitBodyAccess: boolean;
+}
+
+/**
+ * Minimal Gateway-side active tool state persisted in Settings:
+ * PK=USER#{userId}, SK=SETTING#active-tool:{channel}
+ *
+ * Gateway only remembers that the current user/channel is in a tool-capable
+ * workflow so follow-up turns can stay on Fargate until they clearly switch
+ * topics, are cancelled, or expire.
+ */
+export interface ToolRuntimeAffinityState {
+  status: "active";
+  channel: Channel;
+  runtimeClass: "tool-enabled";
+  provider?: ToolRuntimeProvider;
+  fallbackProvider?: ToolRuntimeProvider;
+  providerLockedAt?: string;
+  providerLockReason?: "agentcore_fallback";
+  connectionId: string;
+  callbackUrl: string;
+  telegramChatId?: string;
+  createdAt: string;
+  lastActivityAt: string;
+  expiresAt: string;
+}
+
+export interface ToolCapabilitySafetyPolicy {
+  headersFirst: boolean;
+  maxDisplayedItems?: number;
+  cacheTtlSeconds?: number;
+  noAttachments: boolean;
+  mutationAllowed: boolean;
+}
+
+export interface ToolCapabilityDefinition {
+  id: ToolCapabilityId;
+  family: ToolCapabilityFamily;
+  displayName: string;
+  description: string;
+  dataSensitivity: ToolCapabilityDataSensitivity;
+  readOnly: boolean;
+  examples: string[];
+  safety: ToolCapabilitySafetyPolicy;
+}
+
+export interface AssistantToolCapability extends ToolCapabilityDefinition {
+  status: ToolCapabilityStatus;
+  executionRuntime: ToolRuntimeProvider;
+  unavailableReason?: string;
+}
+
+export interface AssistantRuntimeContext {
+  version: 1;
+  userId: string;
+  channel: Channel;
+  sessionId: string;
+  traceId?: string;
+  generatedAt: string;
+  runtime: {
+    agentRuntime?: AgentRuntimeMode;
+    runtimeClass: RuntimeClass;
+    routeDecision?: RouteDecision;
+    lambdaRole: "chat-only-fast-path";
+    toolRuntimeProvider?: ToolRuntimeProvider;
+    fallbackProvider?: ToolRuntimeProvider;
+    providerLocked?: boolean;
+    providerLockReason?: ToolRuntimeAffinityState["providerLockReason"];
+  };
+  capabilities: {
+    tools: {
+      available: boolean;
+      executionRuntime: ToolRuntimeProvider;
+      note: string;
+      registry?: AssistantToolCapability[];
+    };
+    gmail: {
+      status: "available_via_tool_runtime" | "runtime_check_required" | "unavailable";
+      executionRuntime: ToolRuntimeProvider;
+      safetyMode: "headers-first";
+    };
+  };
+  toolAffinity?: {
+    active: boolean;
+    provider?: ToolRuntimeProvider;
+    fallbackProvider?: ToolRuntimeProvider;
+    expiresAt?: string;
+    providerLockReason?: ToolRuntimeAffinityState["providerLockReason"];
+  };
+  emailTokenBudget?: EmailTokenBudgetPolicy;
+  cost?: {
+    upstream?: AssistantRuntimeCostSnapshot[];
+  };
+  guidance: {
+    selfAwareness: string;
+    lambda: string;
+    toolRuntime: string;
+  };
+}
+
+export interface AssistantRuntimeCostSnapshot {
+  name: string;
+  provider: "lambda" | "agentcore" | "fargate";
+  estimatedUsd: number;
+  durationMs?: number;
+  confidence?: "high" | "partial";
+  breakdown?: {
+    bedrockUsd?: number;
+    lambdaUsd?: number;
+    agentCoreUsd?: number;
+    fargateUsd?: number;
+    requestUsd?: number;
+    upstreamUsd?: number;
+  };
+}
+
+export type ToolTaskContextStatus = "awaiting_source" | "active";
+export type ToolTaskFamily =
+  | "gmail_payment_summary"
+  | "gmail_search"
+  | "gmail_body_selection"
+  | "generic_tool_task";
+export type ToolSourceChoice = "gmail" | "general";
+export type ToolIntentAdvisorAction =
+  | "gmail"
+  | "clarify_source"
+  | "generic_openclaw"
+  | "continue_active_task"
+  | "start_new_task"
+  | "continue_task"
+  | "refine_current_task"
+  | "rerun_current_task"
+  | "switch_to_chat"
+  | "answer_capability"
+  | "clarify"
+  | "cancel_task";
+
+export interface ToolIntentAdvisorResult {
+  action: ToolIntentAdvisorAction;
+  taskFamily: ToolTaskFamily;
+  sourceChoice?: ToolSourceChoice | null;
+  confidence: number;
+}
 
 // === DynamoDB Items (architecture.md §5) ===
 export interface ConversationItem {
@@ -37,6 +205,7 @@ export interface SettingsItem {
   SK: string; // SETTING#{key}
   value: string | Record<string, unknown>;
   updatedAt: string;
+  ttl?: number;
 }
 
 export interface TaskStateItem {
@@ -63,6 +232,15 @@ export interface PendingMessageItem {
   message: string;
   channel: Channel;
   connectionId: string;
+  traceId?: string;
+  runtimeClass?: RuntimeClass;
+  routeDecision?: RouteDecision;
+  emailTokenBudget?: EmailTokenBudgetPolicy;
+  assistantContext?: AssistantRuntimeContext;
+  retryCount?: number;
+  nextAttemptAt?: string;
+  lastError?: string;
+  deadLetteredAt?: string;
   createdAt: string;
   ttl: number;
 }
@@ -74,6 +252,19 @@ export interface BridgeMessageRequest {
   channel: Channel;
   connectionId: string;
   callbackUrl: string;
+  traceId?: string;
+  runtimeClass?: RuntimeClass;
+  routeDecision?: RouteDecision;
+  emailTokenBudget?: EmailTokenBudgetPolicy;
+  assistantContext?: AssistantRuntimeContext;
+}
+
+export interface BridgeMessageResponse {
+  content?: string;
+  source?: string;
+  handoffRuntimeClass?: RuntimeClass;
+  handoffMessage?: string;
+  clearToolAffinity?: boolean;
 }
 
 export interface BridgeHealthResponse {
@@ -84,12 +275,17 @@ export interface BridgeHealthResponse {
 export interface LambdaAgentEvent {
   userId: string;
   sessionId: string;
+  traceId?: string;
   connectionId?: string;
+  /** WebSocket API Gateway callback URL for direct push (async invocation) */
+  callbackUrl?: string;
   message: string;
   model?: string;
   disableTools?: boolean;
   channel: Channel;
   telegramChatId?: string;
+  assistantContext?: AssistantRuntimeContext;
+  imageInput?: LambdaAgentImageInput;
 }
 
 export interface LambdaAgentResponse {
@@ -99,6 +295,18 @@ export interface LambdaAgentResponse {
   durationMs?: number;
   provider?: string;
   model?: string;
+}
+
+export type LambdaAgentImageMediaType = "image/jpeg" | "image/png" | "image/webp";
+
+export interface LambdaAgentImageInput {
+  source: "telegram";
+  mediaType: LambdaAgentImageMediaType;
+  dataBase64: string;
+  fileId: string;
+  fileUniqueId?: string;
+  fileSize?: number;
+  caption?: string;
 }
 
 // === JSON-RPC 2.0 (implementation-plan.md §2.2) ===

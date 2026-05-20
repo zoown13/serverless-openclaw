@@ -11,6 +11,7 @@ A document tracking the overall progress and future plans for the Serverless Ope
 | **Phase 0** | Documentation & Design | **Complete** |
 | **Phase 1** | MVP Implementation (10 steps) | **Complete** (10/10) |
 | **Phase 2** | Lambda Container Migration (5 steps) | **Complete** (5/5) |
+| **Phase 2.5** | Operational Assistant Runtime Stabilization | **Complete** (v1.0 baseline) |
 | Phase 3 | Browser Automation + Custom Skills | Not started |
 | Phase 4 | Advanced Features (Monitoring, Scheduling, Multi-channel) | Not started |
 
@@ -298,6 +299,90 @@ Full journey: [lambda-migration-journey.md](lambda-migration-journey.md)
 
 ---
 
+## Phase 2.5: Operational Assistant Runtime Stabilization (Complete)
+
+This phase turns the Lambda/Fargate migration into an operational personal assistant runtime. The goal was not to add another chatbot feature, but to make the assistant keep the same self-state across Lambda, AgentCore, and Fargate while preserving the low-cost serverless constraints.
+
+### Current v1.0 operating model
+
+| Runtime | Role | Status |
+|---------|------|--------|
+| Lambda Agent | Default fast chat path, recent `/cost` query-cost recall, image follow-up handling | Complete |
+| AgentCore Runtime | Primary tool-enabled control-plane | Complete |
+| Fargate Tool Worker | Fallback worker for AgentCore failures and long tool sessions | Complete |
+| Gateway Lambda | Thin coarse router, runtime harness, affinity/fallback management, `AssistantRuntimeContext` builder | Complete |
+
+### Key deliverables
+
+| Deliverable | Description | Status |
+|-------------|-------------|--------|
+| `AssistantRuntimeContext` | Shared transient self-state propagated to Lambda, AgentCore, Fargate, and PendingMessages | Complete |
+| Tool affinity | Minimal `ToolRuntimeAffinityState` with provider lock and explicit topic-switch clearing | Complete |
+| AgentCore-first tool path | Tool-enabled requests go to AgentCore first, with controlled Fargate fallback | Complete |
+| Gmail/payment task continuity | Payment summaries, travel refinement, issuer breakdown, coverage correction, date-range follow-ups | Complete |
+| AWS cost lookup | Cost Explorer-backed account cost lookup plus `/cost` recent query-cost recall | Complete |
+| Image follow-up baseline | Telegram image upload and follow-up context handling on Lambda | Complete |
+| Final regression smoke | `scripts/final-regression-smoke.ps1` with `Critical` and `Full` suites | Complete |
+
+### Final regression result
+
+The v1.0 release gate is the `Full` regression smoke:
+
+```powershell
+powershell -File .\scripts\final-regression-smoke.ps1 `
+  -ChatId <TELEGRAM_CHAT_ID> `
+  -TelegramId <TELEGRAM_USER_ID> `
+  -Suite Full `
+  -BridgeSignalTimeoutSeconds 240
+```
+
+Latest verified result:
+
+```text
+Suite    : Full
+Duration : 342s
+Passed   : 8
+Failed   : 0
+Final regression smoke passed.
+```
+
+Covered scenarios:
+
+| Scenario | Purpose |
+|----------|---------|
+| `ChatThenCostLookup` | Lambda chat-only route, delivery quality, and `/cost` recent query-cost recall |
+| `AwsCostLookup` | AWS Cost Explorer capability and controlled response |
+| `PaymentCapabilityThenChatHandoff` | Gmail/payment capability awareness followed by Lambda chat handoff |
+| `TravelPaymentThenChatHandoff` | Travel payment refinement, issuer breakdown, and general chat return |
+| `PaymentCoverageThenIssuerBreakdown` | Payment coverage correction and issuer breakdown |
+| `PaymentExpandedFirstTurn` | User-requested payment search limit expansion |
+| `PaymentDateRange` | Payment date-range follow-up interpretation |
+| `PlannerSemanticHandoff` | Planner/advisor context continuity and topic switch handoff |
+
+### Operational issues resolved
+
+| Issue | Resolution |
+|-------|------------|
+| Lambda forgot that Gmail/payment could be handled by the tool runtime | `AssistantRuntimeContext` now gives Lambda and tool runtimes the same capability snapshot |
+| Tool follow-ups fell through to generic OpenClaw or raw errors | Gmail/payment task context and controlled fallback boundaries were added |
+| Payment searches stayed capped at 5 messages even when users asked for more | User-requested scan expansion and coverage correction flows were added |
+| General chat did not reliably return after tool work | Explicit topic-switch phrases now clear affinity and route back to Lambda |
+| AgentCore failures produced broken handoff behavior | Fargate fallback locks the tool session until expiry or explicit handoff |
+| Fallback pending queue could fail on `undefined` fields | Gateway DynamoDB DocumentClient uses `removeUndefinedValues` |
+| AWS account cost questions were not answerable | AWS Cost Explorer lookup capability was added with IAM guardrails |
+
+### v1.1 candidates
+
+| Area | Next improvement |
+|------|------------------|
+| AgentCore stability | Investigate intermittent AgentCore `424/500` and `hasContent=false` responses |
+| Semantic evaluation | Add response-text scoring beyond log-signal smoke checks |
+| Operations dashboard | Surface per-request cost, fallback counts, latency, and monthly spend |
+| Security hardening | Revisit GitHub Actions OIDC/secrets for public repository exposure |
+| UX polish | Improve long Gmail/payment summaries and waiting-state messages |
+
+---
+
 ## Phase 3: Browser Automation + Custom Skills (Not started)
 
 | Step | Task |
@@ -334,6 +419,9 @@ Recording the major decisions made during Phases 0-2 and their rationale for fut
 | **Lambda agent import** | **`file://` URL dynamic import** | **Bypasses Node.js exports map for ESM module in CJS context** |
 | **Session concurrency** | **DynamoDB conditional writes** | **15-min TTL lock prevents concurrent session corruption** |
 | **Feature flag** | **`AGENT_RUNTIME` env var** | **fargate (default, backward compat) / lambda / both** |
+| **Tool runtime provider** | **AgentCore primary + Fargate fallback** | **Keeps the Deep Insight-style control-plane philosophy while preserving the no-NAT/no-ALB cost target** |
+| **Assistant self-state** | **Gateway-built `AssistantRuntimeContext`** | **Prevents Lambda and tool runtimes from answering with inconsistent capability awareness** |
+| **Final release gate** | **Synthetic Telegram `Full` regression smoke** | **Verifies Lambda, AgentCore, Fargate fallback, Gmail/payment, AWS cost lookup, and chat handoff in the real deployed path** |
 | Development methodology | TDD (except UI) | Write tests first then implement, using vitest |
 | Git Hooks | pre-commit: UT + lint, pre-push: E2E | Managed with husky |
 | E2E deployment | Local (.env) + GitHub Actions (OIDC) | AWS profiles via .env, CI uses OIDC auth integration |

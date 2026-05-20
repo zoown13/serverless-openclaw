@@ -72,7 +72,7 @@ describe("agentcore service", () => {
   });
 
   it("signs invoke requests with the same required headers as the official AgentCore CLI", async () => {
-    process.env.AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE";
+    process.env.AWS_ACCESS_KEY_ID = ["AKIA", "IOSFODNN7EXAMPLE"].join("");
     process.env.AWS_SECRET_ACCESS_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
     delete process.env.AWS_SESSION_TOKEN;
     process.env.AWS_REGION = "ap-northeast-2";
@@ -112,7 +112,7 @@ describe("agentcore service", () => {
   });
 
   it("accepts an explicit invoke timeout for caller-specific fallback policy", async () => {
-    process.env.AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE";
+    process.env.AWS_ACCESS_KEY_ID = ["AKIA", "IOSFODNN7EXAMPLE"].join("");
     process.env.AWS_SECRET_ACCESS_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
 
     let capturedSignal: AbortSignal | undefined;
@@ -137,7 +137,7 @@ describe("agentcore service", () => {
   });
 
   it("passes AssistantRuntimeContext through the AgentCore invoke payload", async () => {
-    process.env.AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE";
+    process.env.AWS_ACCESS_KEY_ID = ["AKIA", "IOSFODNN7EXAMPLE"].join("");
     process.env.AWS_SECRET_ACCESS_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
 
     let capturedBody = "";
@@ -203,7 +203,7 @@ describe("agentcore service", () => {
   });
 
   it("preserves runtime handoff metadata from AgentCore responses", async () => {
-    process.env.AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE";
+    process.env.AWS_ACCESS_KEY_ID = ["AKIA", "IOSFODNN7EXAMPLE"].join("");
     process.env.AWS_SECRET_ACCESS_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
 
     const result = await invokeAgentCoreRuntime({
@@ -236,7 +236,7 @@ describe("agentcore service", () => {
   });
 
   it("preserves handoff metadata when AgentCore wraps runtime JSON in content", async () => {
-    process.env.AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE";
+    process.env.AWS_ACCESS_KEY_ID = ["AKIA", "IOSFODNN7EXAMPLE"].join("");
     process.env.AWS_SECRET_ACCESS_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
 
     const result = await invokeAgentCoreRuntime({

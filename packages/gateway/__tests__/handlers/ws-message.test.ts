@@ -162,7 +162,6 @@ describe("ws-message handler", () => {
     expect(routeCall.agentRuntime).toBe("both");
     expect(routeCall.lambdaAgentFunctionArn).toBe("arn:aws:lambda:us-east-1:123:function:agent");
     expect(routeCall.invokeLambdaAgent).toBeDefined();
-    expect(routeCall.onColdStartPreview).toBeDefined();
   });
 
   it("should default agentRuntime to fargate when env not set", async () => {

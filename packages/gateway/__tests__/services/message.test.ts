@@ -1266,11 +1266,8 @@ describe("message service", () => {
       expect(deps.startTask).toHaveBeenCalled();
     });
 
-    it("should invoke cold start preview when AGENT_RUNTIME=both and fargate-new cold starts", async () => {
-      const mockInvokeLambda = vi.fn().mockResolvedValue({
-        success: true,
-        payloads: [{ text: "Here's some context while you wait..." }],
-      });
+    it("should start Fargate without legacy cold start preview when AGENT_RUNTIME=both", async () => {
+      const mockInvokeLambda = vi.fn();
       const mockPreviewCallback = vi.fn();
       const deps = makeDeps({
         agentRuntime: "both",
@@ -1285,21 +1282,13 @@ describe("message service", () => {
 
       expect(result).toBe("started");
       expect(deps.startTask).toHaveBeenCalled();
-      // Preview is fire-and-forget, wait for it to settle
       await new Promise((r) => setTimeout(r, 10));
-      expect(mockInvokeLambda).toHaveBeenCalledWith(
-        expect.objectContaining({
-          disableTools: true,
-          message: "/heavy do something complex",
-        }),
-      );
-      expect(mockPreviewCallback).toHaveBeenCalledWith("Here's some context while you wait...");
+      expect(mockInvokeLambda).not.toHaveBeenCalled();
+      expect(mockPreviewCallback).not.toHaveBeenCalled();
     });
 
-    it("should not fail routing when cold start preview fails", async () => {
-      const mockInvokeLambda = vi
-        .fn()
-        .mockResolvedValueOnce({ success: false, error: "preview failed" }); // preview
+    it("should ignore legacy cold start preview callback when starting Fargate", async () => {
+      const mockInvokeLambda = vi.fn();
       const mockPreviewCallback = vi.fn();
       const deps = makeDeps({
         agentRuntime: "both",

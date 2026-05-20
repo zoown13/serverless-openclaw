@@ -1062,9 +1062,9 @@ Client → API Gateway (WS/HTTP) → Lambda → Lambda Agent Container → Anthr
 
 | Value | ComputeStack | LambdaAgentStack | Default |
 |-------|-------------|-------------------|---------|
-| `fargate` | Yes | No | Yes (backward compatible) |
+| `fargate` | Yes | No | |
 | `lambda` | No | Yes | |
-| `both` | Yes | Yes | |
+| `both` | Yes | Yes | Yes |
 
 ### Smart Routing (AGENT_RUNTIME=both)
 

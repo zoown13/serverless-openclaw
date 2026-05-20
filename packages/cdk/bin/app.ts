@@ -15,7 +15,7 @@ import {
 
 const app = new cdk.App();
 
-const agentRuntime = process.env.AGENT_RUNTIME ?? "fargate"; // default: backward compatible
+const agentRuntime = process.env.AGENT_RUNTIME ?? "both"; // default: Lambda chat + tool runtime
 const deployWeb = process.env.DEPLOY_WEB !== "false"; // default: true (deploy web)
 const aiProvider = process.env.AI_PROVIDER;
 const aiModel = process.env.AI_MODEL;

@@ -117,11 +117,11 @@ npm install
 # TypeScript build
 npm run build
 
-# Web UI build (required before CDK synth)
+# Web UI build (only required when ENABLE_WEB_STACK=true or DEPLOY_WEB=true)
 cd packages/web && npx vite build && cd ../..
 ```
 
-> **Important:** The `packages/web/dist/` directory must exist for CDK synth to succeed. `WebStack`'s `BucketDeployment` validates the existence of this path.
+> **Important:** The default production path is Telegram/AgentCore-first and does not deploy `WebStack`. The `packages/web/dist/` directory must exist only when `ENABLE_WEB_STACK=true` or `DEPLOY_WEB=true` is set because `WebStack`'s `BucketDeployment` validates the existence of this path.
 
 ---
 
@@ -153,21 +153,21 @@ npx cdk deploy LambdaAgentStack --profile $AWS_PROFILE  # only when AGENT_RUNTIM
 # Step 3: API Gateway + Lambda
 npx cdk deploy ApiStack --profile $AWS_PROFILE
 
-# Step 4: Web UI + Monitoring
-npx cdk deploy WebStack --profile $AWS_PROFILE
+# Step 4: Monitoring + optional Web UI
 npx cdk deploy MonitoringStack --profile $AWS_PROFILE
+npx cdk deploy WebStack --profile $AWS_PROFILE  # optional, requires ENABLE_WEB_STACK=true or DEPLOY_WEB=true
 ```
 
 ### Telegram-only Deployment (no Web UI)
 
-Set `DEPLOY_WEB=false` to skip WebStack and the web asset build entirely. Useful when only Telegram bot functionality is needed, saving build time and CloudFront costs.
+WebStack is disabled by default. This keeps the public CloudFront/S3 web surface off unless it is intentionally needed.
 
 ```bash
 make deploy-telegram
-# equivalent to: DEPLOY_WEB=false npx cdk deploy --all ...
+# equivalent to: npx cdk deploy --all ... with no WebStack in the CDK app
 ```
 
-MonitoringStack and ApiStack handle a missing WebStack gracefully.
+To deploy the Web UI intentionally, build `packages/web/dist/` first and set `ENABLE_WEB_STACK=true` or `DEPLOY_WEB=true` for the CDK command.
 
 ### Push Docker Image
 
@@ -287,13 +287,16 @@ Set in `.env` or exported before running CDK commands.
 | `AGENT_RUNTIME` | `fargate`            | `fargate` \| `lambda` \| `both` | Compute path selection      |
 | `AI_PROVIDER`   | `anthropic`          | `anthropic` \| `bedrock`        | AI provider selection       |
 | `AI_MODEL`      | _(provider default)_ | any model ID                    | Override default model      |
-| `DEPLOY_WEB`    | `true`               | `true` \| `false`               | Include WebStack deployment |
+| `ENABLE_WEB_STACK` | `false`              | `true` \| `false`               | Include WebStack deployment |
+| `DEPLOY_WEB`    | `false`              | `true` \| `false`               | Legacy alias for WebStack deployment |
 
 ---
 
 ## 7. Verification
 
 ### Web UI Access
+
+Web UI access is available only when `WebStack` is intentionally deployed.
 
 1. Navigate to `WebStack.WebAppUrl` (CloudFront URL)
 2. Sign up or log in

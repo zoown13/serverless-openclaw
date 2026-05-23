@@ -197,10 +197,10 @@ Consists of 9 CDK stacks.
 | ComputeStack     | ECS cluster, Fargate Task Definition                               |
 | LambdaAgentStack | Lambda Container Image (DockerImageFunction, ARM64, 2048MB, 15min) |
 | ApiStack         | WebSocket API, HTTP API, 7 Lambda functions, EventBridge           |
-| WebStack         | S3 (web assets), CloudFront (OAC)                                  |
+| WebStack         | S3 (web assets), CloudFront (OAC), optional via `ENABLE_WEB_STACK=true` |
 | MonitoringStack  | CloudWatch Dashboard (6 rows, 10 custom metrics)                   |
 
-**Dependencies:** SecretsStack + NetworkStack → StorageStack → {AuthStack, ComputeStack, LambdaAgentStack} → ApiStack → WebStack + MonitoringStack
+**Dependencies:** SecretsStack + NetworkStack → StorageStack → {AuthStack, ComputeStack, LambdaAgentStack} → ApiStack → MonitoringStack, with WebStack optional.
 
 ---
 

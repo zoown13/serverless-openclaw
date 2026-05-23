@@ -54,7 +54,10 @@ env:
 jobs:
   deploy:
     name: Build, deploy, and smoke AgentCore
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    environment:
+      name: production
     timeout-minutes: 60
 
     steps:
@@ -149,20 +152,9 @@ jobs:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Create default AWS profile for deployment scripts
+      - name: Verify AWS identity
         shell: bash
         run: |
-          mkdir -p "${HOME}/.aws"
-          {
-            echo "[default]"
-            echo "aws_access_key_id=${AWS_ACCESS_KEY_ID}"
-            echo "aws_secret_access_key=${AWS_SECRET_ACCESS_KEY}"
-            echo "aws_session_token=${AWS_SESSION_TOKEN}"
-          } > "${HOME}/.aws/credentials"
-          {
-            echo "[default]"
-            echo "region=${AWS_REGION}"
-          } > "${HOME}/.aws/config"
           aws sts get-caller-identity
 
       - name: Login to Amazon ECR

@@ -3,7 +3,8 @@ param(
   [string]$Repository = "zoown13/serverless-openclaw",
   [string]$RoleName = "serverless-openclaw-github-actions-deploy",
   [string]$ProviderUrl = "https://token.actions.githubusercontent.com",
-  [string]$Thumbprint = "6938fd4d98bab03faadb97b34396831e3780aea1"
+  [string]$Thumbprint = "6938fd4d98bab03faadb97b34396831e3780aea1",
+  [string[]]$AllowedSubjects = @()
 )
 
 Set-StrictMode -Version Latest
@@ -77,6 +78,10 @@ $accountId = Invoke-TextCli {
 $providerHost = $ProviderUrl.Replace("https://", "").TrimEnd("/")
 $providerArn = "arn:aws:iam::${accountId}:oidc-provider/${providerHost}"
 
+if ($AllowedSubjects.Count -eq 0) {
+  $AllowedSubjects = @("repo:${Repository}:environment:production")
+}
+
 $existingProviders = Invoke-JsonCli {
   aws iam list-open-id-connect-providers --output json
 }
@@ -110,7 +115,7 @@ ConvertTo-Utf8JsonFile -Path $trustFile -Value @{
           "${providerHost}:aud" = "sts.amazonaws.com"
         }
         StringLike = @{
-          "${providerHost}:sub" = "repo:${Repository}:*"
+          "${providerHost}:sub" = $AllowedSubjects
         }
       }
     }
@@ -200,6 +205,7 @@ Write-Host "GitHub Actions OIDC deployment role is ready."
 Write-Host "  RoleArn    : $roleArn"
 Write-Host "  Repository : $Repository"
 Write-Host "  Region     : $Region"
+Write-Host "  Subjects   : $($AllowedSubjects -join ', ')"
 Write-Host ""
 Write-Host "Next step:"
 Write-Host "  Add this repository secret in GitHub:"

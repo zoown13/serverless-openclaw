@@ -1,7 +1,9 @@
 # AgentCore GitHub Actions Deployment
 
-This repository deploys the production AgentCore tool runtime on every push through
-`.github/workflows/deploy-agentcore.yml`.
+This repository deploys the production AgentCore tool runtime through
+`.github/workflows/deploy-agentcore.yml`. The production deployment job is
+restricted to `refs/heads/main` and the GitHub Actions `production`
+environment.
 
 The workflow intentionally uses a separate path from the Fargate image workflow:
 
@@ -27,7 +29,7 @@ The workflow intentionally uses a separate path from the Fargate image workflow:
 |---|---|
 | `AWS_OIDC_ROLE_ARN` | IAM role assumed by GitHub Actions through OIDC. |
 
-Create the AWS role once with:
+Create or update the AWS role once with:
 
 ```powershell
 powershell -File .\scripts\setup-github-actions-oidc.ps1
@@ -35,6 +37,17 @@ powershell -File .\scripts\setup-github-actions-oidc.ps1
 
 Then add the printed `RoleArn` as the GitHub Actions secret
 `AWS_OIDC_ROLE_ARN`.
+
+The role trust policy is intentionally narrow. By default it only accepts this
+OIDC subject:
+
+```text
+repo:zoown13/serverless-openclaw:environment:production
+```
+
+Do not add wildcard subjects such as `repo:zoown13/serverless-openclaw:*`
+unless you are intentionally opening AWS deployment access to every branch and
+environment in the repository.
 
 ## Optional GitHub secrets
 

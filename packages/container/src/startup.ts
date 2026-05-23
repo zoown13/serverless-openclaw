@@ -37,6 +37,7 @@ export interface StartContainerOptions {
     USER_ID: string;
     DATA_BUCKET: string;
     CALLBACK_URL?: string;
+    TELEGRAM_DELIVERY_URL?: string;
     TELEGRAM_BOT_TOKEN?: string;
     TELEGRAM_CHAT_ID?: string;
     CONTAINER_RUNTIME_MODE?: string;
@@ -118,7 +119,12 @@ export async function startContainer(opts: StartContainerOptions): Promise<void>
   }
 
   const telegramBotToken = env.TELEGRAM_BOT_TOKEN;
-  const callbackSender = new CallbackSender(env.CALLBACK_URL ?? "", telegramBotToken);
+  const callbackSender = new CallbackSender(
+    env.CALLBACK_URL ?? "",
+    telegramBotToken,
+    env.BRIDGE_AUTH_TOKEN,
+    env.TELEGRAM_DELIVERY_URL,
+  );
   const lifecycle = new LifecycleManager({
     dynamoSend,
     userId,

@@ -98,7 +98,7 @@ describe("OpenClawClient", () => {
     expect(connectMsg.params.role).toBe("operator");
     expect(connectMsg.params.auth.token).toBe("test-token");
     expect(connectMsg.params.minProtocol).toBe(1);
-    expect(connectMsg.params.maxProtocol).toBe(3);
+    expect(connectMsg.params.maxProtocol).toBe(4);
     expect(connectMsg.params.device).toBeUndefined();
   });
 

@@ -78,7 +78,7 @@ export class OpenClawClient {
           method: "connect",
           params: {
             minProtocol: 1,
-            maxProtocol: 3,
+            maxProtocol: 4,
             client: {
               id: "gateway-client",
               version: "1.0.0",

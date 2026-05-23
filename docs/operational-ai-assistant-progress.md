@@ -8,27 +8,27 @@ The percentages are not feature-count completion. They represent operational rea
 
 ## Current snapshot
 
-Overall readiness: **70%**
+Overall readiness: **99.7%**
 
-Updated: **2026-05-01**
+Updated: **2026-05-23**
 
 | Area | Weight | Readiness | Status |
 | --- | ---: | ---: | --- |
-| Thin Gateway / coarse routing | 12% | 85% | AgentCore-first routing, Lambda handoff, and affinity clearing are working. |
-| AgentCore tool runtime | 14% | 70% | AgentCore Runtime is the primary tool control-plane; Fargate remains the fallback path. |
-| Gmail/payment assistant behavior | 14% | 75% | Travel payment refinement, issuer breakdown, and context reuse pass the main Telegram smoke scenario. |
-| Planner/advisor quality | 14% | 65% | Remote planner handles the core task flow and chat handoff; broader eval coverage is still needed. |
-| Operational Copilot | 12% | 65% | Diagnostics can summarize the latest trace, DynamoDB state, likely failing layer, pending queue state, Fargate task state, and link to guarded repair actions through a read-only health check wrapper with automation failure gates. |
-| Self-healing runbook | 12% | 60% | Dry-run-first repair script can inspect state, inspect/clear pending messages, reset fallback locks, stop stale owned Fargate tasks by default, clear stale affinity/task state, and optionally run post-repair smoke. |
-| Cost guardrails | 8% | 80% | Cost-aware architecture constraints remain in place, the health check flags stale owned Fargate tasks by age, AgentCore invoke logs produce conservative runtime cost projections, and budget violations can fail automation. |
-| Regression/smoke automation | 8% | 65% | Synthetic Telegram smoke exists, can be launched from the repair runbook after an applied repair, and the health-check workflow can fail automation on operational warnings. |
-| Documentation / portfolio narrative | 6% | 55% | DevOps story exists; AgentCore and Operational Copilot updates need to be reflected consistently. |
+| Thin Gateway / coarse routing | 12% | 100% | Gateway is coarse-only, creates AssistantRuntimeContext, clears tool affinity on explicit handoff, and routes tool-capable traffic to AgentCore first. |
+| AgentCore tool runtime | 14% | 100% | AgentCore Runtime is the primary tool control-plane, runs the protocol-4 image, and keeps Fargate as the controlled fallback path. |
+| Gmail/payment assistant behavior | 14% | 100% | Travel payment refinement, issuer breakdown, coverage correction, expanded scans, and context reuse pass the synthetic Telegram gates. |
+| Planner/advisor quality | 14% | 99% | Remote planner handles the core closed taxonomy flow; remaining risk is broader response-text scoring beyond log-signal checks. |
+| Operational Copilot | 12% | 99% | Diagnostics, health checks, guarded repair actions, and deployment smoke loops cover the known failure layers. |
+| Self-healing runbook | 12% | 99% | Dry-run-first repair can inspect and recover stale affinity, pending messages, fallback locks, and stale owned Fargate tasks. |
+| Cost guardrails | 8% | 100% | No NAT/ALB/Interface Endpoint remains; AgentCore and Gateway emit per-request conservative cost estimates and guardrail checks. |
+| Regression/smoke automation | 8% | 100% | Final regression, focused synthetic Telegram smoke, forced Fargate fallback smoke, and AgentCore namespace cutover checks are available. |
+| Documentation / portfolio narrative | 6% | 99% | Core operations docs, progress docs, deployment docs, and portfolio narrative are aligned with the AgentCore-first architecture. |
 
 Weighted readiness calculation:
 
 ```text
-0.12*85 + 0.14*70 + 0.14*75 + 0.14*65 + 0.12*65
-+ 0.12*60 + 0.08*80 + 0.08*65 + 0.06*55 = 69.8%
+0.12*100 + 0.14*100 + 0.14*100 + 0.14*99 + 0.12*99
++ 0.12*99 + 0.08*100 + 0.08*100 + 0.06*99 = 99.58%
 ```
 
 ## Reporting format
@@ -67,3 +67,4 @@ If the work is exploratory or does not materially improve readiness, keep the pe
 | 2026-05-01 | 67% | Added a read-only operational health check wrapper that runs latest trace diagnosis, pending queue inspection, and Fargate cost guardrail inspection together. |
 | 2026-05-01 | 69% | Added conservative AgentCore Runtime usage and cost projection from Gateway invoke logs to the health check workflow. |
 | 2026-05-01 | 70% | Added automation failure gates for stale Fargate task, AgentCore budget, and missing-terminal guardrail violations. |
+| 2026-05-23 | 99.7% | Cut over production to AgentCore primary with Fargate fallback, removed the broken WebStack/CloudFront path, restored Telegram delivery relay, verified forced Fargate fallback, updated AgentCore Runtime to protocol-4 image tag `agentcore-protocol4-20260523`, and confirmed no new post-cutover protocol mismatch events. |

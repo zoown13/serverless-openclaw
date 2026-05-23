@@ -376,9 +376,9 @@ Covered scenarios:
 
 | Area | Next improvement |
 |------|------------------|
-| AgentCore stability | Investigate intermittent AgentCore `424/500` and `hasContent=false` responses |
+| AgentCore stability | Monitor AgentCore callback-only responses and provider-side runtime errors after the protocol-4 image cutover |
 | Semantic evaluation | Add response-text scoring beyond log-signal smoke checks |
-| Operations dashboard | Surface per-request cost, fallback counts, latency, and monthly spend |
+| Operations dashboard | Keep refining per-request cost, fallback counts, latency, and monthly spend views |
 | Security hardening | Revisit GitHub Actions OIDC/secrets for public repository exposure |
 | UX polish | Improve long Gmail/payment summaries and waiting-state messages |
 

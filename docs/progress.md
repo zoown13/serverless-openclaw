@@ -115,7 +115,7 @@ graph TD
 | **1-5** | API Gateway | WebSocket API + REST API CDK, Cognito Authorizer, Lambda deployment, EventBridge Rule | `cdk deploy ApiStack` + WebSocket connection test | **Complete** |
 | **1-6** | Cognito auth | AuthStack (User Pool, App Client, PKCE flow, hosted domain) | Cognito test user + JWT issuance verified | **Complete** |
 | **1-7** | Compute | ComputeStack (ECS cluster, Fargate task definition, ARM64, FARGATE_SPOT, Secrets Manager) | `cdk deploy ComputeStack` + manual RunTask + `/health` response | **Complete** |
-| **1-8** | Web chat UI | React SPA (Vite), Cognito auth, WebSocket client, chat UI, cold start status, WebStack CDK | Local `npm run dev` + WebSocket + message send/receive | **Complete** |
+| **1-8** | Web chat UI | React SPA (Vite), Cognito auth, WebSocket client, chat UI, cold start status, optional WebStack CDK | Local `npm run dev` + WebSocket + message send/receive; production WebStack disabled by default | **Complete / Disabled by default** |
 | **1-9** | Telegram bot | Webhook registration, secret token verification, message routing, cold start response, Bot API sendMessage | Telegram message → response received | **Complete** |
 | **1-10** | Integration tests/docs | E2E tests, deployment.md, development.md | `cdk deploy --all` succeeds on a clean AWS account | **Complete** |
 
@@ -190,12 +190,13 @@ Design patterns:
 Verification results:
 - TypeScript build: passing
 - Vite build: passing (dist/ generated)
-- CDK synth: passing (6 stacks including WebStack, now 9 stacks)
+- CDK synth: passing; WebStack is optional and excluded from default Telegram/AgentCore-first deployments
 - ESLint: passing
 - Unit tests: 92 total (at time of completion), all passing (no existing tests broken)
 
 Design decisions:
-- S3 webBucket created inside WebStack (avoids StorageStack → WebStack circular dependency)
+- S3 webBucket created inside optional WebStack (avoids StorageStack → WebStack circular dependency)
+- Production WebStack/CloudFront was removed after the operational focus shifted to Telegram + AgentCore Runtime.
 - `amazon-cognito-identity-js` SRP auth (no Hosted UI needed)
 - Direct import of `@serverless-openclaw/shared` (Vite bundler module resolution)
 - WebSocket `?token={idToken}` query auth (API GW does not support Authorization header on $connect)
@@ -242,7 +243,7 @@ E2E test coverage:
 - AuthStack: Cognito User Pool, SRP auth, User Pool Domain
 - ComputeStack: ECS cluster, Fargate Task Definition (ARM64), CloudWatch Log Group
 - ApiStack: 7 Lambda functions (ARM64), WebSocket API, HTTP API, EventBridge watchdog
-- WebStack: S3, CloudFront, OAC, SPA error responses
+- Optional WebStack: S3, CloudFront, OAC, SPA error responses
 
 ---
 

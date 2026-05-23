@@ -667,6 +667,15 @@ function Get-Diagnosis {
     }
   }
 
+  if ($hasAgentCoreStarted -and $hasAgentCoreCompleted -and -not ($hasBridgeFailure -or $hasAgentCoreFallback)) {
+    return [pscustomobject]@{
+      Status = "healthy"
+      Layer = "agentcore"
+      Summary = "Gateway invoked AgentCore and observed a completed invoke for the focused trace."
+      NextAction = "No action needed. If the user did not receive a response, re-run with -AllEvents or inspect AgentCore callback delivery logs."
+    }
+  }
+
   if ($hasBridgeAccepted -and -not ($hasPlannerDecision -or $hasBridgeDelivery -or $hasAgentCoreHandoff)) {
     return [pscustomobject]@{
       Status = "attention"

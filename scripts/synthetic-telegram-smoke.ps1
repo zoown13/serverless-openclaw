@@ -7,7 +7,7 @@ param(
   [long]$ChatId,
   [long]$TelegramId,
   [string]$UserId,
-  [ValidateSet("PaymentFollowUp", "PaymentCoverageFollowUp", "PaymentCoverageThenIssuerBreakdown", "PaymentExpandedFirstTurn", "PaymentDeepScanFirstTurn", "PaymentHistoryCapability", "PaymentCapabilityThenChatHandoff", "PaymentThenEverydayChatHandoff", "PaymentThenCostLookup", "ChatThenCostLookup", "AwsCostLookup", "RepeatedPaymentCacheHit", "PaymentDateRange", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff", "PlannerSemanticHandoff", "GenericPaymentThenTravelRefinement")]
+  [ValidateSet("PaymentFollowUp", "PaymentCoverageFollowUp", "PaymentCoverageThenIssuerBreakdown", "PaymentExpandedFirstTurn", "PaymentDeepScanFirstTurn", "PaymentHistoryCapability", "PaymentCapabilityThenChatHandoff", "PaymentThenEverydayChatHandoff", "PaymentThenCostLookup", "ChatThenCostLookup", "AwsCostLookup", "RepeatedPaymentCacheHit", "PaymentDateRange", "TravelPaymentFollowUp", "TravelPaymentThenChatHandoff", "PlannerSemanticHandoff", "GenericPaymentThenTravelRefinement", "AssistantSelfState")]
   [string]$Scenario = "PaymentFollowUp",
   [int]$PauseSeconds = 10,
   [int]$BridgeSignalTimeoutSeconds = 180,
@@ -308,6 +308,12 @@ function Get-ScenarioMessages {
         "일본관련된 것만 가져와야지"
       )
     }
+    "AssistantSelfState" {
+      return @(
+        "나에 대해 기억나는 거 있어?",
+        "너 지금 지메일 결제내역 확인할 수 있는 상태야?"
+      )
+    }
     default {
       throw "Unsupported scenario: $SelectedScenario"
     }
@@ -519,6 +525,16 @@ function Wait-BridgeSignals {
   $requiresFindCommandHandoff = $SelectedScenario -in @("TravelPaymentThenChatHandoff", "PaymentCapabilityThenChatHandoff")
   $requiresAwsCostLookupSignals = $SelectedScenario -eq "AwsCostLookup"
   $requiresLambdaCostLookupSignals = $SelectedScenario -eq "ChatThenCostLookup"
+  $requiresAssistantSelfStateSignals = $SelectedScenario -eq "AssistantSelfState"
+
+  if ($requiresAssistantSelfStateSignals) {
+    $requiredSignals = @(
+      "bridge.self_state.answered",
+      "bridge.delivery.success",
+      "telegram.delivery.content_quality"
+    )
+    $requiredSignalGroups = @()
+  }
 
   if ($requiresAwsCostLookupSignals) {
     $requiredSignals = @(

@@ -1,9 +1,29 @@
 # AgentCore Runtime Operations
 
-This project uses AgentCore Runtime as the first control-plane for `tool-enabled`
-requests, with Fargate kept as the fallback worker. Gateway routing remains
-coarse-only: general chat goes to Lambda, and tool-capable traffic goes to
-AgentCore first.
+This project uses AgentCore Runtime as the unified assistant runtime for normal
+text conversations and tool/private-data requests. Gateway remains a thin
+frontdoor and delivery harness. It builds `AssistantRuntimeContext`, performs
+only coarse safety hints, and sends text traffic to AgentCore first. Fargate is
+kept as the controlled fallback worker for tool sessions when AgentCore is
+unavailable.
+
+Lambda remains in the architecture as an emergency compatibility runtime and for
+paths that are not yet part of the unified text runtime, such as the current
+image-analysis route. Lambda should not become a second semantic brain for text
+chat.
+
+## Current production baseline
+
+The current known-good baseline is:
+
+| Field | Value |
+| --- | --- |
+| Assistant runtime provider | `agentcore` |
+| Tool runtime provider | `agentcore` |
+| Fallback provider | `fargate` |
+| AgentCore image/session namespace | `agentcore-unified-selfstate-20260524-000855` |
+| AgentCore runtime version | `66` |
+| Baseline commit | `1233cb4 feat: unify assistant runtime through AgentCore` |
 
 ## Deployment invariant
 
@@ -86,8 +106,18 @@ redeploy the AgentCore Runtime with `deploy-agentcore-runtime.ps1`.
 
 ## Smoke scenarios
 
-Run at least one direct payment-context smoke and one handoff smoke after every
-tool runtime cutover.
+Run at least one self-state smoke, one direct payment-context smoke, and one
+handoff smoke after every assistant runtime cutover.
+
+Assistant self-state:
+
+```powershell
+powershell -File .\scripts\synthetic-telegram-smoke.ps1 `
+  -ChatId "<chat-id>" `
+  -TelegramId "<telegram-id>" `
+  -Scenario AssistantSelfState `
+  -TailLogs
+```
 
 Payment context continuity:
 
@@ -109,9 +139,11 @@ powershell -File .\scripts\synthetic-telegram-smoke.ps1 `
   -TailLogs
 ```
 
-The first smoke protects payment follow-ups such as `합계만`, `더 있을텐데`,
-and `5개 밖에 없어?`. The second smoke protects the Japan travel payment flow,
-topic refinement, card issuer breakdown, and the return to Lambda chat-only.
+The self-state smoke protects the AssistantRuntimeContext contract, including
+Gmail/tool capability awareness. The payment smoke protects payment follow-ups
+such as `합계만`, `더 있을텐데`, and `5개 밖에 없어?`. The travel handoff smoke
+protects the Japan travel payment flow, topic refinement, card issuer breakdown,
+and the return to general assistant chat without losing tool capability context.
 
 ## Quality guardrails
 
@@ -161,7 +193,17 @@ Expected direct tool path events:
 
 ```text
 bridge.message.accepted
+bridge.assistant_context.loaded
 bridge.tool.intent.decided
+bridge.delivery.success
+```
+
+Expected self-state path events:
+
+```text
+bridge.message.accepted
+bridge.assistant_context.loaded
+bridge.self_state.answered
 bridge.delivery.success
 ```
 

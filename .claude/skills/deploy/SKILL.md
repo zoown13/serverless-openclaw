@@ -12,7 +12,7 @@ Deploy target: **$ARGUMENTS**
 ## Prerequisites
 
 1. Load environment variables: `export $(cat .env | xargs)`
-2. Ensure `packages/web/dist/` exists: `cd packages/web && npx vite build`
+2. Ensure `packages/web/dist/` exists only when deploying the optional WebStack: `cd packages/web && npx vite build`
 3. Ensure TypeScript build passes: `npm run build`
 
 ## Deployment Targets
@@ -45,7 +45,7 @@ cd packages/cdk
 npx cdk deploy --all --profile $AWS_PROFILE --region $AWS_REGION --require-approval broadening
 ```
 
-Stack order (automatic): SecretsStack + NetworkStack -> StorageStack -> {AuthStack, ComputeStack} -> ApiStack -> WebStack + MonitoringStack
+Stack order (automatic): SecretsStack + NetworkStack -> StorageStack -> {AuthStack, ComputeStack} -> ApiStack -> MonitoringStack. WebStack is optional and is included only when `ENABLE_WEB_STACK=true` or `DEPLOY_WEB=true`.
 
 ### `<StackName>` — Deploy Individual Stack
 

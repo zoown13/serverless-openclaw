@@ -16,7 +16,9 @@ import {
 const app = new cdk.App();
 
 const agentRuntime = process.env.AGENT_RUNTIME ?? "both"; // default: Lambda chat + tool runtime
-const deployWeb = process.env.DEPLOY_WEB !== "false"; // default: true (deploy web)
+const deployWeb =
+  process.env.ENABLE_WEB_STACK === "true" ||
+  process.env.DEPLOY_WEB === "true"; // default: false (Telegram/AgentCore-first operation)
 const aiProvider = process.env.AI_PROVIDER;
 const aiModel = process.env.AI_MODEL;
 const toolSlmBackend = process.env.TOOL_SLM_BACKEND;

@@ -4,6 +4,8 @@ param(
   [string]$AiProvider = $(if ($env:AI_PROVIDER) { $env:AI_PROVIDER } else { "bedrock" }),
   [ValidateSet("fargate", "agentcore")]
   [string]$ToolRuntimeProvider = $(if ($env:TOOL_RUNTIME_PROVIDER) { $env:TOOL_RUNTIME_PROVIDER } else { "agentcore" }),
+  [ValidateSet("lambda", "agentcore")]
+  [string]$AssistantRuntimeProvider = $(if ($env:ASSISTANT_RUNTIME_PROVIDER) { $env:ASSISTANT_RUNTIME_PROVIDER } else { "agentcore" }),
   [ValidateSet("fargate")]
   [string]$AgentCoreFallbackProvider = $(if ($env:AGENTCORE_FALLBACK_PROVIDER) { $env:AGENTCORE_FALLBACK_PROVIDER } else { "fargate" }),
   [string]$AgentCoreInvokeDeadlineMs = $(if ($env:AGENTCORE_INVOKE_DEADLINE_MS) { $env:AGENTCORE_INVOKE_DEADLINE_MS } else { "12000" }),
@@ -308,6 +310,7 @@ $env:AWS_REGION = $Region
 $env:AI_PROVIDER = $AiProvider
 $env:AGENT_RUNTIME = "both"
 $env:TOOL_RUNTIME_PROVIDER = $ToolRuntimeProvider
+$env:ASSISTANT_RUNTIME_PROVIDER = $AssistantRuntimeProvider
 $env:TOOL_CONTEXT_STORE = $ToolContextStore
 $env:AGENTCORE_FALLBACK_PROVIDER = $AgentCoreFallbackProvider
 $env:AGENTCORE_INVOKE_DEADLINE_MS = $AgentCoreInvokeDeadlineMs
@@ -348,6 +351,7 @@ Write-Host "  AWS_REGION            : $env:AWS_REGION"
 Write-Host "  AI_PROVIDER           : $env:AI_PROVIDER"
 Write-Host "  AGENT_RUNTIME         : $env:AGENT_RUNTIME"
 Write-Host "  TOOL_RUNTIME_PROVIDER : $env:TOOL_RUNTIME_PROVIDER"
+Write-Host "  ASSISTANT_RUNTIME     : $env:ASSISTANT_RUNTIME_PROVIDER"
 Write-Host "  TOOL_CONTEXT_STORE    : $env:TOOL_CONTEXT_STORE"
 Write-Host "  AGENTCORE_FALLBACK    : $env:AGENTCORE_FALLBACK_PROVIDER"
 Write-Host "  AGENTCORE_DEADLINE_MS : $env:AGENTCORE_INVOKE_DEADLINE_MS"

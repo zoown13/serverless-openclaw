@@ -443,6 +443,7 @@ describe("CDK Stacks E2E — synth all stacks", () => {
     it("defaults tool runtime provider to AgentCore-first without invoke permission when ARN is absent", () => {
       const templateJson = JSON.stringify(apiTemplate.toJSON());
       expect(templateJson).toContain("TOOL_RUNTIME_PROVIDER");
+      expect(templateJson).toContain("ASSISTANT_RUNTIME_PROVIDER");
       expect(templateJson).toContain("agentcore");
       expect(templateJson).toContain("AGENTCORE_FALLBACK_PROVIDER");
       expect(templateJson).toContain("AGENTCORE_INVOKE_DEADLINE_MS");
@@ -475,6 +476,7 @@ describe("CDK Stacks E2E — synth all stacks", () => {
 
       const templateJson = JSON.stringify(Template.fromStack(api).toJSON());
       expect(templateJson).toContain("TOOL_RUNTIME_PROVIDER");
+      expect(templateJson).toContain("ASSISTANT_RUNTIME_PROVIDER");
       expect(templateJson).toContain("agentcore");
       expect(templateJson).toContain("AGENTCORE_RUNTIME_ARN");
       expect(templateJson).toContain(agentCoreRuntimeArn);

@@ -616,6 +616,79 @@ describe("handler", () => {
     );
   });
 
+  it("should answer assistant self-state questions from AssistantRuntimeContext", async () => {
+    process.env.SSM_TELEGRAM_BOT_TOKEN = "/serverless-openclaw/secrets/telegram-bot-token";
+    mockResolveSecrets.mockResolvedValue(
+      new Map([
+        ["/serverless-openclaw/secrets/telegram-bot-token", "telegram-token"],
+      ]),
+    );
+
+    const handler = await loadHandler();
+    const result = await handler(createEvent({
+      message: "나에 대해 기억나는 거 있어?",
+      channel: "telegram",
+      connectionId: undefined,
+      callbackUrl: undefined,
+      telegramChatId: "8585874705",
+      assistantContext: {
+        version: 1,
+        userId: "user-123",
+        channel: "telegram",
+        sessionId: "session-user-123:chat",
+        traceId: "trace-self-state",
+        generatedAt: "2026-05-04T00:00:00.000Z",
+        runtime: {
+          agentRuntime: "both",
+          runtimeClass: "chat-only",
+          routeDecision: "lambda",
+          lambdaRole: "chat-only-fast-path",
+          toolRuntimeProvider: "agentcore",
+          fallbackProvider: "fargate",
+        },
+        capabilities: {
+          tools: {
+            available: true,
+            executionRuntime: "agentcore",
+            note: "Tool tasks are delegated.",
+            registry: [
+              {
+                id: "gmail_payment",
+                displayName: "Gmail payment tools",
+                status: "available",
+              },
+            ],
+          },
+          gmail: {
+            status: "available_via_tool_runtime",
+            executionRuntime: "agentcore",
+            safetyMode: "headers-first",
+          },
+        },
+        toolAffinity: {
+          active: false,
+          provider: "agentcore",
+          fallbackProvider: "fargate",
+        },
+        guidance: {
+          selfAwareness: "The assistant has delegated Gmail capability.",
+          lambda: "Do not claim Gmail is impossible.",
+          toolRuntime: "Tool runtime owns Gmail tasks.",
+        },
+      },
+    })) as LambdaAgentResponse;
+
+    expect(result.success).toBe(true);
+    expect(result.payloads?.[0]?.text).toContain("자기 상태");
+    expect(result.payloads?.[0]?.text).toContain("도구 런타임을 통해 사용 가능");
+    expect(result.payloads?.[0]?.text).toContain("AgentCore");
+    expect(result.payloads?.[0]?.text).not.toContain("접근 불가");
+    expect(mockRunAgent).not.toHaveBeenCalled();
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("\"event\":\"lambda.self_state.answered\""),
+    );
+  });
+
   it("should log Telegram delivery success", async () => {
     process.env.SSM_TELEGRAM_BOT_TOKEN = "/serverless-openclaw/secrets/telegram-bot-token";
     mockResolveSecrets.mockResolvedValue(

@@ -1054,6 +1054,76 @@ describe("message service", () => {
       expect(mockInvokeAgentCore).not.toHaveBeenCalled();
     });
 
+    it("should route normal chat to AgentCore when AgentCore is the assistant runtime", async () => {
+      const mockInvokeLambda = vi.fn();
+      const mockInvokeAgentCore = vi.fn().mockResolvedValue({
+        accepted: true,
+        content: "AgentCore chat response",
+      });
+      const deps = makeDeps({
+        agentRuntime: "both",
+        assistantRuntimeProvider: "agentcore",
+        toolRuntimeProvider: "agentcore",
+        invokeLambdaAgent: mockInvokeLambda,
+        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+        invokeAgentCoreRuntime: mockInvokeAgentCore,
+        agentCoreRuntimeArn: "arn:aws:bedrock-agentcore:us-east-1:123:runtime/test",
+        message: "나에 대해 기억나는 거 있어?",
+        getTaskState: vi.fn().mockResolvedValue(null),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("agentcore");
+      expect(mockInvokeAgentCore).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runtimeClass: "chat-only",
+          message: "나에 대해 기억나는 거 있어?",
+          callbackUrl: "https://cb",
+        }),
+      );
+      expect(mockInvokeLambda).not.toHaveBeenCalled();
+      expect(deps.sendClarification).toHaveBeenCalledWith("AgentCore chat response");
+      expect(infoSpy).toHaveBeenCalledWith(
+        expect.stringContaining("\"event\":\"route.agentcore_assistant.selected\""),
+      );
+    });
+
+    it("should route tool requests through AgentCore assistant runtime and create affinity", async () => {
+      const mockInvokeAgentCore = vi.fn().mockResolvedValue({
+        accepted: true,
+      });
+      const deps = makeDeps({
+        agentRuntime: "both",
+        assistantRuntimeProvider: "agentcore",
+        toolRuntimeProvider: "agentcore",
+        invokeLambdaAgent: vi.fn(),
+        lambdaAgentFunctionArn: "arn:aws:lambda:us-east-1:123:function:agent",
+        invokeAgentCoreRuntime: mockInvokeAgentCore,
+        agentCoreRuntimeArn: "arn:aws:bedrock-agentcore:us-east-1:123:runtime/test",
+        message: "이번주 결제한 금액 얼마야?",
+        getTaskState: vi.fn().mockResolvedValue(null),
+      });
+
+      const result = await routeMessage(deps);
+
+      expect(result).toBe("agentcore");
+      expect(mockInvokeAgentCore).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runtimeClass: "tool-enabled",
+          message: "이번주 결제한 금액 얼마야?",
+          callbackUrl: "https://cb",
+        }),
+      );
+      expect(deps.putRoutingContext).toHaveBeenCalledWith(
+        "user-123",
+        expect.objectContaining({
+          runtimeClass: "tool-enabled",
+          provider: "agentcore",
+        }),
+      );
+    });
+
     it("should clear standalone chat requests and hand active AgentCore sessions back to Lambda chat", async () => {
       const mockInvokeLambda = vi.fn().mockResolvedValue({ accepted: true });
       const mockInvokeAgentCore = vi.fn();

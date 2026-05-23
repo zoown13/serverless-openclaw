@@ -493,6 +493,66 @@ function isCostLookupRequest(message: string): boolean {
   ].some((pattern) => pattern.test(normalized));
 }
 
+function isAssistantSelfStateQuestion(message: string): boolean {
+  const normalized = message.trim();
+  if (!normalized || normalized.length > 180 || isToolRequest(normalized)) {
+    return false;
+  }
+
+  return [
+    /(?:나|내|저).*(?:대해|정보|상태|기억|알고).*(?:기억|알고|뭐|무엇|있어|알려|말해)/i,
+    /(?:기억|알고).*(?:나|내|저).*(?:대해|정보|상태)/i,
+    /(?:너|니|네|assistant|openclaw).*(?:뭘|무엇|뭐|어떤).*(?:기억|알고|할\s*수|가능)/i,
+    /(?:지메일|gmail|도구|tool|결제\s*이력|payment).*(?:쓸\s*수|사용\s*가능|가능|연결|알고\s*있)/i,
+    /(?:뭘|무엇|뭐).*(?:기억|알고\s*있|할\s*수\s*있)/i,
+  ].some((pattern) => pattern.test(normalized));
+}
+
+function buildAssistantSelfStateMessage(event: LambdaAgentEvent): string {
+  const context = event.assistantContext;
+  const gmailStatus = context?.capabilities.gmail.status;
+  const toolRuntimeProvider = context?.runtime.toolRuntimeProvider ?? "AgentCore tool runtime";
+  const activeToolAffinity = context?.toolAffinity?.active === true;
+  const toolCapabilities = context?.capabilities.tools.registry
+    ?.filter((capability) => capability.status === "available")
+    .map((capability) => capability.displayName)
+    .filter((displayName) => displayName.trim().length > 0);
+
+  if (event.channel === "telegram") {
+    const parts = [
+      "지금 제가 확실히 알고 있는 자기 상태는 이 정도예요.",
+      "",
+      `- 현재 대화 경로: ${context?.runtime.runtimeClass ?? "chat-only"} / ${context?.runtime.routeDecision ?? "lambda"}`,
+      `- 도구 실행 경로: ${toolRuntimeProvider}`,
+      `- Gmail 상태: ${
+        gmailStatus === "available_via_tool_runtime"
+          ? "도구 런타임을 통해 사용 가능"
+          : gmailStatus ?? "unknown"
+      }`,
+      `- 활성 도구 문맥: ${activeToolAffinity ? "있음" : "없음"}`,
+      `- 사용 가능한 도구: ${
+        toolCapabilities && toolCapabilities.length > 0
+          ? toolCapabilities.join(", ")
+          : "Gmail/payment 계열 도구 런타임"
+      }`,
+      "",
+      "다만 장기 개인 프로필 메모리는 아직 별도 기능으로 고정 저장하지 않고, 현재 대화 문맥과 연결된 런타임 상태를 기준으로 답해요. 결제 이력이나 메일 확인은 제가 모르는 게 아니라 AgentCore 도구 런타임으로 넘겨 확인해야 하는 작업입니다.",
+    ];
+    return parts.join("\n");
+  }
+
+  return [
+    "Here is the current assistant self-state I can rely on:",
+    "",
+    `- Current route: ${context?.runtime.runtimeClass ?? "chat-only"} / ${context?.runtime.routeDecision ?? "lambda"}`,
+    `- Tool runtime: ${toolRuntimeProvider}`,
+    `- Gmail capability: ${gmailStatus ?? "unknown"}`,
+    `- Active tool context: ${activeToolAffinity ? "yes" : "no"}`,
+    "",
+    "I do not persist a long-term personal profile yet. I can use the current conversation context plus delegated tool runtime state; Gmail/payment lookups are handled by the tool runtime rather than this fast Lambda chat path.",
+  ].join("\n");
+}
+
 function formatUsd(value: number | undefined): string {
   if (value === undefined) return "unknown";
   if (value > 0 && value < 0.000001) return "<$0.000001";
@@ -922,6 +982,31 @@ export async function handler(
   } else if (isTelegram && telegramBotTokenPath) {
     const secrets = await resolveSecrets([telegramBotTokenPath]);
     telegramBotToken = secrets.get(telegramBotTokenPath);
+  }
+
+  if (isAssistantSelfStateQuestion(event.message)) {
+    const payloads = [{ text: buildAssistantSelfStateMessage(event) }];
+    logLambdaEvent("lambda.self_state.answered", requestLogPayload);
+    await pushPayloads(payloads, {
+      canPush,
+      callbackUrl: event.callbackUrl,
+      connectionId: event.connectionId,
+      isTelegram,
+      telegramBotToken,
+      telegramChatId,
+      traceId,
+      channel: event.channel,
+    });
+    await pushIdleStatus(canPush, traceId, event.callbackUrl, event.connectionId);
+    await lock.release();
+
+    return {
+      success: true,
+      payloads,
+      durationMs: Date.now() - startTime,
+      provider: runtimeConfig.openclawProvider,
+      model: event.model ?? runtimeConfig.defaultModel,
+    };
   }
 
   const awsCostRequest = parseAwsCostLookupRequest(event.message);

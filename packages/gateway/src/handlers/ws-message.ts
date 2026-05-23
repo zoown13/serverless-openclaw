@@ -122,6 +122,7 @@ export async function handler(event: {
       },
       agentRuntime,
       toolRuntimeProvider: (process.env.TOOL_RUNTIME_PROVIDER as "fargate" | "agentcore" | undefined) ?? "agentcore",
+      assistantRuntimeProvider: process.env.ASSISTANT_RUNTIME_PROVIDER as "lambda" | "agentcore" | undefined,
       invokeLambdaAgent: lambdaAgentFunctionArn ? invokeLambdaAgent : undefined,
       lambdaAgentFunctionArn: lambdaAgentFunctionArn || undefined,
       invokeAgentCoreRuntime,

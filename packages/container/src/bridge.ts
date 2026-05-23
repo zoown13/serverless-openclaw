@@ -433,6 +433,67 @@ function resolveToolCostSessionId(body: Partial<BridgeMessageRequest>): string {
   return body.assistantContext?.sessionId ?? `${body.channel ?? "unknown"}:${body.connectionId ?? "unknown"}`;
 }
 
+function isAssistantSelfStateQuestion(message: string | undefined): boolean {
+  const normalized = message?.normalize("NFKC").replace(/\s+/g, " ").trim() ?? "";
+  if (!normalized || normalized.length > 180) {
+    return false;
+  }
+
+  return [
+    /(?:나|내|저).*(?:대해|정보|상태|기억|알고).*(?:기억|알고|뭐|무엇|있어|알려|말해)/i,
+    /(?:기억|알고).*(?:나|내|저).*(?:대해|정보|상태)/i,
+    /(?:너|니|네|assistant|openclaw).*(?:뭘|무엇|뭐|어떤).*(?:기억|알고|할\s*수|가능)/i,
+    /(?:지메일|gmail|도구|tool).*(?:쓸\s*수|사용\s*가능|가능|연결|알고\s*있)/i,
+    /(?:뭘|무엇|뭐).*(?:기억|알고\s*있|할\s*수\s*있)/i,
+  ].some((pattern) => pattern.test(normalized));
+}
+
+function buildAssistantSelfStateMessage(body: Partial<BridgeMessageRequest>): string {
+  const context = body.assistantContext;
+  const gmailStatus = context?.capabilities.gmail.status;
+  const toolRuntimeProvider = context?.runtime.toolRuntimeProvider ?? "agentcore";
+  const activeToolAffinity = context?.toolAffinity?.active === true;
+  const toolCapabilities = context?.capabilities.tools.registry
+    ?.filter((capability) => capability.status === "available")
+    .map((capability) => capability.displayName)
+    .filter((displayName) => displayName.trim().length > 0);
+
+  if (body.channel === "telegram") {
+    return [
+      "지금 제가 확실히 알고 있는 자기 상태는 이 정도예요.",
+      "",
+      `- 현재 대화 경로: ${context?.runtime.runtimeClass ?? body.runtimeClass ?? "chat-only"} / ${context?.runtime.routeDecision ?? body.routeDecision ?? "agentcore"}`,
+      "- 주 assistant runtime: AgentCore",
+      `- 도구 실행 경로: ${toolRuntimeProvider}`,
+      `- Gmail 상태: ${
+        gmailStatus === "available_via_tool_runtime"
+          ? "도구 런타임을 통해 사용 가능"
+          : gmailStatus ?? "unknown"
+      }`,
+      `- 활성 도구 문맥: ${activeToolAffinity ? "있음" : "없음"}`,
+      `- 사용 가능한 도구: ${
+        toolCapabilities && toolCapabilities.length > 0
+          ? toolCapabilities.join(", ")
+          : "Gmail/payment 계열 도구"
+      }`,
+      "",
+      "장기 개인 프로필 메모리는 아직 별도 파일로 고정 저장하지 않고, 현재 대화 문맥과 런타임 상태를 기준으로 답해요. 결제 이력이나 메일 확인은 제가 모르는 게 아니라 AgentCore 도구 런타임에서 확인하는 작업입니다.",
+    ].join("\n");
+  }
+
+  return [
+    "Here is the current assistant self-state I can rely on:",
+    "",
+    `- Current route: ${context?.runtime.runtimeClass ?? body.runtimeClass ?? "chat-only"} / ${context?.runtime.routeDecision ?? body.routeDecision ?? "agentcore"}`,
+    "- Primary assistant runtime: AgentCore",
+    `- Tool runtime: ${toolRuntimeProvider}`,
+    `- Gmail capability: ${gmailStatus ?? "unknown"}`,
+    `- Active tool context: ${activeToolAffinity ? "yes" : "no"}`,
+    "",
+    "Long-term personal profile memory is not pinned yet. Gmail/payment lookups are handled by the AgentCore tool runtime, not treated as impossible.",
+  ].join("\n");
+}
+
 function resolveToolMemoryMb(): number | undefined {
   return parseOptionalPositiveInt(
     process.env.AGENTCORE_MEMORY_MB ??
@@ -577,6 +638,26 @@ export function createApp(deps: BridgeDeps): express.Express {
         hasActiveToolAffinity: body.assistantContext.toolAffinity?.active === true,
         gmailCapability: body.assistantContext.capabilities.gmail.status,
       });
+    }
+
+    if (isAssistantSelfStateQuestion(body.message)) {
+      const message = buildAssistantSelfStateMessage(body);
+      logBridgeEvent("bridge.self_state.answered", logContext);
+      if (deliveryMode === "callback") {
+        await deps.callbackSender.send(body.connectionId!, {
+          type: "stream_chunk",
+          content: message,
+          conversationId: undefined,
+        });
+        await deps.callbackSender.send(body.connectionId!, {
+          type: "stream_end",
+        });
+      }
+
+      return {
+        message,
+        source: "assistant-runtime-context",
+      };
     }
 
     const awsCostRequest = parseAwsCostLookupRequest(body.message ?? "");
@@ -732,9 +813,13 @@ export function createApp(deps: BridgeDeps): express.Express {
             ...logContext,
             deliveryType,
             source: gmailResponse.source,
+            unifiedAssistantRuntime: process.env.AGENTCORE_UNIFIED_ASSISTANT !== "false",
           });
 
-          if (deliveryMode === "response") {
+          if (
+            deliveryMode === "response" &&
+            process.env.AGENTCORE_UNIFIED_ASSISTANT === "false"
+          ) {
             return {
               message: gmailResponse.message,
               source: gmailResponse.source,

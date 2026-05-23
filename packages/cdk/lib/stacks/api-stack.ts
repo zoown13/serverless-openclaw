@@ -40,6 +40,8 @@ export interface ApiStackProps extends cdk.StackProps {
   agentRuntime?: string;
   /** Tool-capable runtime provider: 'fargate' | 'agentcore'. Default: 'agentcore' */
   toolRuntimeProvider?: string;
+  /** Primary assistant brain provider: 'lambda' | 'agentcore'. Default: 'agentcore'. */
+  assistantRuntimeProvider?: string;
   /** Optional Bedrock AgentCore runtime ARN for tool-capable requests. */
   agentCoreRuntimeArn?: string;
   /** Optional AgentCore runtime qualifier. */
@@ -60,6 +62,9 @@ export class ApiStack extends cdk.Stack {
     // Common environment variables for Lambda functions
     const agentRuntime = props.agentRuntime ?? "fargate";
     const toolRuntimeProvider = props.toolRuntimeProvider ?? "agentcore";
+    const assistantRuntimeProvider = props.assistantRuntimeProvider ??
+      process.env.ASSISTANT_RUNTIME_PROVIDER ??
+      "agentcore";
     const fargateEnabled = agentRuntime !== "lambda";
 
     let subnetIds = "";
@@ -103,6 +108,7 @@ export class ApiStack extends cdk.Stack {
         : {}),
       AGENT_RUNTIME: agentRuntime,
       TOOL_RUNTIME_PROVIDER: toolRuntimeProvider,
+      ASSISTANT_RUNTIME_PROVIDER: assistantRuntimeProvider,
       AGENTCORE_FALLBACK_PROVIDER: process.env.AGENTCORE_FALLBACK_PROVIDER ?? "fargate",
       AGENTCORE_INVOKE_DEADLINE_MS: process.env.AGENTCORE_INVOKE_DEADLINE_MS ?? "12000",
       AWS_COST_LOOKUP_ENABLED: process.env.AWS_COST_LOOKUP_ENABLED ?? "false",

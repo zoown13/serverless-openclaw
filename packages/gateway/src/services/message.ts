@@ -39,6 +39,7 @@ import {
 import type { RouteClassificationSignals } from "./route-classifier.js";
 import { publishGatewayCountMetric } from "./metrics.js";
 
+type AssistantRuntimeProvider = "lambda" | "agentcore";
 type FetchFn = (
   url: string,
   init: RequestInit,
@@ -129,6 +130,7 @@ export interface RouteDeps {
   agentCoreRuntimeArn?: string;
   agentCoreRuntimeQualifier?: string;
   agentCoreFallbackProvider?: ToolRuntimeProvider;
+  assistantRuntimeProvider?: AssistantRuntimeProvider;
   sessionId?: string;
   imageInput?: LambdaAgentImageInput;
   requestStartedAtMs?: number;
@@ -341,6 +343,18 @@ function resolveAgentCoreFallbackProvider(deps: RouteDeps): ToolRuntimeProvider 
   return configured === "fargate" ? "fargate" : "fargate";
 }
 
+function resolveAssistantRuntimeProvider(deps: RouteDeps): AssistantRuntimeProvider {
+  const configured = deps.assistantRuntimeProvider ?? process.env.ASSISTANT_RUNTIME_PROVIDER;
+  return configured === "agentcore" ? "agentcore" : "lambda";
+}
+
+function shouldUseAgentCoreAssistantRuntime(deps: RouteDeps): boolean {
+  return resolveAssistantRuntimeProvider(deps) === "agentcore" &&
+    deps.agentRuntime === "both" &&
+    resolveToolRuntimeProvider(deps) === "agentcore" &&
+    Boolean(deps.invokeAgentCoreRuntime && deps.agentCoreRuntimeArn);
+}
+
 function buildRouteLogPayload(
   deps: RouteDeps,
   runtimeClass: RuntimeClass,
@@ -477,8 +491,8 @@ function buildAssistantRuntimeContext(
     },
     guidance: {
       selfAwareness: "The assistant should know that this system has a delegated tool runtime and a closed tool capability registry. Available capabilities may be executed by the tool runtime; planned capabilities are roadmap/self-awareness only.",
-      lambda: "Lambda is the fast chat path. If a request needs Gmail or another tool, do not claim the whole assistant cannot access it; explain that the tool runtime must handle or verify that lookup.",
-      toolRuntime: "AgentCore/Fargate owns semantic interpretation, Gmail/payment context, follow-up handling, and controlled tool execution.",
+      lambda: "Lambda is the frontdoor, delivery layer, and emergency fallback. It should not be treated as a separate assistant brain when AgentCore is the assistant runtime.",
+      toolRuntime: "AgentCore/Fargate owns semantic interpretation, normal chat, Gmail/payment context, follow-up handling, and controlled tool execution.",
     },
   };
 
@@ -725,23 +739,29 @@ async function routeFargate(
 
 async function routeAgentCore(
   deps: RouteDeps,
-  options: { activeToolAffinity?: boolean } = {},
+  options: {
+    activeToolAffinity?: boolean;
+    runtimeClass?: RuntimeClass;
+    preferCallbackDelivery?: boolean;
+  } = {},
 ): Promise<RouteResult> {
   if (!deps.invokeAgentCoreRuntime || !deps.agentCoreRuntimeArn) {
     throw new Error("AgentCore tool runtime is not configured");
   }
 
   validateLambdaDeliveryTarget(deps);
+  const runtimeClass = options.runtimeClass ?? "tool-enabled";
   const bridgeMessage = buildBridgeMessageRequest(
     deps,
     deps.message,
-    "tool-enabled",
+    runtimeClass,
     "agentcore",
     options,
   );
   logRouteEvent("agentcore.invoke.started", {
-    ...buildRouteLogPayload(deps, "tool-enabled", "agentcore", null, false),
+    ...buildRouteLogPayload(deps, runtimeClass, "agentcore", null, false),
     toolRuntimeProvider: "agentcore",
+    assistantRuntimeProvider: resolveAssistantRuntimeProvider(deps),
   });
   const result = await deps.invokeAgentCoreRuntime({
     runtimeArn: deps.agentCoreRuntimeArn,
@@ -752,8 +772,10 @@ async function routeAgentCore(
     message: bridgeMessage.message,
     channel: bridgeMessage.channel,
     connectionId: bridgeMessage.connectionId,
-    callbackUrl: options.activeToolAffinity ? "" : bridgeMessage.callbackUrl,
-    runtimeClass: "tool-enabled",
+    callbackUrl: options.activeToolAffinity && !options.preferCallbackDelivery
+      ? ""
+      : bridgeMessage.callbackUrl,
+    runtimeClass,
     emailTokenBudget: bridgeMessage.emailTokenBudget,
     assistantContext: bridgeMessage.assistantContext,
     timeoutMs: options.activeToolAffinity
@@ -772,7 +794,7 @@ async function routeAgentCore(
       });
     }
     logRouteEvent("agentcore.invoke.handoff", {
-      ...buildRouteLogPayload(deps, "tool-enabled", "agentcore", null, false),
+      ...buildRouteLogPayload(deps, runtimeClass, "agentcore", null, false),
       toolRuntimeProvider: "agentcore",
       handoffRuntimeClass: result.handoffRuntimeClass,
       source: result.source,
@@ -790,7 +812,7 @@ async function routeAgentCore(
     await deps.sendClarification(result.content);
   }
   logRouteEvent("agentcore.invoke.completed", {
-    ...buildRouteLogPayload(deps, "tool-enabled", "agentcore", null, false),
+    ...buildRouteLogPayload(deps, runtimeClass, "agentcore", null, false),
     toolRuntimeProvider: "agentcore",
     hasContent: Boolean(result.content),
   });
@@ -831,9 +853,15 @@ async function routeToolRuntime(
   deps: RouteDeps,
   taskState: TaskStateItem | null,
   routeDecision: RouteDecision,
-  options: { activeToolAffinity?: boolean; providerOverride?: ToolRuntimeProvider } = {},
+  options: {
+    activeToolAffinity?: boolean;
+    providerOverride?: ToolRuntimeProvider;
+    runtimeClass?: RuntimeClass;
+    preferCallbackDelivery?: boolean;
+  } = {},
 ): Promise<RouteResult> {
   const provider = options.providerOverride ?? resolveToolRuntimeProvider(deps);
+  const runtimeClass = options.runtimeClass ?? "tool-enabled";
   if (provider === "agentcore" && routeDecision === "agentcore") {
     try {
       return await routeAgentCore(deps, options);
@@ -846,7 +874,7 @@ async function routeToolRuntime(
         {
           ...buildRouteLogPayload(
             deps,
-            "tool-enabled",
+            runtimeClass,
             fallbackDecision,
             taskState,
             false,
@@ -864,14 +892,14 @@ async function routeToolRuntime(
       return routeFargate(
         deps,
         taskState,
-        "tool-enabled",
+        runtimeClass,
         fallbackDecision,
         { ...options, providerOverride: fallbackProvider },
       );
     }
   }
 
-  return routeFargate(deps, taskState, "tool-enabled", routeDecision, options);
+  return routeFargate(deps, taskState, runtimeClass, routeDecision, options);
 }
 
 async function invokeLambdaRoute(
@@ -924,7 +952,11 @@ async function routeForcedRuntimeClass(
   deps: RouteDeps,
   message: string,
   runtimeClass: RuntimeClass,
-  options: { activeToolAffinity?: boolean; providerOverride?: ToolRuntimeProvider } = {},
+  options: {
+    activeToolAffinity?: boolean;
+    providerOverride?: ToolRuntimeProvider;
+    preferCallbackDelivery?: boolean;
+  } = {},
 ): Promise<RouteResult> {
   const taskState = await deps.getTaskState(deps.userId);
 
@@ -942,7 +974,7 @@ async function routeForcedRuntimeClass(
       { ...deps, message },
       taskState,
       routeDecision,
-      options,
+      { ...options, runtimeClass },
     );
   }
 
@@ -1088,6 +1120,7 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
       {
         activeToolAffinity: true,
         providerOverride: affinityResolution.replayProvider,
+        preferCallbackDelivery: shouldUseAgentCoreAssistantRuntime(deps),
       },
     );
   }
@@ -1115,6 +1148,60 @@ export async function routeMessage(deps: RouteDeps): Promise<RouteResult> {
       runtimeClass: "chat-only",
     });
     return routeForcedRuntimeClass(deps, deps.message, "chat-only");
+  }
+
+  if (shouldUseAgentCoreAssistantRuntime(deps)) {
+    const taskState = await deps.getTaskState(deps.userId);
+    const runtimeClass = classifyRouteRuntimeClass(deps.message);
+    const classifierSignals = getRouteClassificationSignals(deps.message);
+    const routedMessage = stripRouteHint(deps.message);
+    logRouteEvent(
+      "route.classified",
+      buildClassifierLogPayload(
+        deps,
+        runtimeClass,
+        "agentcore",
+        taskState,
+        classifierSignals,
+      ),
+    );
+    logRouteEvent("route.agentcore_assistant.selected", {
+      traceId: deps.traceId,
+      channel: deps.channel,
+      runtimeClass,
+      routeDecision: "agentcore",
+      assistantRuntimeProvider: "agentcore",
+      toolRuntimeProvider: resolveToolRuntimeProvider(deps),
+    });
+
+    if (runtimeClass === "tool-enabled") {
+      await deps.putRoutingContext(
+        deps.userId,
+        buildToolRuntimeAffinityState(deps),
+      );
+      logRouteEvent("route.affinity.created", {
+        traceId: deps.traceId,
+        channel: deps.channel,
+        runtimeClass,
+        toolRuntimeProvider: resolveToolRuntimeProvider(deps),
+      });
+      logRouteEvent("gateway.harness.session.created", {
+        traceId: deps.traceId,
+        channel: deps.channel,
+        runtimeClass,
+        provider: resolveToolRuntimeProvider(deps),
+      });
+    }
+
+    return routeToolRuntime(
+      { ...deps, message: routedMessage },
+      taskState,
+      "agentcore",
+      {
+        runtimeClass,
+        preferCallbackDelivery: true,
+      },
+    );
   }
 
   // Phase 2: Lambda agent path

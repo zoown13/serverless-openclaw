@@ -637,7 +637,11 @@ function Wait-BridgeSignals {
     )
   } elseif ($requiresChatHandoff) {
     $requiredSignals += @(
+      "bridge.direct_chat.started",
+      '"reason":"bedrock_primary_chat"',
+      "bridge.direct_chat.completed",
       "telegram.delivery.content_quality",
+      '"source":"direct-bedrock-chat"',
       '"hasGeneralChatAnswer":true'
     )
     if ($requiresFindCommandHandoff) {

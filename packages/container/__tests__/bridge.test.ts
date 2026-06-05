@@ -211,11 +211,13 @@ describe("Bridge HTTP Server", () => {
       });
     });
 
-    it("should use direct Bedrock chat fallback when OpenClaw chat-only delivery fails", async () => {
+    it("should use direct Bedrock chat as primary for Bedrock chat-only delivery", async () => {
       const previousProvider = process.env.AI_PROVIDER;
       const previousModel = process.env.AI_MODEL;
+      const previousExecutor = process.env.BEDROCK_CHAT_EXECUTOR;
       process.env.AI_PROVIDER = "bedrock";
       process.env.AI_MODEL = "anthropic.claude-3-haiku-20240307-v1:0";
+      process.env.BEDROCK_CHAT_EXECUTOR = "direct";
       deps.openclawClient.sendMessage = vi.fn(() => {
         throw new Error("Unknown model: amazon-bedrock/anthropic.claude-3-haiku-20240307-v1:0");
       });
@@ -253,6 +255,10 @@ describe("Bridge HTTP Server", () => {
           }),
         );
       });
+      expect(deps.openclawClient.sendMessage).not.toHaveBeenCalled();
+      expect(infoSpy).toHaveBeenCalledWith(
+        expect.stringContaining("\"reason\":\"bedrock_primary_chat\""),
+      );
       expect(infoSpy).toHaveBeenCalledWith(
         expect.stringContaining("\"event\":\"bridge.direct_chat.completed\""),
       );
@@ -265,6 +271,11 @@ describe("Bridge HTTP Server", () => {
         delete process.env.AI_MODEL;
       } else {
         process.env.AI_MODEL = previousModel;
+      }
+      if (previousExecutor === undefined) {
+        delete process.env.BEDROCK_CHAT_EXECUTOR;
+      } else {
+        process.env.BEDROCK_CHAT_EXECUTOR = previousExecutor;
       }
     });
 

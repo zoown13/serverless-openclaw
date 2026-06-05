@@ -136,6 +136,13 @@ function shouldUseDirectBedrockChatFallback(runtimeClass: string | undefined): b
   return runtimeClass === "chat-only" && process.env.AI_PROVIDER === "bedrock" && Boolean(process.env.AI_MODEL);
 }
 
+function shouldUseDirectBedrockChatPrimary(runtimeClass: string | undefined): boolean {
+  if (!shouldUseDirectBedrockChatFallback(runtimeClass)) {
+    return false;
+  }
+  return process.env.BEDROCK_CHAT_EXECUTOR !== "openclaw-first";
+}
+
 function parseInvocationBody(value: unknown): Partial<BridgeMessageRequest> {
   if (Buffer.isBuffer(value)) {
     return parseInvocationBody(value.toString("utf8"));
@@ -895,69 +902,101 @@ export function createApp(deps: BridgeDeps): express.Express {
       if (toolEnabledPrefix) {
         prefixes.push(toolEnabledPrefix);
       }
-      const messageToSend = prefixes.length > 0
-        ? `${prefixes.join("\n")}\n${body.message!}`
-        : body.message!;
-      logBridgeEvent("bridge.openclaw.forwarded", logContext);
-      const generator = deps.openclawClient.sendMessage(
-        body.userId!,
-        messageToSend,
-      );
       let fullResponse = "";
       let responseSource = "openclaw";
-      for await (const chunk of generator) {
-        fullResponse += chunk;
+      if (shouldUseDirectBedrockChatPrimary(body.runtimeClass)) {
+        logBridgeEvent("bridge.direct_chat.started", {
+          ...logContext,
+          deliveryType,
+          model: process.env.AI_MODEL,
+          reason: "bedrock_primary_chat",
+        });
+        const directResponse = await runDirectBedrockChat({
+          message: body.message!,
+          model: process.env.AI_MODEL!,
+          systemPrompt: buildDirectChatFallbackSystemPrompt(body.assistantContext),
+          maxTokens: 512,
+          temperature: 0.2,
+        });
+        fullResponse = directResponse.text;
+        responseSource = "direct-bedrock-chat";
         if (deliveryMode === "callback") {
           await deps.callbackSender.send(body.connectionId!, {
             type: "stream_chunk",
-            content: chunk,
+            content: directResponse.text,
             conversationId: undefined,
           });
         }
-      }
-      if (
-        shouldUseDirectBedrockChatFallback(body.runtimeClass) &&
-        (fullResponse.trim().length < 40 || Boolean(buildOpenClawChatFallback(body.message!, fullResponse)))
-      ) {
-        try {
-          logBridgeEvent("bridge.direct_chat.started", {
-            ...logContext,
-            deliveryType,
-            model: process.env.AI_MODEL,
-            reason: fullResponse.trim().length < 40 ? "short_openclaw_response" : "weak_openclaw_response",
-          });
-          const directResponse = await runDirectBedrockChat({
-            message: body.message!,
-            model: process.env.AI_MODEL!,
-            systemPrompt: buildDirectChatFallbackSystemPrompt(body.assistantContext),
-            maxTokens: 512,
-            temperature: 0.2,
-          });
-          const directChunk = fullResponse.trim().length > 0
-            ? `\n\n${directResponse.text}`
-            : directResponse.text;
-          fullResponse += directChunk;
-          responseSource = "direct-bedrock-chat";
+        logBridgeEvent("bridge.direct_chat.completed", {
+          ...logContext,
+          deliveryType,
+          model: process.env.AI_MODEL,
+          inputTokens: directResponse.usage?.inputTokens,
+          outputTokens: directResponse.usage?.outputTokens,
+        });
+      } else {
+        const messageToSend = prefixes.length > 0
+          ? `${prefixes.join("\n")}\n${body.message!}`
+          : body.message!;
+        logBridgeEvent("bridge.openclaw.forwarded", logContext);
+        const generator = deps.openclawClient.sendMessage(
+          body.userId!,
+          messageToSend,
+        );
+        for await (const chunk of generator) {
+          fullResponse += chunk;
           if (deliveryMode === "callback") {
             await deps.callbackSender.send(body.connectionId!, {
               type: "stream_chunk",
-              content: directChunk,
+              content: chunk,
               conversationId: undefined,
             });
           }
-          logBridgeEvent("bridge.direct_chat.completed", {
-            ...logContext,
-            deliveryType,
-            model: process.env.AI_MODEL,
-            inputTokens: directResponse.usage?.inputTokens,
-            outputTokens: directResponse.usage?.outputTokens,
-          });
-        } catch (directErr) {
-          logBridgeEvent("bridge.direct_chat.failed", {
-            ...logContext,
-            deliveryType,
-            error: directErr instanceof Error ? directErr.message : String(directErr),
-          }, "error");
+        }
+        if (
+          shouldUseDirectBedrockChatFallback(body.runtimeClass) &&
+          (fullResponse.trim().length < 40 || Boolean(buildOpenClawChatFallback(body.message!, fullResponse)))
+        ) {
+          try {
+            logBridgeEvent("bridge.direct_chat.started", {
+              ...logContext,
+              deliveryType,
+              model: process.env.AI_MODEL,
+              reason: fullResponse.trim().length < 40 ? "short_openclaw_response" : "weak_openclaw_response",
+            });
+            const directResponse = await runDirectBedrockChat({
+              message: body.message!,
+              model: process.env.AI_MODEL!,
+              systemPrompt: buildDirectChatFallbackSystemPrompt(body.assistantContext),
+              maxTokens: 512,
+              temperature: 0.2,
+            });
+            const directChunk = fullResponse.trim().length > 0
+              ? `\n\n${directResponse.text}`
+              : directResponse.text;
+            fullResponse += directChunk;
+            responseSource = "direct-bedrock-chat";
+            if (deliveryMode === "callback") {
+              await deps.callbackSender.send(body.connectionId!, {
+                type: "stream_chunk",
+                content: directChunk,
+                conversationId: undefined,
+              });
+            }
+            logBridgeEvent("bridge.direct_chat.completed", {
+              ...logContext,
+              deliveryType,
+              model: process.env.AI_MODEL,
+              inputTokens: directResponse.usage?.inputTokens,
+              outputTokens: directResponse.usage?.outputTokens,
+            });
+          } catch (directErr) {
+            logBridgeEvent("bridge.direct_chat.failed", {
+              ...logContext,
+              deliveryType,
+              error: directErr instanceof Error ? directErr.message : String(directErr),
+            }, "error");
+          }
         }
       }
       const chatFallback = buildOpenClawChatFallback(body.message!, fullResponse);

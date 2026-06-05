@@ -43,6 +43,12 @@ vi.mock("../src/aws-cost-explorer.js", () => ({
   lookupAwsCostExplorer: (...args: unknown[]) => awsCostLookupMock(...args),
 }));
 
+const directBedrockChatMock = vi.hoisted(() => vi.fn());
+
+vi.mock("../src/direct-bedrock-chat.js", () => ({
+  runDirectBedrockChat: (...args: unknown[]) => directBedrockChatMock(...args),
+}));
+
 function createMockDeps(): BridgeDeps {
   return {
     authToken: "test-secret-token",
@@ -173,6 +179,93 @@ describe("Bridge HTTP Server", () => {
           "Hello",
         );
       });
+    });
+
+    it("should add a deterministic fallback for short Linux file-find chat responses", async () => {
+      deps.openclawClient.sendMessage = vi.fn(async function* () {
+        yield "확인해보세요.";
+      });
+
+      const res = await request(app)
+        .post("/message")
+        .set("Authorization", "Bearer test-secret-token")
+        .send({
+          userId: "user-1",
+          message: "리눅스에서 파일 찾는 명령어 알려줘",
+          channel: "telegram",
+          connectionId: "telegram:12345",
+          callbackUrl: "https://example.com/prod",
+          runtimeClass: "chat-only",
+        });
+
+      expect(res.status).toBe(202);
+
+      await vi.waitFor(() => {
+        expect(deps.callbackSender.send).toHaveBeenCalledWith(
+          "telegram:12345",
+          expect.objectContaining({
+            type: "stream_chunk",
+            content: expect.stringContaining("find 명령어"),
+          }),
+        );
+      });
+    });
+
+    it("should use direct Bedrock chat fallback when OpenClaw chat-only delivery fails", async () => {
+      const previousProvider = process.env.AI_PROVIDER;
+      const previousModel = process.env.AI_MODEL;
+      process.env.AI_PROVIDER = "bedrock";
+      process.env.AI_MODEL = "anthropic.claude-3-haiku-20240307-v1:0";
+      deps.openclawClient.sendMessage = vi.fn(() => {
+        throw new Error("Unknown model: amazon-bedrock/anthropic.claude-3-haiku-20240307-v1:0");
+      });
+      directBedrockChatMock.mockResolvedValue({
+        text: "find 명령어로 파일을 찾을 수 있습니다. 예: find . -name \"*.log\"",
+        usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 },
+      });
+
+      const res = await request(app)
+        .post("/message")
+        .set("Authorization", "Bearer test-secret-token")
+        .send({
+          userId: "user-1",
+          message: "리눅스에서 파일 찾는 명령어 알려줘",
+          connectionId: "telegram:12345",
+          callbackUrl: "https://example.com/prod",
+          channel: "telegram",
+          runtimeClass: "chat-only",
+        });
+
+      expect(res.status).toBe(202);
+
+      await vi.waitFor(() => {
+        expect(directBedrockChatMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            message: "리눅스에서 파일 찾는 명령어 알려줘",
+            model: "anthropic.claude-3-haiku-20240307-v1:0",
+          }),
+        );
+        expect(deps.callbackSender.send).toHaveBeenCalledWith(
+          "telegram:12345",
+          expect.objectContaining({
+            type: "stream_chunk",
+            content: expect.stringContaining("find 명령어"),
+          }),
+        );
+      });
+      expect(infoSpy).toHaveBeenCalledWith(
+        expect.stringContaining("\"event\":\"bridge.direct_chat.completed\""),
+      );
+      if (previousProvider === undefined) {
+        delete process.env.AI_PROVIDER;
+      } else {
+        process.env.AI_PROVIDER = previousProvider;
+      }
+      if (previousModel === undefined) {
+        delete process.env.AI_MODEL;
+      } else {
+        process.env.AI_MODEL = previousModel;
+      }
     });
 
     it("should update lastActivity on message", async () => {

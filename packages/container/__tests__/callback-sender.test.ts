@@ -97,11 +97,12 @@ describe("CallbackSender — Telegram routing", () => {
     expect(mockFetch).toHaveBeenCalledTimes(1);
     expect(mockFetch).toHaveBeenCalledWith(
       "https://api.telegram.org/botbot-token-123/sendMessage",
-      {
+      expect.objectContaining({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ chat_id: "12345", text: "Hello world!" }),
-      },
+        signal: expect.any(AbortSignal),
+      }),
     );
   });
 
@@ -129,6 +130,8 @@ describe("CallbackSender — Telegram routing", () => {
       hasPaymentCoverageDisclosure: true,
       hasIssuerBreakdownSignal: true,
       hasTopicFilteredPaymentSignal: true,
+      hasGeneralChatAnswer: true,
+      hasFindCommandAnswer: false,
       hasRawInternalError: false,
       hasLegacyEnglishPaymentPhrases: false,
     });
@@ -233,7 +236,6 @@ describe("CallbackSender — Telegram routing", () => {
 
     expect(consoleSpy).toHaveBeenCalledWith(
       expect.stringContaining("Failed to send Telegram message"),
-      expect.any(Error),
     );
     consoleSpy.mockRestore();
   });

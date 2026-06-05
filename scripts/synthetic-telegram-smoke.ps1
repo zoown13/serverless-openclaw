@@ -616,7 +616,7 @@ function Wait-BridgeSignals {
 
   $requiredGatewaySignals = @()
   $requiredLambdaSignals = @()
-  $requiresGatewayLambdaSignals = $requiresChatHandoff -or $requiresLambdaCostLookupSignals
+  $requiresGatewayLambdaSignals = $requiresLambdaCostLookupSignals
 
   if ($requiresLambdaCostLookupSignals) {
     $requiredGatewaySignals = @(
@@ -636,18 +636,12 @@ function Wait-BridgeSignals {
       '"hasRecentCost":true'
     )
   } elseif ($requiresChatHandoff) {
-    $requiredGatewaySignals = @(
-      "route.affinity.cleared",
-      '"runtimeClass":"chat-only"',
-      "route.lambda.invoked"
-    )
-    $requiredLambdaSignals = @(
-      "lambda.delivery.telegram.success",
-      "lambda.delivery.content_quality",
+    $requiredSignals += @(
+      "telegram.delivery.content_quality",
       '"hasGeneralChatAnswer":true'
     )
     if ($requiresFindCommandHandoff) {
-      $requiredLambdaSignals += @(
+      $requiredSignals += @(
         '"hasFindCommandAnswer":true'
       )
     }

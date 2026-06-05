@@ -14,6 +14,8 @@ setDefaultResultOrder("ipv4first");
 interface TelegramContentQuality {
   textLength: number;
   chunkCount: number;
+  hasGeneralChatAnswer: boolean;
+  hasFindCommandAnswer: boolean;
   hasKoreanPaymentSummary: boolean;
   hasPaymentCoverageDisclosure: boolean;
   hasIssuerBreakdownSignal: boolean;
@@ -68,6 +70,9 @@ function buildTelegramContentQuality(text: string): TelegramContentQuality {
   return {
     textLength: text.length,
     chunkCount: Math.max(1, Math.ceil(text.length / TELEGRAM_MAX_LENGTH)),
+    hasGeneralChatAnswer: text.trim().length >= 20 && !/답변을 생성하지 못했습니다/i.test(text),
+    hasFindCommandAnswer:
+      /(find\s|find\s*명령어|파일.*찾|찾을.*파일|grep|fd\s|locate|명령어)/i.test(text),
     hasKoreanPaymentSummary,
     hasPaymentCoverageDisclosure,
     hasIssuerBreakdownSignal,

@@ -448,6 +448,10 @@ describe("CDK Stacks E2E — synth all stacks", () => {
       expect(dashboardJson).toContain("Success (telegram/agentcore)");
       expect(dashboardJson).toContain("MessageCount");
       expect(dashboardJson).toContain("IntegrationLatency");
+      expect(dashboardJson).toContain("stats count() as eventCount");
+      expect(dashboardJson).toContain("sort eventCount desc");
+      expect(dashboardJson).not.toContain("stats count(*)");
+      expect(dashboardJson).not.toContain("sort bin(5m) desc");
     });
 
     it("defaults tool runtime provider to AgentCore-first without invoke permission when ARN is absent", () => {

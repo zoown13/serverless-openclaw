@@ -1909,6 +1909,66 @@ describe("gmail-tool", () => {
     expect(restarted?.message).not.toContain("스타벅스");
   });
 
+  it("does not reuse cached payment context for long explicit Gmail payment lookups", async () => {
+    decideToolIntentMock.mockResolvedValueOnce({
+      action: "gmail",
+      taskFamily: "gmail_payment_summary",
+      sourceChoice: "gmail",
+      confidence: 0.95,
+    });
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m1" }] } }))
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "카드 결제 알림",
+          "Card Co <billing@example.com>",
+          "Fri, 03 Apr 2026 09:00:00 +0000",
+          "결제금액 12300원 카드종류 삼성카드 가맹점명 스타벅스",
+          "m1",
+        ),
+      );
+
+    await maybeHandleCustomGmailRequest({
+      userId: "user-long-explicit-payment-lookup",
+      sessionKey: "session-long-explicit-payment-lookup",
+      message: "이번주 결제한 금액이 어느정도 되려나?",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    vi.clearAllMocks();
+    process.env.TOOL_DETERMINISTIC_PAYMENT_FAST_PATH = "true";
+    fetchMock.mockReset();
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ body: { access_token: "access-token" } }))
+      .mockResolvedValueOnce(jsonResponse({ body: { messages: [{ id: "m2" }] } }))
+      .mockResolvedValueOnce(
+        metadataResponse(
+          "네이버페이 결제 내역",
+          '"네이버페이" <naverpayadmin_noreply@navercorp.com>',
+          "Sat, 04 Apr 2026 09:00:00 +0900",
+          "결제정보 가맹점명 교보문고 총 결제 금액 45600원 결제수단 카드",
+          "m2",
+        ),
+      );
+
+    const restarted = await maybeHandleCustomGmailRequest({
+      userId: "user-long-explicit-payment-lookup",
+      sessionKey: "session-long-explicit-payment-lookup",
+      message: "지메일에서 결제한 내역을 다시 찾아서 정리해줘",
+      gmailReady: true,
+      emailTokenBudget: EMAIL_BUDGET,
+    });
+
+    expect(fetchMock).toHaveBeenCalled();
+    expect(decideToolIntentMock).not.toHaveBeenCalled();
+    expect(restarted?.kind).toBe("direct");
+    expect(restarted?.message).toContain("교보문고");
+    expect(restarted?.message).not.toContain("스타벅스");
+  });
+
   it("restarts explicit topic payment lookup even when the advisor labels it as topic refinement", async () => {
     decideToolIntentMock
       .mockResolvedValueOnce({

@@ -609,6 +609,27 @@ function topicKeywordSet(values: string[] | undefined): string {
   return [...new Set(values ?? [])].sort().join("|");
 }
 
+function isCacheSafePaymentContextFollowUp(message: string): boolean {
+  const normalized = normalizeWhitespace(message);
+  if (!normalized) {
+    return false;
+  }
+
+  const asksForNewLookup =
+    isExplicitGmailMessage(normalized) ||
+    (isHighConfidencePaymentLookupRequest(normalized) && (hasDateRangeCue(normalized) || normalized.length > 32));
+  if (asksForNewLookup) {
+    return false;
+  }
+
+  return (
+    isShortReply(normalized) ||
+    isPaymentFollowUp(normalized) ||
+    isIssuerBreakdownFollowUp(normalized) ||
+    /결제처|가맹점|merchant|합계|총액|얼마|금액|정리|요약|표로|카드사/i.test(normalized)
+  );
+}
+
 function canReuseCachedPaymentContext(
   context: ToolTaskContext,
   message: string,
@@ -620,6 +641,7 @@ function canReuseCachedPaymentContext(
     isExpandedPaymentScanRequest(message) ||
     isPaymentCoverageFollowUp(message) ||
     isTopicRefinementFollowUp(message) ||
+    !isCacheSafePaymentContextFollowUp(message) ||
     !isFreshPaymentContextCache(context)
   ) {
     return false;
@@ -3147,6 +3169,41 @@ function isFreshPaymentLookupRequest(
   );
 }
 
+function shouldForceRestartActivePaymentLookup(
+  message: string,
+  activeContext: ToolTaskContext,
+): boolean {
+  const trimmed = normalizeWhitespace(message);
+  if (
+    activeContext.status !== "active" ||
+    activeContext.taskFamily !== "gmail_payment_summary" ||
+    CANCEL_PATTERN.test(trimmed) ||
+    isBodyRequest(trimmed) ||
+    isAttachmentRequest(trimmed) ||
+    isPaymentCoverageFollowUp(trimmed) ||
+    isTopicRefinementFollowUp(trimmed) ||
+    !looksLikePaymentQuestion(trimmed)
+  ) {
+    return false;
+  }
+
+  if (canReuseCachedPaymentContext(activeContext, trimmed)) {
+    return false;
+  }
+
+  const explicitNewLookup =
+    isExplicitTopicPaymentLookup(trimmed) ||
+    isExplicitGmailMessage(trimmed) ||
+    hasDateRangeCue(trimmed) ||
+    /(내역|조회|검색|찾아|알려|보여|다시)/i.test(trimmed);
+
+  if (!explicitNewLookup && isPaymentFollowUp(trimmed)) {
+    return false;
+  }
+
+  return explicitNewLookup;
+}
+
 async function restartPaymentTaskFromActiveContext(
   contextKey: string,
   context: ToolTaskContext,
@@ -3599,6 +3656,22 @@ export async function maybeHandleCustomGmailRequest(
 
   const refreshedContext = await getTaskContext(contextKey);
   let advisorDecision: ToolIntentDecision | null = null;
+  if (
+    refreshedContext?.status === "active" &&
+    options.gmailReady &&
+    shouldForceRestartActivePaymentLookup(options.message, refreshedContext)
+  ) {
+    emitToolEvent(options.onToolEvent, {
+      type: "intentDecided",
+      decisionSource: "deterministic",
+      action: "start_new_task",
+      taskFamily: "gmail_payment_summary",
+      sourceChoice: "gmail",
+      confidence: 0.93,
+    });
+    return restartPaymentTaskFromActiveContext(contextKey, refreshedContext, options);
+  }
+
   if (
     refreshedContext?.status === "active" &&
     isDeterministicPaymentFastPathEnabled() &&

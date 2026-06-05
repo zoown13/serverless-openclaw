@@ -434,15 +434,20 @@ describe("CDK Stacks E2E — synth all stacks", () => {
       expect(dashboardJson).toContain("route.affinity.");
       expect(dashboardJson).toContain("gateway.harness.session.");
       expect(dashboardJson).toContain("RouteToLambda");
+      expect(dashboardJson).toContain("RouteToAgentCore");
       expect(dashboardJson).toContain("RouteToFargate");
       expect(dashboardJson).toContain("RouteFallbackToFargate");
       expect(dashboardJson).toContain("PendingMessagesQueued");
       expect(dashboardJson).toContain("PendingMessagesDrained");
       expect(dashboardJson).toContain("PendingMessagesRetryScheduled");
       expect(dashboardJson).toContain("PendingMessagesDeadLettered");
-      expect(dashboardJson).toContain("GmailToolSuccess");
+      expect(dashboardJson).toContain("Gmail/payment task events");
+      expect(dashboardJson).toContain("bridge.tool.payment.scan.completed");
       expect(dashboardJson).toContain("DeliverySuccess");
       expect(dashboardJson).toContain("DeliveryFailure");
+      expect(dashboardJson).toContain("Success (telegram/agentcore)");
+      expect(dashboardJson).toContain("MessageCount");
+      expect(dashboardJson).toContain("IntegrationLatency");
     });
 
     it("defaults tool runtime provider to AgentCore-first without invoke permission when ARN is absent", () => {

@@ -107,6 +107,10 @@ if (deployWeb) {
 }
 
 // Monitoring Dashboard
-new MonitoringStack(app, "MonitoringStack", { agentRuntime });
+new MonitoringStack(app, "MonitoringStack", {
+  agentRuntime,
+  httpApiId: process.env.MONITORING_HTTP_API_ID,
+  webSocketApiId: process.env.MONITORING_WEBSOCKET_API_ID,
+});
 
 app.synth();

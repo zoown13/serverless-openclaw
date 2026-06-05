@@ -5,6 +5,7 @@ import { TABLE_NAMES } from "@serverless-openclaw/shared";
 
 const NAMESPACE = "ServerlessOpenClaw";
 const CHANNELS = ["web", "telegram"];
+const RUNTIMES = ["lambda", "agentcore", "fargate"];
 
 const LAMBDA_FUNCTIONS = [
   "serverless-openclaw-ws-connect",
@@ -87,6 +88,22 @@ function lambdaMetric(
   });
 }
 
+function apiGatewayMetric(
+  metricName: string,
+  statistic: string,
+  label: string,
+  dimensionsMap?: Record<string, string>,
+): cloudwatch.Metric {
+  return new cloudwatch.Metric({
+    namespace: "AWS/ApiGateway",
+    metricName,
+    dimensionsMap,
+    statistic,
+    period: cdk.Duration.minutes(5),
+    label,
+  });
+}
+
 function sectionHeader(title: string, description: string): cloudwatch.TextWidget {
   return new cloudwatch.TextWidget({
     markdown: `### ${title}\n${description}`,
@@ -97,6 +114,8 @@ function sectionHeader(title: string, description: string): cloudwatch.TextWidge
 
 export interface MonitoringStackProps extends cdk.StackProps {
   agentRuntime?: string;
+  httpApiId?: string;
+  webSocketApiId?: string;
 }
 
 export class MonitoringStack extends cdk.Stack {
@@ -104,6 +123,12 @@ export class MonitoringStack extends cdk.Stack {
     super(scope, id, props);
 
     const fargateEnabled = (props?.agentRuntime ?? "fargate") !== "lambda";
+    const httpApiDimensions = props?.httpApiId
+      ? { ApiId: props.httpApiId, Stage: "$default" }
+      : undefined;
+    const webSocketApiDimensions = props?.webSocketApiId
+      ? { ApiId: props.webSocketApiId, Stage: "prod" }
+      : undefined;
 
     const dashboard = new cloudwatch.Dashboard(this, "Dashboard", {
       dashboardName: "ServerlessOpenClaw",
@@ -213,24 +238,31 @@ export class MonitoringStack extends cdk.Stack {
 
     dashboard.addWidgets(
       new cloudwatch.GraphWidget({
-        title: "Lambda / Fargate Routing Ratio",
+        title: "Lambda / AgentCore / Fargate Routing Ratio",
         left: [
-          ...CHANNELS.map((ch) =>
+          ...CHANNELS.flatMap((ch) => [
             dimensionMetric(
               "RouteToLambda",
               { Channel: ch, Runtime: "lambda" },
               "Sum",
               `RouteToLambda (${ch})`,
               cloudwatch.Unit.COUNT,
-            )),
-          ...CHANNELS.map((ch) =>
+            ),
+            dimensionMetric(
+              "RouteToAgentCore",
+              { Channel: ch, Runtime: "agentcore" },
+              "Sum",
+              `RouteToAgentCore (${ch})`,
+              cloudwatch.Unit.COUNT,
+            ),
             dimensionMetric(
               "RouteToFargate",
               { Channel: ch, Runtime: "fargate" },
               "Sum",
               `RouteToFargate (${ch})`,
               cloudwatch.Unit.COUNT,
-            )),
+            ),
+          ]),
         ],
         width: 12,
         height: 4,
@@ -406,111 +438,76 @@ export class MonitoringStack extends cdk.Stack {
     dashboard.addWidgets(
       sectionHeader(
         "Gmail Tool & Delivery Outcomes",
-        "Structured visibility into direct Gmail tool execution and final response delivery for WebSocket and Telegram.",
+        "Structured visibility into direct Gmail tool execution and final response delivery for WebSocket and Telegram. Gmail task outcomes use structured Bridge logs because the AgentCore fast-path does not emit the legacy Gmail custom metrics.",
       ),
     );
 
     dashboard.addWidgets(
-      new cloudwatch.GraphWidget({
-        title: "Gmail Tool Outcomes",
-        left: [
-          ...CHANNELS.map((ch) =>
-            dimensionMetric(
-              "GmailToolMatched",
-              { Channel: ch, Runtime: "fargate" },
-              "Sum",
-              `Matched (${ch})`,
-              cloudwatch.Unit.COUNT,
-            )),
-          ...CHANNELS.map((ch) =>
-            dimensionMetric(
-              "GmailToolSuccess",
-              { Channel: ch, Runtime: "fargate" },
-              "Sum",
-              `Success (${ch})`,
-              cloudwatch.Unit.COUNT,
-            )),
-          ...CHANNELS.map((ch) =>
-            dimensionMetric(
-              "GmailToolNoResults",
-              { Channel: ch, Runtime: "fargate" },
-              "Sum",
-              `NoResults (${ch})`,
-              cloudwatch.Unit.COUNT,
-            )),
-          ...CHANNELS.map((ch) =>
-            dimensionMetric(
-              "GmailToolFailure",
-              { Channel: ch, Runtime: "fargate" },
-              "Sum",
-              `Failure (${ch})`,
-              cloudwatch.Unit.COUNT,
-            )),
+      new cloudwatch.LogQueryWidget({
+        title: "Gmail/payment task events",
+        logGroupNames: BRIDGE_RUNTIME_LOG_GROUPS,
+        queryLines: [
+          "fields @timestamp, @message",
+          'filter @message like /"event":"bridge.tool./ or @message like /"event":"bridge.gmail./',
+          'parse @message /"event":"(?<event>[^"]+)"/',
+          'parse @message /"traceId":"(?<traceId>[^"]+)"/',
+          'parse @message /"channel":"(?<channel>[^"]+)"/',
+          'parse @message /"runtimeClass":"(?<runtimeClass>[^"]+)"/',
+          'parse @message /"action":"(?<action>[^"]+)"/',
+          'parse @message /"taskFamily":"(?<taskFamily>[^"]+)"/',
+          'parse @message /"followUpIntent":"(?<followUpIntent>[^"]+)"/',
+          'parse @message /"matchedCount":(?<matchedCount>[0-9]+)/',
+          'parse @message /"scanLimit":(?<scanLimit>[0-9]+)/',
+          "display @timestamp, event, channel, runtimeClass, action, taskFamily, followUpIntent, matchedCount, scanLimit, traceId",
+          "sort @timestamp desc",
+          "limit 50",
         ],
         width: 12,
-        height: 4,
-        leftYAxis: { label: "count" },
+        height: 6,
       }),
+      new cloudwatch.LogQueryWidget({
+        title: "Gmail/payment task counts",
+        logGroupNames: BRIDGE_RUNTIME_LOG_GROUPS,
+        queryLines: [
+          "fields @timestamp, @message",
+          'filter @message like /"event":"bridge.tool.intent.decided"/ or @message like /"event":"bridge.tool.payment.scan.completed"/ or @message like /"event":"bridge.tool.payment.refine.completed"/ or @message like /"event":"bridge.handler.fallback"/',
+          'parse @message /"event":"(?<event>[^"]+)"/',
+          "stats count(*) by bin(5m), event",
+          "sort bin(5m) desc",
+        ],
+        width: 12,
+        height: 6,
+      }),
+    );
+
+    dashboard.addWidgets(
       new cloudwatch.GraphWidget({
         title: "Delivery Success / Failure",
-        left: [
-          dimensionMetric(
-            "DeliverySuccess",
-            { Channel: "web", Runtime: "lambda", DeliveryType: "websocket" },
-            "Sum",
-            "Success (web/lambda)",
-            cloudwatch.Unit.COUNT,
-          ),
-          dimensionMetric(
-            "DeliverySuccess",
-            { Channel: "web", Runtime: "fargate", DeliveryType: "websocket" },
-            "Sum",
-            "Success (web/fargate)",
-            cloudwatch.Unit.COUNT,
-          ),
-          dimensionMetric(
-            "DeliverySuccess",
-            { Channel: "telegram", Runtime: "lambda", DeliveryType: "telegram" },
-            "Sum",
-            "Success (telegram/lambda)",
-            cloudwatch.Unit.COUNT,
-          ),
-          dimensionMetric(
-            "DeliverySuccess",
-            { Channel: "telegram", Runtime: "fargate", DeliveryType: "telegram" },
-            "Sum",
-            "Success (telegram/fargate)",
-            cloudwatch.Unit.COUNT,
-          ),
-          dimensionMetric(
-            "DeliveryFailure",
-            { Channel: "web", Runtime: "lambda", DeliveryType: "websocket" },
-            "Sum",
-            "Failure (web/lambda)",
-            cloudwatch.Unit.COUNT,
-          ),
-          dimensionMetric(
-            "DeliveryFailure",
-            { Channel: "web", Runtime: "fargate", DeliveryType: "websocket" },
-            "Sum",
-            "Failure (web/fargate)",
-            cloudwatch.Unit.COUNT,
-          ),
-          dimensionMetric(
-            "DeliveryFailure",
-            { Channel: "telegram", Runtime: "lambda", DeliveryType: "telegram" },
-            "Sum",
-            "Failure (telegram/lambda)",
-            cloudwatch.Unit.COUNT,
-          ),
-          dimensionMetric(
-            "DeliveryFailure",
-            { Channel: "telegram", Runtime: "fargate", DeliveryType: "telegram" },
-            "Sum",
-            "Failure (telegram/fargate)",
-            cloudwatch.Unit.COUNT,
-          ),
-        ],
+        left: CHANNELS.flatMap((ch) =>
+          RUNTIMES.flatMap((runtime) => [
+            dimensionMetric(
+              "DeliverySuccess",
+              {
+                Channel: ch,
+                Runtime: runtime,
+                DeliveryType: ch === "telegram" ? "telegram" : "websocket",
+              },
+              "Sum",
+              `Success (${ch}/${runtime})`,
+              cloudwatch.Unit.COUNT,
+            ),
+            dimensionMetric(
+              "DeliveryFailure",
+              {
+                Channel: ch,
+                Runtime: runtime,
+                DeliveryType: ch === "telegram" ? "telegram" : "websocket",
+              },
+              "Sum",
+              `Failure (${ch}/${runtime})`,
+              cloudwatch.Unit.COUNT,
+            ),
+          ])),
         width: 12,
         height: 4,
         leftYAxis: { label: "count" },
@@ -572,36 +569,42 @@ export class MonitoringStack extends cdk.Stack {
       new cloudwatch.GraphWidget({
         title: "WebSocket Connections",
         left: [
-          new cloudwatch.Metric({
-            namespace: "AWS/ApiGateway",
-            metricName: "ConnectCount",
-            statistic: "Sum",
-            period: cdk.Duration.minutes(5),
-          }),
+          apiGatewayMetric(
+            "ConnectCount",
+            "Sum",
+            "WebSocket connects",
+            webSocketApiDimensions,
+          ),
+          apiGatewayMetric(
+            "MessageCount",
+            "Sum",
+            "WebSocket messages",
+            webSocketApiDimensions,
+          ),
         ],
         width: 8,
         height: 4,
       }),
       new cloudwatch.GraphWidget({
-        title: "HTTP API Errors — 4xx / 5xx",
+        title: "HTTP API Requests / Errors",
         left: [
-          new cloudwatch.Metric({
-            namespace: "AWS/ApiGateway",
-            metricName: "4xx",
-            statistic: "Sum",
-            period: cdk.Duration.minutes(5),
-            label: "4xx (client)",
-          }),
-          new cloudwatch.Metric({
-            namespace: "AWS/ApiGateway",
-            metricName: "5xx",
-            statistic: "Sum",
-            period: cdk.Duration.minutes(5),
-            label: "5xx (server)",
-          }),
+          apiGatewayMetric("Count", "Sum", "HTTP requests", httpApiDimensions),
+          apiGatewayMetric("4xx", "Sum", "HTTP 4xx", httpApiDimensions),
+          apiGatewayMetric("5xx", "Sum", "HTTP 5xx", httpApiDimensions),
         ],
         width: 8,
         height: 4,
+      }),
+      new cloudwatch.GraphWidget({
+        title: "HTTP API Latency",
+        left: [
+          apiGatewayMetric("Latency", "p50", "HTTP latency p50", httpApiDimensions),
+          apiGatewayMetric("Latency", "p99", "HTTP latency p99", httpApiDimensions),
+          apiGatewayMetric("IntegrationLatency", "p50", "Integration p50", httpApiDimensions),
+        ],
+        width: 8,
+        height: 4,
+        leftYAxis: { label: "ms" },
       }),
     );
 

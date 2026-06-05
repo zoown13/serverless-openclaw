@@ -237,50 +237,39 @@ export class MonitoringStack extends cdk.Stack {
     );
 
     dashboard.addWidgets(
-      new cloudwatch.GraphWidget({
-        title: "Lambda / AgentCore / Fargate Routing Ratio",
-        left: [
-          ...CHANNELS.flatMap((ch) => [
-            dimensionMetric(
-              "RouteToLambda",
-              { Channel: ch, Runtime: "lambda" },
-              "Sum",
-              `RouteToLambda (${ch})`,
-              cloudwatch.Unit.COUNT,
-            ),
-            dimensionMetric(
-              "RouteToAgentCore",
-              { Channel: ch, Runtime: "agentcore" },
-              "Sum",
-              `RouteToAgentCore (${ch})`,
-              cloudwatch.Unit.COUNT,
-            ),
-            dimensionMetric(
-              "RouteToFargate",
-              { Channel: ch, Runtime: "fargate" },
-              "Sum",
-              `RouteToFargate (${ch})`,
-              cloudwatch.Unit.COUNT,
-            ),
-          ]),
+      new cloudwatch.LogQueryWidget({
+        title: "Routing decisions from gateway logs",
+        logGroupNames: GATEWAY_RUNTIME_LOG_GROUPS,
+        queryLines: [
+          "fields @timestamp, @message",
+          'filter @message like /"event":"route.classified"/ or @message like /"event":"route.agentcore_assistant.selected"/ or @message like /"event":"route.lambda.invoked"/ or @message like /"event":"agentcore.invoke.fallback"/',
+          'parse @message /"event":"(?<event>[^"]+)"/',
+          'parse @message /"channel":"(?<channel>[^"]+)"/',
+          'parse @message /"runtimeClass":"(?<runtimeClass>[^"]+)"/',
+          'parse @message /"routeDecision":"(?<routeDecision>[^"]+)"/',
+          "stats count(*) by bin(5m), event, channel, runtimeClass, routeDecision",
+          "sort bin(5m) desc",
         ],
         width: 12,
-        height: 4,
-        leftYAxis: { label: "count" },
+        height: 6,
       }),
-      new cloudwatch.GraphWidget({
-        title: "Fargate Fallbacks",
-        left: CHANNELS.map((ch) =>
-          dimensionMetric(
-            "RouteFallbackToFargate",
-            { Channel: ch, Runtime: "fargate" },
-            "Sum",
-            `Fallback (${ch})`,
-            cloudwatch.Unit.COUNT,
-          )),
+      new cloudwatch.LogQueryWidget({
+        title: "AgentCore fallback and provider locks",
+        logGroupNames: GATEWAY_RUNTIME_LOG_GROUPS,
+        queryLines: [
+          "fields @timestamp, @message",
+          'filter @message like /"event":"agentcore.invoke.fallback"/ or @message like /"event":"gateway.harness.session.provider_locked"/ or @message like /"event":"gateway.harness.session.created"/',
+          'parse @message /"event":"(?<event>[^"]+)"/',
+          'parse @message /"traceId":"(?<traceId>[^"]+)"/',
+          'parse @message /"channel":"(?<channel>[^"]+)"/',
+          'parse @message /"provider":"(?<provider>[^"]+)"/',
+          'parse @message /"providerLockReason":"(?<providerLockReason>[^"]+)"/',
+          "display @timestamp, event, channel, provider, providerLockReason, traceId",
+          "sort @timestamp desc",
+          "limit 50",
+        ],
         width: 6,
-        height: 4,
-        leftYAxis: { label: "count" },
+        height: 6,
       }),
       new cloudwatch.GraphWidget({
         title: "Pending Queue — queued / drained",

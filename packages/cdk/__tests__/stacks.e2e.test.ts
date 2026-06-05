@@ -433,10 +433,10 @@ describe("CDK Stacks E2E — synth all stacks", () => {
       expect(dashboardJson).toContain("agentcore.invoke.fallback");
       expect(dashboardJson).toContain("route.affinity.");
       expect(dashboardJson).toContain("gateway.harness.session.");
-      expect(dashboardJson).toContain("RouteToLambda");
-      expect(dashboardJson).toContain("RouteToAgentCore");
-      expect(dashboardJson).toContain("RouteToFargate");
-      expect(dashboardJson).toContain("RouteFallbackToFargate");
+      expect(dashboardJson).toContain("Routing decisions from gateway logs");
+      expect(dashboardJson).toContain("route.classified");
+      expect(dashboardJson).toContain("route.lambda.invoked");
+      expect(dashboardJson).toContain("AgentCore fallback and provider locks");
       expect(dashboardJson).toContain("PendingMessagesQueued");
       expect(dashboardJson).toContain("PendingMessagesDrained");
       expect(dashboardJson).toContain("PendingMessagesRetryScheduled");

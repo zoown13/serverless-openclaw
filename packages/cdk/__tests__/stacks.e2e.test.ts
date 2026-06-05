@@ -422,8 +422,13 @@ describe("CDK Stacks E2E — synth all stacks", () => {
       const dashboardJson = JSON.stringify(dashboards);
 
       expect(dashboardJson).toContain("Routing & Runtime Selection");
-      expect(dashboardJson).toContain("AgentCore Harness & Handoff");
+      expect(dashboardJson).toContain("AgentCore Unified Assistant Runtime & Context");
       expect(dashboardJson).toContain("Gmail Tool & Delivery Outcomes");
+      expect(dashboardJson).toContain("route.agentcore_assistant.selected");
+      expect(dashboardJson).toContain("gateway.assistant_context.created");
+      expect(dashboardJson).toContain("bridge.assistant_context.loaded");
+      expect(dashboardJson).toContain("bridge.self_state.answered");
+      expect(dashboardJson).toContain("gmailCapability");
       expect(dashboardJson).toContain("agentcore.invoke.handoff");
       expect(dashboardJson).toContain("agentcore.invoke.fallback");
       expect(dashboardJson).toContain("route.affinity.");

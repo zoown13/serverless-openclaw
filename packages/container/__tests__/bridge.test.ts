@@ -291,6 +291,83 @@ describe("Bridge HTTP Server", () => {
       );
     });
 
+    it("should answer assistant self-state from AssistantRuntimeContext without invoking OpenClaw", async () => {
+      const res = await request(app)
+        .post("/message")
+        .set("Authorization", "Bearer test-secret-token")
+        .send({
+          userId: "user-1",
+          message: "나에 대해 기억나는 거 있어?",
+          channel: "telegram",
+          connectionId: "telegram:12345",
+          callbackUrl: "https://example.com/prod",
+          runtimeClass: "chat-only",
+          traceId: "trace-self-state",
+          routeDecision: "agentcore",
+          assistantContext: {
+            version: 1,
+            userId: "user-1",
+            channel: "telegram",
+            sessionId: "session-user-1:telegram",
+            generatedAt: "2026-05-24T00:00:00.000Z",
+            runtime: {
+              agentRuntime: "both",
+              runtimeClass: "chat-only",
+              routeDecision: "agentcore",
+              lambdaRole: "frontdoor-delivery-fallback",
+              toolRuntimeProvider: "agentcore",
+              fallbackProvider: "fargate",
+            },
+            capabilities: {
+              tools: {
+                available: true,
+                executionRuntime: "agentcore",
+                note: "Tool tasks are delegated.",
+                registry: [
+                  {
+                    id: "gmail_payment",
+                    displayName: "Gmail/payment",
+                    status: "available",
+                    safetyMode: "headers-first",
+                  },
+                ],
+              },
+              gmail: {
+                status: "available_via_tool_runtime",
+                executionRuntime: "agentcore",
+                safetyMode: "headers-first",
+              },
+            },
+            guidance: {
+              selfAwareness: "Shared state.",
+              lambda: "Frontdoor only.",
+              toolRuntime: "Tools.",
+            },
+          },
+        });
+
+      expect(res.status).toBe(202);
+
+      await vi.waitFor(() => {
+        expect(deps.callbackSender.send).toHaveBeenCalledWith(
+          "telegram:12345",
+          expect.objectContaining({
+            type: "stream_chunk",
+            content: expect.stringContaining("Gmail 상태: 도구 런타임을 통해 사용 가능"),
+          }),
+        );
+      });
+      expect(deps.callbackSender.send).toHaveBeenCalledWith(
+        "telegram:12345",
+        { type: "stream_end" },
+      );
+      expect(deps.openclawClient.sendMessage).not.toHaveBeenCalled();
+      expect(gmailToolMock).not.toHaveBeenCalled();
+      expect(infoSpy).toHaveBeenCalledWith(
+        expect.stringContaining("\"event\":\"bridge.self_state.answered\""),
+      );
+    });
+
     it("should return a direct Gmail tool response without calling OpenClaw", async () => {
       gmailToolMock.mockResolvedValue({
         kind: "direct",

@@ -25,6 +25,14 @@ const GATEWAY_RUNTIME_LOG_GROUPS = [
   "/aws/lambda/serverless-openclaw-ws-message",
   "/aws/lambda/serverless-openclaw-telegram-webhook",
 ];
+const AGENTCORE_RUNTIME_LOG_GROUPS = [
+  process.env.AGENTCORE_RUNTIME_LOG_GROUP_NAME ??
+    "/aws/bedrock-agentcore/runtimes/ServerlessOpenClawToolRuntime-kRd5PiHreT-DEFAULT",
+];
+const BRIDGE_RUNTIME_LOG_GROUPS = [
+  "/ecs/serverless-openclaw",
+  ...AGENTCORE_RUNTIME_LOG_GROUPS,
+];
 
 /** Custom metric with Channel dimension — one per channel for correct CloudWatch lookup */
 function channelMetrics(
@@ -199,7 +207,7 @@ export class MonitoringStack extends cdk.Stack {
     dashboard.addWidgets(
       sectionHeader(
         "Routing & Runtime Selection",
-        "How requests are classified between Lambda and Fargate, including fallback behavior and pending queue activity.",
+        "AgentCore-first assistant routing, legacy Lambda/Fargate counters, fallback behavior, and pending queue activity.",
       ),
     );
 
@@ -294,12 +302,53 @@ export class MonitoringStack extends cdk.Stack {
 
     dashboard.addWidgets(
       sectionHeader(
-        "AgentCore Harness & Handoff",
-        "AgentCore-first tool runtime control plane, chat-only handoff, and Fargate fallback lock diagnostics from gateway logs.",
+        "AgentCore Unified Assistant Runtime & Context",
+        "AgentCore-first text/tool control plane, AssistantRuntimeContext propagation, self-state answers, and Fargate fallback diagnostics.",
       ),
     );
 
     dashboard.addWidgets(
+      new cloudwatch.LogQueryWidget({
+        title: "Unified assistant routing and context",
+        logGroupNames: GATEWAY_RUNTIME_LOG_GROUPS,
+        queryLines: [
+          "fields @timestamp, @message",
+          'filter @message like /"event":"route.agentcore_assistant.selected"/ or @message like /"event":"gateway.assistant_context.created"/ or @message like /"event":"agentcore.invoke.started"/ or @message like /"event":"agentcore.invoke.completed"/',
+          'parse @message /"event":"(?<event>[^"]+)"/',
+          'parse @message /"traceId":"(?<traceId>[^"]+)"/',
+          'parse @message /"channel":"(?<channel>[^"]+)"/',
+          'parse @message /"runtimeClass":"(?<runtimeClass>[^"]+)"/',
+          'parse @message /"routeDecision":"(?<routeDecision>[^"]+)"/',
+          'parse @message /"assistantRuntimeProvider":"(?<assistantRuntimeProvider>[^"]+)"/',
+          'parse @message /"toolRuntimeProvider":"(?<toolRuntimeProvider>[^"]+)"/',
+          'parse @message /"gmailCapability":"(?<gmailCapability>[^"]+)"/',
+          "display @timestamp, event, channel, runtimeClass, routeDecision, assistantRuntimeProvider, toolRuntimeProvider, gmailCapability, traceId",
+          "sort @timestamp desc",
+          "limit 50",
+        ],
+        width: 12,
+        height: 6,
+      }),
+      new cloudwatch.LogQueryWidget({
+        title: "Bridge context, self-state, and delivery",
+        logGroupNames: BRIDGE_RUNTIME_LOG_GROUPS,
+        queryLines: [
+          "fields @timestamp, @message",
+          'filter @message like /"event":"bridge.assistant_context.loaded"/ or @message like /"event":"bridge.self_state.answered"/ or @message like /"event":"bridge.delivery.success"/ or @message like /"event":"telegram.delivery.content_quality"/',
+          'parse @message /"event":"(?<event>[^"]+)"/',
+          'parse @message /"traceId":"(?<traceId>[^"]+)"/',
+          'parse @message /"channel":"(?<channel>[^"]+)"/',
+          'parse @message /"runtimeClass":"(?<runtimeClass>[^"]+)"/',
+          'parse @message /"gmailCapability":"(?<gmailCapability>[^"]+)"/',
+          'parse @message /"source":"(?<source>[^"]+)"/',
+          'parse @message /"hasRawInternalError":(?<hasRawInternalError>true|false)/',
+          "display @timestamp, event, channel, runtimeClass, gmailCapability, source, hasRawInternalError, traceId",
+          "sort @timestamp desc",
+          "limit 50",
+        ],
+        width: 12,
+        height: 6,
+      }),
       new cloudwatch.LogQueryWidget({
         title: "AgentCore invoke / handoff / fallback events",
         logGroupNames: GATEWAY_RUNTIME_LOG_GROUPS,

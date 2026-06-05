@@ -124,7 +124,7 @@ graph TD
 | Enhancement | Description | Status |
 |-------------|-------------|--------|
 | **Cold Start Optimization** | Docker image 2.22GB→1.27GB (43% reduction), AWS CLI removed, chown optimization, SOCI lazy loading | **Complete** |
-| **CloudWatch Monitoring** | 8 custom metrics, MonitoringStack dashboard 5 rows | **Complete** |
+| **CloudWatch Monitoring** | AgentCore unified assistant, Gateway/Bridge context logs, Gmail/payment outcomes, Lambda/API, ECS, DynamoDB dashboard sections | **Complete** |
 | **Telegram-Web Identity Linking** | OTP-based account linking (Settings table), resolveUserId, 3 REST APIs, Web UI settings page, CORS configuration | **Complete** |
 
 ### Parallel Implementation Groups

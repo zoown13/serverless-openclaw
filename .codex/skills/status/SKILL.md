@@ -43,12 +43,14 @@ All GitHub issues #2–#9 closed: P1-P5 cold start, #7 zstd, #8 CPU configurable
 
 ```
 AGENT_RUNTIME=both
+ASSISTANT_RUNTIME_PROVIDER=agentcore
 TOOL_RUNTIME_PROVIDER=agentcore
+AGENTCORE_FALLBACK_PROVIDER=fargate
 ```
 
-- Lambda handles quick general chat.
-- AgentCore Runtime is the primary control-plane for tool/private-data requests.
-- Fargate remains as a fallback tool worker.
+- Gateway Lambda is the thin frontdoor, delivery harness, and emergency fallback.
+- AgentCore Runtime is the unified assistant runtime for normal text chat and tool/private-data requests.
+- Fargate remains as a controlled fallback tool worker when AgentCore is unavailable.
 - WebStack/CloudFront is disabled by default and currently not deployed.
 
 ## Test Coverage
@@ -56,8 +58,8 @@ TOOL_RUNTIME_PROVIDER=agentcore
 | Suite                 | Count   |
 | --------------------- | ------- |
 | Unit tests            | 233+    |
-| E2E tests (CDK synth) | 46      |
-| Final Telegram smoke  | 8       |
+| E2E tests (CDK synth) | 55      |
+| Final Telegram smoke  | 9       |
 
 Run tests:
 
